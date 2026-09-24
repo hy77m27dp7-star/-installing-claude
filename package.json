@@ -15,7 +15,7 @@
     "behavior": "node tests/behavior/run.mjs",
     "db:local": "wrangler d1 migrations apply avelie --local",
     "db:remote": "wrangler d1 migrations apply avelie --remote",
-    "dev": "wrangler dev --port 8787",
+    "dev": "wrangler dev --port 8787 --var ACCESS_AUD:",
     "deploy": "npm test && wrangler deploy",
     "export:remote": "wrangler d1 export avelie --remote --output backups/avelie-export.sql"
   },
