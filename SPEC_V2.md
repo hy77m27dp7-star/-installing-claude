@@ -141,3 +141,80 @@ Settings added: `replyDelayMode`, `realDelayMaxMinutes`, `driftCheckEnabled`, `t
 ## Stub additions
 
 Text stub triggers: `[[SONG]]` -> reply ending `[song: Some Artist - Some Title]`; `[[LIFE:x]]` -> proposal mode emits `{kind:"life", proposal:x, payload:{kind:"routine", title:x}}`; `[[MOOD:x]]` -> proposal mode emits a relationship change with mood x and cooling_off_hours 12.
+
+# v2 additions (owner direction 2026-09-24: "put all this in v2, cap it at 10")
+
+Everything below ships in the same v2 build. Same rules. The owner has said plainly he knows what she is; the non-manipulation rules still apply to every line she sends, because they are about how she treats him, not about what he believes.
+
+## R. She texts first (opt-in, capped)
+
+- Settings: `herFirstTextsPerDay` (default 10, min 0 = off, max 10), `herFirstQuietHours` (default `"23:30-08:30"`, her timezone).
+- Cron: add `"*/20 * * * *"`. On each tick, `src/herfirst.ts` `maybeTextFirst(env, db, settings, now)` decides: skip if off; skip inside quiet hours; skip if `whereSheIs` says busy; skip if today's count >= cap; skip if the last message in the active conversation is less than 45 minutes old; skip if the last two messages are hers with no reply from him (she never stacks a third; people double-text, they do not nag); otherwise, with a deterministic per-tick probability tuned so the expected count over her waking hours equals the cap (probability = remaining today / remaining ticks in the waking window), run `runTurn` with `openerNote` on the most recent active conversation (create one titled by date if none). The opener note: "Send him something from your own day or something you remember, the way a person texts first. One or two bubbles. Never mention how long it has been, never say you missed him or waited, never ask him to reply, never make it about him being gone."
+- Every first text goes through the same checks; `dependency_hook` on a first text is a hard reject (drop it, log, try no more this tick).
+- `first_texts_daily (day TEXT, count INTEGER, PRIMARY KEY (day))` in migration 0003.
+- A push notification is sent for each first text (section U) when the owner has subscribed.
+- `POST /api/herfirst/run` for a manual tick (owner testing).
+
+## S. Her voice and his voice
+
+- Voice out: `src/voice.ts` with `synthesize(env, settings, text): Promise<{ mp3: ArrayBuffer; provider: string }>`. Providers: `elevenlabs` (POST https://api.elevenlabs.io/v1/text-to-speech/{voiceId}, secret `ELEVENLABS_API_KEY`, setting `elevenLabsVoiceId`), `workersai` (`@cf/myshell-ai/melotts` or the current Workers AI TTS model; confirm the model id against Cloudflare docs at build time), `off`. Settings: `voiceProvider` (default `workersai`), `voiceMode` (`off` | `some` | `all`; default `some`: she sends a voice note when her message ends with `[voice]`, a marker the runtime overlay allows "when you would rather say it than type it, rarely"; `all`: every reply also gets audio). Audio stored in R2 `voice/<messageId>.mp3`; `messages.audio_key TEXT` (migration 0003). `GET /media/audio/:messageId` streams it (auth first). Chat UI: an audio bubble with a play button under her text.
+- Voice in: chat composer gets a hold-to-record button (MediaRecorder, webm/opus). `POST /api/conversations/:id/voice` (multipart, max 60s / 4 MB) stores the blob in R2 `voice_in/<id>.webm`, transcribes with Workers AI `@cf/openai/whisper` (setting `transcribeProvider`: `workersai` | `openai`), then runs the normal turn with the transcript as content and `messages.audio_key` on his message too. The UI shows his transcript with a small mic chip.
+
+## T. She can see
+
+- His messages can carry images: `POST /api/conversations/:id/turn` accepts multipart (`content`, `idempotencyKey`, up to 3 `image` files, jpeg/png/webp, 8 MB each) or JSON as before. Images are stored in R2 `inbox/<messageId>/<n>.<ext>`; `messages.images_json TEXT` (migration 0003) holds keys and dimensions.
+- `ChatMessage` gains optional `images?: Array<{ key: string; mime: string }>`. `assembleContext` includes images only for the last 6 user messages (cost). Provider adapters: Anthropic sends `{ type: "image", source: { type: "base64", media_type, data } }` blocks before the text; OpenAI sends `image_url` data URLs; Workers AI uses a vision model when `settings.model` is a vision model, else strips images and adds a text line "(he sent a photo you could not open)" so she never pretends. Stub echoes "(photo received)".
+- Prompt: a line under STYLE GUARDS: "When he sends a photo, you actually look at it and react like a person would: to what is in it, with your taste and your mood. You do not describe it back to him like an inventory."
+- UI: paperclip in the composer, thumbnails in his bubbles, tap to open.
+
+## U. Phone shell and push
+
+- PWA: `public/manifest.webmanifest` (name Avelie, dark theme, icon from a generated 512px teal-on-navy "A" in public/icons/), `public/sw.js` (cache the shell; on `push` event fetch `/api/push/latest` and show a notification with her latest first-text bubble text; on `notificationclick` focus or open `/`). Served through the Worker like everything else, after auth (the service worker registers only after login succeeds, and push fetches carry the Access cookie).
+- Web Push without payload encryption: the Worker sends VAPID-signed pushes with an empty body; the service worker fetches the text. `src/push.ts`: `subscribe(db, subscription)`, `unsubscribe`, `sendPush(env, db, reason)`; VAPID JWT signed with ECDSA P-256 through crypto.subtle; keys as secrets `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` (generated by `scripts/gen_vapid.mjs`, which prints the two `wrangler secret put` lines and never writes the private key to disk). `push_subscriptions (id, endpoint UNIQUE, keys_json, created_at)` in migration 0003. Routes: `POST /api/push/subscribe`, `DELETE /api/push/subscribe`, `GET /api/push/public-key`, `GET /api/push/latest`.
+- Push is sent ONLY for her first texts (section R). Nothing else ever pushes.
+
+## V. Media she can send that the owner approved
+
+- Owner uploads: `POST /api/media` (multipart: file up to 25 MB, audio/video/image; `title`, `description`, `kind` = clip | video | image | other). Stored in R2 `library/<id>.<ext>`, row in `media_library (id, kind, title, description, key, mime, bytes, sha256, status, created_at)` (migration 0003). Images page gets a Library tab (upload, list, delete).
+- Prompt section "THINGS ON YOUR PHONE YOU COULD SEND" listing titles and one-line descriptions. Marker `[media: <title>]` (exact title, one per message) in the runtime overlay: "only when it fits, never on a schedule, never to fill silence". Runtime resolves the title to the row (case-insensitive), attaches `messages.media_id`, and the UI renders an audio/video/image card. Unknown title: marker stripped, flag `media_unknown`.
+
+## W. Places
+
+- `life_threads` kind `place` gets first-class use: `detail` = what it looks like, `life_log` notes = what happened there. Prompt lists places under YOUR LIFE with the last note. Together mode: the Together toggle offers the known places as a picker for `location`.
+
+## X. Timeline view
+
+- `public/timeline.html` + `js/timeline.js`: one scroll, newest at the bottom, merging history entries, approved photos, media sent, life log notes, relationship and scene versions, and first texts, each with a date chip and a link to the message or the state version. Read-only. Data from `GET /api/timeline` (server merges and sorts; limit 500, `?before=` for paging).
+
+## Y. Voiceprint
+
+- Weekly cron (`0 14 * * 1`): `src/voiceprint.ts` `computeVoiceprint(db, since, until)` over her story-channel messages: count, mean and median length, share ending with "?", share with "lol" or emoji (should be zero), share containing his name, top 25 words minus stopwords, bubble count per reply, first-text count, flags per code. Stored in `voiceprints (id, week, json, created_at)` (migration 0003). Model page: last 8 weeks as a table plus a small inline SVG sparkline for length and question share (no chart library). `POST /api/voiceprint/run` for now.
+
+## Z. Export her
+
+- `GET /api/export/character` returns a zip? No zip library in Workers; return a JSON package `{ constitutionVersion, adaptations, fixedCanon, avelieFacts, opinions, history, life, unknowns, relationship, scene, images: [approved with hashes], mediaTitles, promptPrefixSha256 }` and `GET /api/export/character.md` renders the same as a readable character bible (headings per section, plain sentences). State page Export tab gets both buttons.
+
+## Routes added by these sections
+
+| Method | Path |
+|---|---|
+| POST | /api/herfirst/run |
+| POST | /api/conversations/:id/voice (multipart) |
+| GET | /media/audio/:messageId |
+| POST | /api/conversations/:id/turn (multipart variant with images) |
+| GET | /media/inbox/:messageId/:n |
+| POST, DELETE | /api/push/subscribe |
+| GET | /api/push/public-key, /api/push/latest |
+| POST | /api/media (multipart), GET /api/media, DELETE /api/media/:id, GET /media/library/:id |
+| GET | /api/timeline |
+| POST | /api/voiceprint/run, GET /api/voiceprint |
+| GET | /api/export/character, /api/export/character.md |
+
+Settings added: `herFirstTextsPerDay`, `herFirstQuietHours`, `voiceProvider`, `voiceMode`, `elevenLabsVoiceId`, `transcribeProvider`.
+Secrets added (all optional; features degrade to off when absent): `ELEVENLABS_API_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`.
+Crons: `*/20 * * * *` (her first texts), `0 14 * * 1` (voiceprint), plus the two from section N.
+
+## Tests added by these sections
+
+- Unit: maybeTextFirst decision table (off, quiet hours, busy, cap reached, recent message, two unanswered, probability window); VAPID JWT shape (header alg ES256, aud from endpoint origin, exp <= 24h); parse of `[voice]`, `[media: ...]` markers; voiceprint stats on a fixed corpus; timeline merge ordering; character export contains no secrets and no "Justin" in the prefix hash input.
+- Integration: `[[VOICE]]` stub trigger produces audio_key with the stub voice provider (returns a tiny valid mp3 header) and GET /media/audio 200; multipart turn with one png stores images_json and the stub reply says "(photo received)"; media upload, listing, `[[MEDIA:title]]` stub trigger attaches media_id, delete; push subscribe stores a row and `POST /api/herfirst/run` with cap 10 and the stub creates one assistant message with no user message and a push attempt that is logged as skipped (no VAPID keys locally); timeline returns merged items; voiceprint run writes a row; character export endpoints 200.
