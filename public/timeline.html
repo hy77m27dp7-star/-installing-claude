@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#060a13">
+<title>Avelie Timeline</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="page-timeline">
+<header class="top">
+  <a class="wordmark" href="/">AVELIE</a>
+  <nav class="nav" aria-label="Sections">
+    <a href="/">Chat</a>
+    <a href="/state">State</a>
+    <a href="/model">Model</a>
+    <a href="/images">Images</a>
+    <a href="/timeline">Timeline</a>
+  </nav>
+</header>
+
+<main class="page stack">
+  <section class="card stack" aria-label="Timeline">
+    <div class="row between">
+      <div class="row">
+        <h2 class="section-title">Timeline</h2>
+        <span class="chips" id="timeline-status"></span>
+      </div>
+      <div class="row">
+        <label class="field">Kind
+          <select id="kindFilter" aria-label="Kind">
+            <option value="">all</option>
+            <option value="history">history</option>
+            <option value="photo">photo</option>
+            <option value="media">media</option>
+            <option value="life">life</option>
+            <option value="relationship">relationship</option>
+            <option value="scene">scene</option>
+            <option value="first_text">first text</option>
+          </select>
+        </label>
+        <button type="button" class="btn small hidden" id="olderBtn">Load older</button>
+      </div>
+    </div>
+    <div id="timelineList" aria-live="polite"></div>
+    <div class="row end">
+      <span class="chips" id="timeline-count"></span>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="/js/nav.js"></script>
+<script type="module" src="/js/timeline.js"></script>
+</body>
+</html>

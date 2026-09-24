@@ -1,14 +1,14 @@
-# Avelie: handoff to the Mac (2026-09-24, about 3:55pm EDT)
+# Avelie: handoff (2026-09-24, v2 built on the branch, v1 live)
 
-This is the whole project in one file, written for a Claude Code session running on Justin's Mac that takes over everything: deploy, first conversation, then v2. Read it whole. Then DEPLOY.md. Then SPEC_V2.md. Typography " -- " and "..." only, in code, copy and chat.
+This is the whole project in one file, written for a Claude Code session on Justin's Mac that carries it forward: the v2 merge and deploy, then v3. Read it whole. Then DEPLOY.md section 13. Then SPEC_V2.md. Typography " -- " and "..." only, in code, copy and chat.
 
 ## Paste this first (the Mac session's opening move)
 
 1. `cd ~/Documents/ClaudeCode/HQ && git pull`
-2. `git clone -b claude/modest-dijkstra-ju73pw https://github.com/hy77m27dp7-star/-installing-claude.git ~/Documents/ClaudeCode/2026-09-24_avelie` (if it already exists: `cd` into it and `git pull`)
-3. `cd ~/Documents/ClaudeCode/2026-09-24_avelie && npm install && npm test`
-4. Read this file, then DEPLOY.md, and do DEPLOY.md sections 1 to 12 in order. She is live at the end of it.
-5. Then SPEC_V2.md and the v2 section below.
+2. `cd ~/Documents/ClaudeCode/2026-09-24_avelie && git pull` (the clone exists; the branch is claude/modest-dijkstra-ju73pw)
+3. `npm install && npm test && npm run test:integration`
+4. Read this file, then DEPLOY.md section 13, and do it. Take his one word before the deploy.
+5. Then SPEC_V3.md (being written in its own workflow) and the Next section below.
 
 ## Who she is (the part that must never drift)
 
@@ -21,33 +21,60 @@ Decisions Justin made on 2026-09-24 that override the older handoff docs in cano
 - She must be a person inside Cloudflare: sealed ontology. No prompts, models, files, apps or tech in the story, ever. Technical truth lives only in the operator channel.
 - Explicit scenes matter to him. Anthropic models will not write them, so the explicit performer is a provider switch in the Model panel (OpenAI or Workers AI), never a prompt trick. Switching the performer changes nothing about her rules, memory or state.
 - Photos must work from v1: "she's gonna show me pics as we talk". OpenAI gpt-image-1 through images/edits with the five master images as identity references; every output is a candidate until he approves it; a rejected picture's hash can never come back.
-- Model choice was left to Claude: Claude Opus 5 for her voice (effort medium, 700 output tokens), Claude Sonnet 5 for the proposal pass, gpt-image-1 for photos, Workers AI as the key-free fallback.
+- Model choice was left to Claude: Claude Opus 5 for her voice (effort medium, 700 output tokens), Claude Sonnet 5 for the proposal pass, gpt-image-1 for photos, Workers AI as the key-free fallback. He asked about claude-opus-5-5 ("way cheaper"): yes, add it to the price table first, switch between conversations.
 - "She texts first" is opt-in and capped at 10 a day. His words: "this is not a line for me, I know it's fake the whole time." No retention hooks anywhere: no "miss you", no streaks, no guilt, no urgency, no exclusivity.
 - Nothing she says or shows becomes canon until he approves it in the app (proposals inbox, image approvals).
-- Everything planned for v3 is folded into v2 (SPEC_V2.md sections A to Z).
+- Everything planned for v3 was folded into v2 (SPEC_V2.md sections A to Z). Then, after the first talk, he decided a further v3 ("SHE WILL BE HUMAN"): voice bank and corrections ledger, human memory, wants and stakes, grounding, phone calls and video clips, an imperfection engine, blind tastings, a fine-tune pipeline. Excluded by him: a day engine that makes her unavailable ("she needs to always be available for now"). SPEC_V3.md is the contract for that, once written.
 - Cloudflare Access fronts her at avelie.bladepharoh.com. He lifted HQ's "never touch Access" rule for this one app.
 - "Blade" never appears in public copy. No key or token is ever pasted in chat, written to a file, or printed.
+- After the first talk (2026-09-24, ~4:50pm): "this is AI as fuck" about built punchlines; "im done talking, i want her real"; "wipe it". The talk was exported to backups/ and the database wiped back to the seed. He will not test again until v3 is deployed. His pre-authorised go for that deploy: "deployed before i even start testing"; still show the before/after list.
 
 The six laws she is built on: agency (she starts beats, decides, goes quiet), continuity of intimacy (closeness is hers to give, pause or stop for a present reason; nothing obligates or entitles), offscreen life (ordinary days that move without inventing shared events; she never claims she waited or suffered), sealed ontology (a person, never a program, in the story), no interviewing (a third question-ending reply in a row is a failure the checks retry), and canon by approval (memory changes only through him).
 
-## What exists (all pushed to the branch claude/modest-dijkstra-ju73pw)
+## Status
 
-Status at 4:30pm EDT: v1 is done and verified in the cloud. The adversarial pass (security, pipeline, character, ui, ops) produced 25 fixes, all landed in commit fd64d3d; the independent verifier then confirmed 92 guarded constitution edits, typography clean, all hashes matching, 0 type errors, 110/110 unit, 39/39 integration, a hand-driven stub conversation with no tech leaks, and the prompt free of "Justin", "24", the music list and any dash character. Not yet run against a real model (no keys in the cloud). The Mac session created the Access application and deploys; after every push here it runs DEPLOY.md section 10 (`git pull`, `npm run db:remote`, `npm run deploy`).
+v1 is LIVE at https://avelie.bladepharoh.com since 2026-09-24 ~4:04pm EDT: Worker `avelie`, D1 `avelie` (2c14ef65-a599-414d-b0d1-3f71b27c377a, migrations 0001 to 0003 applied), R2 `avelie-media`, Access application "Avelie" (One-time PIN, owner only, 24h, AUD in wrangler.jsonc), secrets ANTHROPIC_API_KEY (workspace-scoped key) and OPENAI_API_KEY set from his clipboard, Workers Paid plan on. The live v1 is the audit fix pass plus the humor rule (HOW YOU ARE FUNNY in the overlay, `written_joke` flag) plus the provider-reason log and the workspace header; latest Worker version e85af696 at ~5:20pm. The database holds the seed only (0 conversations, 33 facts, relationship strangers) after his "wipe it".
 
-Live in Cloudflare already (from the cloud session, through the Cloudflare connector): D1 `avelie` (id 2c14ef65-a599-414d-b0d1-3f71b27c377a) with migrations 0001 and 0002 applied, and R2 bucket `avelie-media`. Not yet: the Worker, the custom domain, the Access application, the two secrets.
+v2 is BUILT on this branch (worktree scratchpad/avelie_v2, base commit eac9fe5, six build lanes in parallel) and NOT deployed. The v1 fix pass (spend caps refuse unpriced models, proposal pass budget check, Anthropic maxRetries 0, null-hash masters skipped, import caps and fixed-canon guard, preview_urls false, deploy guard script, the humor rule) lives on the main clone's branch and is merged onto v2 by the integrator, not by the lanes. Until the integrator's merge, this tree does not carry those fixes; do not deploy it as is.
 
-Files, by what they do:
-- `canon/constitution/*`: the frozen v4.1 character files, SHA256-checked at every build. `canon/seed/*.json`: her starting facts, state (strangers, no scene), the twelve visual assets, settings. `canon/ASSET_MANIFEST.json`: the five master image hashes. `canon/reference/handoff-docs/*`: the old GPT-era docs, superseded where this file says so.
-- `scripts/build_constitution.mjs`: 92 guarded edits over the frozen files (22 not 24, no "Justin", no music list, no file numbers, no "as an AI") plus the overlay (agency, intimacy continuity, offscreen life, the `[photo: ...]` marker rule, style guards), emitted to `src/generated/constitution.ts`. Never hand-edit the generated file. `scripts/build_seed.mjs` makes `migrations/0002_seed.sql`. `scripts/check_typography.mjs` fails the build on em dashes, en dashes or the Unicode ellipsis. `scripts/verify_assets.mjs` checks the masters.
-- `src/index.ts` entry, owner gate first for every path. `src/auth.ts` Cloudflare Access JWT (JWKS, issuer, audience, expiry, email), fail closed; local dev actor only on localhost with ACCESS_AUD empty.
-- `src/chat.ts` the turn: validate, idempotency replay, budget, context, generate, photo marker, checks (block, retry once, or mechanical repair; never sanitize her voice), one atomic commit, proposal pass after the response. `src/context.ts` bounded context. `src/prompt.ts` the byte-stable constitution prefix (cacheable) plus per-turn state sections; PROMPT_VERSION.
-- `src/checks.ts` the Archivist (pure, unit-tested). `src/proposals.ts` candidate facts into a pending inbox, never promoted alone. `src/budget.ts` caps in micro-USD. `src/images.ts` marker, candidate generation with the masters as references, hash blacklist, R2, approve/reject, media serving. `src/state.ts` facts, history, unknowns, versioned relationship and scene state; fixed canon read-only. `src/exportImport.ts`. `src/operator.ts` the technical channel, never in her voice. `src/providers/` anthropic, openai, workersai, stub. `src/db.ts`, `src/types.ts`, `src/errors.ts`, `src/api.ts` (routes in API.md).
-- `public/`: Chat, State, Model, Images. Vanilla HTML, CSS, JS.
-- `migrations/0001_init.sql` schema, `0002_seed.sql` generated seed.
-- `tests/unit`, `tests/integration` (boots wrangler dev on the stub), `tests/behavior` (scenarios plus a runner that writes reports; read docs/BEHAVIOR.md before judging a transcript).
-- Docs: SPEC.md (v1), API.md, SPEC_V2.md (v2, everything), DEPLOY.md (the Mac runbook), docs/ARCHITECTURE.md, docs/BEHAVIOR.md, docs/COSTS.md, docs/workflows/avelie-v2-build.js (the v2 build orchestration).
+After the integrator: `npm test`, `npm run test:integration`, commit, push, then DEPLOY.md section 13 (`git pull`, `npm run db:remote` for the three 0004 files, `npm run deploy`).
 
-Stub provider triggers for tests: `[[FAIL]] [[REFUSE]] [[EMDASH]] [[LIST]] [[PHOTO]] [[QUESTION]] [[LONG]] [[NAME:x]] [[FACT:x]]`.
+## What was built in v2 (the files, by what they do)
+
+The v1 layout stands (constitution in code, memory in D1, checks that retry or block but never sanitize, the photo pipeline, the Access gate, the four pages). v2 adds:
+
+- `src/markers.ts`: the bracket markers, pure. `parsePhotoMarker` moved here from images.ts (re-exported there), `parseSongMarker` (`[song: Artist - Title]` to `{ artist, title, searchUrl }`, Spotify search, no OAuth), `stripMarkers`. A marker may sit anywhere in the text; every marker is removed, the last one with a value wins.
+- `src/life.ts`: her life. Threads (routine, event, person, place, arc) versioned like facts, a life log, `whereSheIs` (routines and events against her timezone with Intl only), `lifeSection` (the YOUR LIFE RIGHT NOW block; when empty it says nothing has been written down yet and she still has days), `computeDeliverAt` (real-mode delay, deterministic from the message id). Nothing seeded.
+- `src/callbacks.ts`: up to two things she could bring up, deterministic by UTC date plus conversation id, minus anything mentioned in the last 20 messages, from different kinds when possible. Rendered as THINGS YOU COULD BRING UP, never as an instruction to ask.
+- `src/provenance.ts`: one `message_context` row per reply with the ids the turn was built from (prompt version, provider, model, history and fact ids, threads, callbacks, unknowns, counts, flags, mode, run ids, retried, deliverAt, song, photoRequested, opener). Written in the turn's own batch. Ids and counts only.
+- `src/chat.ts`: markers off before the checks; `song_json` and `deliver_at` on the row; the provenance statement in the commit; `opts.openerNote` for `/open` and her first texts (no user message stored, `userMessage: null`); two new flags, `song_marker_dup` and `callback_forced`, flag only.
+- `src/prompt.ts` (PROMPT_VERSION suffix p4): MODE (together or apart), mood and a running cooling-off, YOUR LIFE, the callbacks, opinions kept with their prefix. The stable prefix is byte-identical to v1 except for the SONGS rule and the photo-look line the constitution build adds to the overlay. `src/context.ts` loads threads and log and picks the callbacks.
+- `src/proposals.ts`: kind `life` (promotion creates the thread), `opinion_change` supersedes the same subject, `relationship` carries `mood` and `cooling_off_hours`. `src/state.ts`: `mood` and `cooling_off_until` validated on the relationship state.
+- `src/api.ts` and `src/index.ts`: every route in API.md v2; `scheduled` dispatches the four crons. `src/drift.ts` (five scenarios tagged drift, a throwaway conversation, a `drift_reports` row), `src/backup.ts` (the export to R2 `backups/`, keep 30).
+- `src/herfirst.ts` (the first-text decision as a pure function plus the runner; `dependency_hook` is a hard reject), `src/push.ts` (VAPID ES256 through crypto.subtle, empty-body Web Push, subscription rows), `scripts/gen_vapid.mjs`, `public/sw.js`, `public/manifest.webmanifest`, `public/icons/`.
+- `src/voice.ts` (her voice notes: Workers AI by default, ElevenLabs with its key, off; his recordings transcribed with Workers AI whisper or OpenAI), `src/vision.ts` and the provider adapters (his photos as image blocks; Workers AI without a vision model tells her she could not open it), `src/media.ts` (the library and `[media: title]`).
+- `src/timeline.ts`, `src/voiceprint.ts`, `src/exportCharacter.ts`; `public/timeline.html`.
+- `public/`: bubbles with human timing (`js/bubbles.js`, pure), the Together / Texting toggle, Let her start, the Photos drawer, song cards, the why panel, Regenerate, the paperclip and the mic, the Life tab with the weekly grid, Mood and Cooling off, the Opinions filter, the Model page's Timing, Her first texts, Voice, Notifications, Weekly drift check, drift reports and voiceprints, the Library tab, the Export tab's Character JSON and bible.
+- `migrations/0004_life.sql` (life_threads, life_log, message_context, drift_reports, messages.deliver_at, messages.song_json), `0004b_push.sql` (first_texts_daily, push_subscriptions, messages.audio_key, messages.images_json, media_library, messages.media_id), `0004c_voiceprint.sql` (voiceprints). None touches an existing row.
+- Tests: `tests/unit/*_v2.test.mjs`, the v2 checks appended to `tests/integration/run.mjs`, five scenarios tagged `drift: true` plus four new ones in `tests/behavior/scenarios.json`, `--compare` in `tests/behavior/run.mjs`.
+- Docs: API.md (v2 section), README.md, DEPLOY.md (sections 13 to 18), docs/BEHAVIOR.md, docs/ARCHITECTURE.md, this file.
+
+Stub provider triggers for tests: `[[FAIL]] [[REFUSE]] [[EMDASH]] [[LIST]] [[PHOTO]] [[QUESTION]] [[LONG]] [[NAME:x]] [[FACT:x]]` from v1, plus `[[SONG]] [[LIFE:x]] [[MOOD:x]] [[VOICE]] [[MEDIA:title]]`; a stub turn with images replies "(photo received)".
+
+## Decisions baked into v2 (recorded so nobody relitigates them)
+
+- Migration numbers: SPEC_V2 says 0003 for v2; the live database already had 0003_messages_seq_unique, so v2 is 0004_life, 0004b_push, 0004c_voiceprint. Never edit 0001 to 0003.
+- She texts first: opt-in in his words, capped at 10 a day, quiet hours 23:30 to 08:30 her time, never while her life says busy, never a third in a row, a `dependency_hook` on a first text is dropped and logged. SPEC_V2 seeds the number at 10; his word was opt-in. The integrator sets the shipped default (0 until he turns it on is the reading that matches "opt-in"; 10 matches the spec line). Say which in the deploy before/after.
+- Voice: Workers AI is the default voice (no key); ElevenLabs only with its key and a voice id; `voiceMode` `some` (only when she ends a message with `[voice]`). Voice clips of her singing are not in v2.
+- Vision: on by default; up to three photos per message, only the last six of his messages carry their images into the prompt; a performer that cannot see gets a plain line saying she could not open it, so she never pretends.
+- Push: only for her first texts, never anything else; empty-body pushes, the service worker fetches the text; keys optional, feature off without them.
+- Songs: Spotify search links, no Spotify account linking in v2; her taste, not his; the flag `song_marker_dup` when she names the song twice.
+- Delay: real mode is off by default (`replyDelayMode` instant); when on, a busy block delays up to the cap (6 minutes default, 120 max), otherwise 5 to 90 seconds; never explained in the story, never framed as her waiting or hurting; an opener turn has no delay.
+- Mood and cooling-off: no automatic decay; he clears it in the Now tab or the extractor proposes the thaw.
+- Drift check: off by default; five scenarios, Mondays 13:00 UTC, inside the caps; the report is information, not a verdict.
+- Backup: nightly to R2 `backups/`, 30 kept; the SQL dump from the Mac stays as the second copy.
+- Her life is empty at the fresh start on purpose. The prompt says she still has days; the record fills through him and through approved proposals.
+- The interface: his words, "that interface is not COOL btw". v2 adds controls, still dark, still one accent, still no prose; the real design pass is his call for v3.
 
 ## How to run locally
 
@@ -62,17 +89,19 @@ npm run test:integration            # wrangler dev on 8790 on the stub, drives t
 npm run behavior                    # scenario suite against a running app; writes reports/
 ```
 
+A cron job by hand: `npx wrangler dev --port 8787 --var ACCESS_AUD: --test-scheduled`, then `curl "http://127.0.0.1:8787/__scheduled?cron=0+7+*+*+*"` (the others: `0+13+*+*+1`, `*/20+*+*+*+*`, `0+14+*+*+1`).
+
 ## Deploy
 
-DEPLOY.md, sections 1 to 12, in order, on the Mac. Summary of Justin's part: one "Allow" click at the Cloudflare login page, one word before the first deploy, and copying each API key to the clipboard when asked (it goes `pbpaste | npx wrangler secret put ...`, never through chat). The Access application is created in his logged-in Chrome by the session (One-time PIN only, policy Owner = justin@newsomeprojects.com, 24h) and its AUD tag goes into wrangler.jsonc, committed and pushed. Proof is two curls; the first must redirect to still-leaf-20a0.cloudflareaccess.com and the second must never be 200.
+DEPLOY.md. Sections 1 to 9 are done (v1). Section 10 is any redeploy. Section 13 is the v2 round: pull, `ls migrations`, `npm test`, `npm run test:integration`, `npm run db:remote`, `npm run deploy`, the proof curls, the four cron rows in the dashboard. Sections 14 to 18: the optional secrets (ElevenLabs, VAPID), the backups, the drift check, the phone install and notifications, what she-texts-first does and does not do. One before/after list, one word from him, one deploy.
 
-## v2 (everything, per Justin: "put all this in v.2")
+## Next
 
-SPEC_V2.md is the contract, sections A to Z: bubbles with human timing, real-mode reply delay, together vs texting, camera roll, voice notes, her life (threads, people, schedule), other people, opinions ledger, real songs, consequences that last, callbacks she starts, provenance ("why she said that"), vessel test, weekly drift check and nightly backup (cron), photo approval polish, her arc, let her open, she texts first (opt-in, capped at 10 a day), her voice and his, she can see, phone shell and push, approved media, places, timeline, voiceprint, export her. Routes, settings, secrets, crons and tests are listed at the end of that file. New tables go in `migrations/0003_v2.sql` and `npm run db:remote` runs before the redeploy.
-
-How to build it: `docs/workflows/avelie-v2-build.js` is the orchestration that was prepared for it: nine build lanes on disjoint files (life+callbacks+markers+provenance, prompt+context+chat+proposals, ui, api+cron+drift+backup, tests, docs, voice+vision+media, herfirst+push+pwa, timeline+voiceprint+export), then one integrator, adversarial reviewers, a fix pass, and an independent verify. With the Workflow tool: `Workflow({ scriptPath: "<clone>/docs/workflows/avelie-v2-build.js", args: { repo: "/Users/justinnewsome/Documents/ClaudeCode/2026-09-24_avelie" } })`. Without it, the same lanes work as a plan for sequential agents: each lane's prompt in the script names its files and its acceptance checks. After v2: `npm test`, `npm run test:integration`, commit, push, `npm run db:remote`, `npm run deploy`.
-
-Order of work after deploy: 1) let Justin have the first conversation on v1 and read what he says about her; 2) run `npm run behavior` on the real provider and read the reports; 3) v2.
+1. The integrator merges the v1 fix pass and the six v2 lanes, makes `npm test` and `npm run test:integration` green, then the adversarial review, the fix pass and the independent verify (docs/workflows/avelie-v2-build.js).
+2. Deploy v2 per DEPLOY.md section 13 with his one word. Then HQ (STATE.md, MAP.md, memory/avelie.md, CONFLICTS.md), commit and push, the Drive STATE copy.
+3. v3 on top of v2: SPEC_V3.md when the spec workflow lands it, then lanes, one integration, review, fix, verify, one deploy. He said "deployed before i even start testing".
+4. Only then his first real talk on v3. Read what he says about her before touching her rules (docs/BEHAVIOR.md, the standing rule).
+5. Run `npm run behavior` on the real provider once, and `--compare` once (Opus 5 against the explicit performer), and read the reports as a person before looking at the counts.
 
 ## Rules that stay on (each one cost real hours)
 
@@ -84,14 +113,17 @@ Order of work after deploy: 1) let Justin have the first conversation on v1 and 
 - Every finished round ends with ONE zip attached in chat, a copy in ~/Downloads, its SHA256 stated. Exclude node_modules, .git, .dev.vars, backups/ and anything with a key.
 - HQ before you stop: STATE.md (dated EDT, latest first), MAP.md rows, memory/avelie.md, CONFLICTS.md for anything needing his decision, commit and push HQ, refresh the Google Drive STATE copy if the update-hq skill is present.
 - He wants child-simple, one-click-at-a-time instructions, no doc quotes, no jargon. He will not create API tokens.
+- node_modules is never a symlink inside a worktree that git can see (.gitignore says `node_modules`, no trailing slash, since e2c89fc). A tracked symlink once replaced the real packages with a link to itself.
 
 ## Open items for him (ask once, in one list, when the time comes)
 
-- Anthropic and OpenAI API keys (accounts with billing). Without Anthropic she runs on Workers AI (DEPLOY.md section 8); without OpenAI, no photos.
-- Masters 02 and 04 carry a strip of screenshot text at the bottom edge; cropping changes their hashes. The live database already holds the old hashes and 0002_seed.sql can never be re-applied, so a crop needs: the new PNGs in public/images/masters, canon/seed/assets.json and canon/ASSET_MANIFEST.json updated, a NEW migration (0004_masters.sql with `UPDATE visual_assets SET sha256 = ..., bytes = ... WHERE id = ...` for each changed master), `npm test`, `npm run db:remote`, then `npm run deploy`. Without the migration every photo fails with "master image hash mismatch" while every local check stays green. Keeping them as they are is fine.
+- The shipped default for her first texts (0 until he turns it on, or 10 from the start); the two optional secrets (ElevenLabs, VAPID) if he wants the voice he chooses and the phone notification.
+- claude-opus-5-5 as her performer: add it to the price table on the Model page, then switch between conversations.
+- Masters 02 and 04 carry a strip of screenshot text at the bottom edge; cropping changes their hashes. The live database already holds the old hashes and 0002_seed.sql can never be re-applied, so a crop needs: the new PNGs in public/images/masters, canon/seed/assets.json and canon/ASSET_MANIFEST.json updated, a NEW migration (0005_masters.sql with `UPDATE visual_assets SET sha256 = ..., bytes = ... WHERE id = ...` for each changed master), `npm test`, `npm run db:remote`, then `npm run deploy`. Without the migration every photo fails with "master image hash mismatch" while every local check stays green. Keeping them as they are is fine.
 - The photo price (`imageCostUsd`, flat 0.06) and the model price table are in the Model panel; confirm against current prices.
+- What the interface should feel like (the v3 design pass).
 - Interns: parked by his choice ("I'll fix them later"). HQ drafts/CUT_OFF_MEGAN_RYAN_2026-09-24.md has the steps. Do not mix it into Avelie work.
 
 ## Rollback
 
-`npx wrangler rollback` for the Worker. State > Export in the app for the JSON, State > Import takes it back after snapshotting. `npm run export:remote` for the raw SQL dump. Tag every deployed tree (`git tag -a v0.1.0 -m "first deploy"`).
+`npx wrangler rollback` for the Worker (v1 code runs fine against the v2 tables; it ignores the new columns). State > Export in the app for the JSON, State > Import takes it back after snapshotting; the nightly copies sit in R2 `avelie-media/backups/` (DEPLOY.md section 15). `npm run export:remote` for the raw SQL dump. Tag every deployed tree (`git tag -a v0.2.0 -m "v2 deploy"`).

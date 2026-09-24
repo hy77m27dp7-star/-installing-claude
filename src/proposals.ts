@@ -8,19 +8,26 @@ import {
   auditStmt, dayKey, getCurrentState, getProposal, insertModelRunStmt, insertProposalStmt, listFacts, listProposals,
   listRecentStoryMessages, newId, nowIso, usageStmt,
 } from "./db";
-import { createFact, createHistory, createUnknown, putState } from "./state";
+import { createFact, createHistory, createUnknown, putState, updateFact } from "./state";
+import { createThread } from "./life";
 import { ApiHttpError } from "./errors";
 import { ProviderError } from "./types";
 import type {
-  ChatMessage, Env, MessageRow, ModelRunRow, ProposalKind, ProposalRow, RelationshipState, SceneState, Settings,
+  ChatMessage, Env, FactRow, MessageRow, ModelRunRow, ProposalKind, ProposalRow, RelationshipState, SceneState, Settings,
 } from "./types";
+import type { LifeThread } from "./life";
 
 export const PROPOSAL_KINDS: ProposalKind[] = [
-  "avelie_fact", "justin_fact", "relationship", "scene", "history", "private_language", "opinion_change", "unknown",
+  "avelie_fact", "justin_fact", "relationship", "scene", "history", "private_language", "opinion_change", "unknown", "life",
 ];
 const CONFIDENCES = ["low", "medium", "high"] as const;
 const MAX_PROPOSALS_PER_EXCHANGE = 12;
 const MAX_PROPOSAL_CHARS = 1000;
+// A payload is a small object of plain values; anything bigger is not a proposal.
+const MAX_PAYLOAD_CHARS = 4000;
+const LIFE_KINDS: ReadonlyArray<LifeThread["kind"]> = ["routine", "event", "person", "place", "arc"];
+const OPINION_PREFIX = "opinion:";
+const MAX_COOLING_OFF_HOURS = 24 * 14;
 
 export interface ParsedProposal {
   kind: ProposalKind;
@@ -28,14 +35,33 @@ export interface ParsedProposal {
   evidence: string;
   confidence: "low" | "medium" | "high";
   scope: string;
+  // v2: structured fields for life, relationship (mood, cooling_off_hours) and opinion_change (subject).
+  payload?: Record<string, unknown>;
 }
 
 function isKind(v: unknown): v is ProposalKind {
   return typeof v === "string" && (PROPOSAL_KINDS as string[]).includes(v);
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 function normText(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// The payload an element carried, when it is a plain object of reasonable size.
+function parsePayload(v: unknown): Record<string, unknown> | undefined {
+  if (!isPlainObject(v)) return undefined;
+  let json: string;
+  try {
+    json = JSON.stringify(v);
+  } catch {
+    return undefined;
+  }
+  if (json.length > MAX_PAYLOAD_CHARS) return undefined;
+  return JSON.parse(json) as Record<string, unknown>;
 }
 
 // ------------------------------------------------------------------ parsing (tolerant)
@@ -65,7 +91,10 @@ export function parseProposalJson(text: string): ParsedProposal[] {
     const evidence = typeof o.evidence === "string" ? o.evidence.trim().slice(0, MAX_PROPOSAL_CHARS) : "";
     const confidence = (CONFIDENCES as readonly string[]).includes(String(o.confidence)) ? (o.confidence as ParsedProposal["confidence"]) : "low";
     const scope = typeof o.scope === "string" && o.scope.trim() ? o.scope.trim().slice(0, 100) : "general";
-    out.push({ kind: o.kind, proposal, evidence, confidence, scope });
+    const parsed: ParsedProposal = { kind: o.kind, proposal, evidence, confidence, scope };
+    const payload = parsePayload(o.payload);
+    if (payload) parsed.payload = payload;
+    out.push(parsed);
     if (out.length >= MAX_PROPOSALS_PER_EXCHANGE) break;
   }
   return out;
@@ -73,9 +102,10 @@ export function parseProposalJson(text: string): ParsedProposal[] {
 
 // ------------------------------------------------------------------ extraction
 
-function exchangeText(rows: MessageRow[], userMessage: MessageRow, assistantMessage: MessageRow): string {
+// userMessage is null when she opened the conversation herself (SPEC_V2 section Q).
+function exchangeText(rows: MessageRow[], userMessage: MessageRow | null, assistantMessage: MessageRow): string {
   const list = rows.slice();
-  if (!list.some((m) => m.id === userMessage.id)) list.push(userMessage);
+  if (userMessage && !list.some((m) => m.id === userMessage.id)) list.push(userMessage);
   if (!list.some((m) => m.id === assistantMessage.id)) list.push(assistantMessage);
   return list.map((m) => `${m.role === "user" ? "User" : "Avelie"}: ${m.content}`).join("\n\n");
 }
@@ -106,7 +136,7 @@ export async function extractProposals(
   db: D1Database,
   settings: Settings,
   conversationId: string,
-  userMessage: MessageRow,
+  userMessage: MessageRow | null,
   assistantMessage: MessageRow,
 ): Promise<number> {
   const providerName = settings.proposalProvider;
@@ -193,7 +223,12 @@ export async function extractProposals(
       evidence: c.evidence || null,
       confidence: c.confidence,
       scope: c.scope,
-      payload_json: JSON.stringify({ user_message_id: userMessage.id, assistant_message_id: assistantMessage.id, raw: c }),
+      payload_json: JSON.stringify({
+        user_message_id: userMessage ? userMessage.id : null,
+        assistant_message_id: assistantMessage.id,
+        payload: c.payload ?? null,
+        raw: c,
+      }),
       status: "pending",
       decision_note: null,
       promoted_id: null,
@@ -234,6 +269,77 @@ function titleFrom(text: string): string {
   return t.length > 120 ? t.slice(0, 117) + "..." : t;
 }
 
+function str(v: unknown, max: number): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t ? t.slice(0, max) : null;
+}
+
+// The structured fields the extractor attached (payload_json.payload, or raw.payload from
+// a v2 row written before the copy at the top level existed). {} when there are none.
+export function proposalPayload(p: ProposalRow): Record<string, unknown> {
+  if (!p.payload_json) return {};
+  let outer: unknown;
+  try {
+    outer = JSON.parse(p.payload_json);
+  } catch {
+    return {};
+  }
+  if (!isPlainObject(outer)) return {};
+  if (isPlainObject(outer.payload)) return outer.payload;
+  if (isPlainObject(outer.raw) && isPlainObject((outer.raw as Record<string, unknown>).payload)) {
+    return (outer.raw as Record<string, unknown>).payload as Record<string, unknown>;
+  }
+  return {};
+}
+
+// "opinion: <topic>", normalised, so two proposals about the same thing meet the same subject.
+export function opinionSubject(payload: Record<string, unknown>, text: string): string {
+  const raw = str(payload.subject, 200) ?? str(payload.topic, 200) ?? "";
+  let topic = raw.toLowerCase().startsWith(OPINION_PREFIX) ? raw.slice(OPINION_PREFIX.length) : raw;
+  topic = topic.trim().replace(/\s+/g, " ");
+  if (!topic) topic = titleFrom(text).slice(0, 150);
+  return (OPINION_PREFIX + " " + topic).slice(0, 200);
+}
+
+function sameSubject(a: string | null, b: string): boolean {
+  return typeof a === "string" && normText(a) === normText(b);
+}
+
+// The life thread a "life" proposal describes: kind and title from the payload, the
+// proposal text as the title when the payload has none, the detail carried as given.
+function lifeInput(payload: Record<string, unknown>, text: string, source: string): Parameters<typeof createThread>[1] {
+  const kindRaw = str(payload.kind, 20);
+  const kind = kindRaw && (LIFE_KINDS as readonly string[]).includes(kindRaw.toLowerCase()) ? (kindRaw.toLowerCase() as LifeThread["kind"]) : "arc";
+  const title = str(payload.title, 300) ?? titleFrom(text).slice(0, 300);
+  const detail = str(payload.detail, 4000) ?? (title === text.trim() ? null : text.trim().slice(0, 4000));
+  let scheduleJson: string | null = null;
+  if (isPlainObject(payload.schedule_json)) {
+    scheduleJson = JSON.stringify(payload.schedule_json).slice(0, MAX_PAYLOAD_CHARS);
+  } else if (typeof payload.schedule_json === "string" && payload.schedule_json.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(payload.schedule_json);
+      if (isPlainObject(parsed)) scheduleJson = JSON.stringify(parsed).slice(0, MAX_PAYLOAD_CHARS);
+    } catch { /* an unreadable schedule is no schedule */ }
+  }
+  return { kind, title, detail, schedule_json: scheduleJson, relation: str(payload.relation, 200), source };
+}
+
+// mood and cooling_off_hours from a relationship payload (SPEC_V2 section J). A missing
+// field leaves the current value alone; cooling_off_hours 0 ends a cooling-off.
+function relationshipMood(payload: Record<string, unknown>, now: Date): { mood?: string; cooling_off_until?: string | null } {
+  const out: { mood?: string; cooling_off_until?: string | null } = {};
+  const mood = str(payload.mood, 200);
+  if (mood) out.mood = mood;
+  const hoursRaw = payload.cooling_off_hours;
+  const hours = typeof hoursRaw === "number" ? hoursRaw : typeof hoursRaw === "string" && hoursRaw.trim() ? Number(hoursRaw) : NaN;
+  if (Number.isFinite(hours)) {
+    if (hours <= 0) out.cooling_off_until = null;
+    else out.cooling_off_until = new Date(now.getTime() + Math.min(hours, MAX_COOLING_OFF_HOURS) * 3600_000).toISOString();
+  }
+  return out;
+}
+
 async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text: string, actor: string): Promise<string> {
   const source = `proposal ${p.id}`;
   switch (kind) {
@@ -246,14 +352,32 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
       return f.id;
     }
     case "opinion_change": {
-      const f = await createFact(db, { scope: "avelie", subject: "opinion change", fact: text, source, disclosed: true }, actor);
+      // One opinion per subject: a changed mind supersedes the old row (a new version in
+      // the same chain) instead of sitting beside it. No match: a new opinion.
+      const subject = opinionSubject(proposalPayload(p), text);
+      const existing: FactRow | undefined = (await listFacts(db, "avelie")).find((f) => sameSubject(f.subject, subject));
+      if (existing) {
+        // The chain keeps the subject it was opened with; only the opinion itself moves.
+        const f = await updateFact(db, existing.id, { fact: text, source, disclosed: true }, actor);
+        return f.id;
+      }
+      const f = await createFact(db, { scope: "avelie", subject, fact: text, source, disclosed: true }, actor);
       return f.id;
     }
     case "relationship": {
       const cur = await getCurrentState<RelationshipState>(db, "relationship");
-      const next: Record<string, unknown> = { ...cur.state, summary: text, frontier: appendText(cur.state.frontier, text, " | ") };
+      const next: Record<string, unknown> = {
+        ...cur.state,
+        summary: text,
+        frontier: appendText(cur.state.frontier, text, " | "),
+        ...relationshipMood(proposalPayload(p), new Date()),
+      };
       const r = await putState(db, "relationship", next, source, actor, "proposal");
       return `relationship:v${r.version}`;
+    }
+    case "life": {
+      const t = await createThread(db, lifeInput(proposalPayload(p), text, source), actor);
+      return t.id;
     }
     case "private_language": {
       const cur = await getCurrentState<RelationshipState>(db, "relationship");

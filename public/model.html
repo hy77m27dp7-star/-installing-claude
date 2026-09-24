@@ -4,9 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#070b14">
+<meta name="theme-color" content="#060a13">
 <title>Avelie Model</title>
-<link rel="icon" href="data:,">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body class="page-model">
@@ -17,6 +19,7 @@
     <a href="/state">State</a>
     <a href="/model">Model</a>
     <a href="/images">Images</a>
+    <a href="/timeline">Timeline</a>
   </nav>
 </header>
 
@@ -47,6 +50,63 @@
       </label>
       <label class="field">Max tokens
         <input type="number" name="maxTokens" min="64" max="4000" step="1" inputmode="numeric">
+      </label>
+    </div>
+
+    <h2 class="section-title">Timing</h2>
+    <div class="grid-form">
+      <label class="field">Reply delay
+        <select name="replyDelayMode">
+          <option value="instant">instant</option>
+          <option value="real">real</option>
+        </select>
+      </label>
+      <label class="field">Real delay max minutes
+        <input type="number" name="realDelayMaxMinutes" min="1" max="120" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Timezone
+        <input type="text" name="timezone" placeholder="America/New_York" maxlength="80">
+      </label>
+    </div>
+
+    <h2 class="section-title">Her first texts</h2>
+    <div class="grid-form">
+      <label class="field">Per day
+        <input type="number" name="herFirstTextsPerDay" min="0" max="10" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Quiet hours
+        <input type="text" name="herFirstQuietHours" placeholder="23:30-08:30" maxlength="20">
+      </label>
+      <div class="row">
+        <button type="button" class="btn" id="herFirstRun">Send one now</button>
+        <span class="chips" id="herfirst-status"></span>
+      </div>
+    </div>
+
+    <h2 class="section-title">Voice</h2>
+    <div class="grid-form">
+      <label class="field">Voice provider
+        <select name="voiceProvider">
+          <option value="workersai">workersai</option>
+          <option value="elevenlabs">elevenlabs</option>
+          <option value="off">off</option>
+        </select>
+      </label>
+      <label class="field">Voice mode
+        <select name="voiceMode">
+          <option value="off">off</option>
+          <option value="some">some</option>
+          <option value="all">all</option>
+        </select>
+      </label>
+      <label class="field">ElevenLabs voice id
+        <input type="text" name="elevenLabsVoiceId" placeholder="Voice id" maxlength="120">
+      </label>
+      <label class="field">Transcribe provider
+        <select name="transcribeProvider">
+          <option value="workersai">workersai</option>
+          <option value="openai">openai</option>
+        </select>
       </label>
     </div>
 
@@ -100,6 +160,7 @@
       <label class="field">Monthly cap USD
         <input type="number" name="monthlyCapUsd" min="0" step="any" inputmode="decimal">
       </label>
+      <label class="check"><input type="checkbox" name="driftCheckEnabled"> Weekly drift check</label>
     </div>
 
     <div class="row">
@@ -107,6 +168,57 @@
       <span class="chips" id="settings-status"></span>
     </div>
   </form>
+
+  <section class="card stack" id="pushBox">
+    <div class="row between">
+      <h2 class="section-title">Notifications</h2>
+      <span class="chips" id="push-status"></span>
+    </div>
+    <label class="switch" for="pushToggle">
+      <input type="checkbox" id="pushToggle">
+      <span class="track"></span>
+      <span class="switch-label">Her first texts</span>
+    </label>
+  </section>
+
+  <section class="card stack">
+    <div class="row between">
+      <h2 class="section-title">Drift</h2>
+      <div class="row">
+        <span class="chips" id="drift-status"></span>
+        <button type="button" class="btn small" id="driftRun">Run now</button>
+      </div>
+    </div>
+    <div id="driftList"></div>
+  </section>
+
+  <section class="card stack hidden" id="voiceprintBox">
+    <div class="row between">
+      <h2 class="section-title">Voiceprint</h2>
+      <div class="row">
+        <span class="chips" id="voiceprint-status"></span>
+        <button type="button" class="btn small" id="voiceprintRun">Run now</button>
+      </div>
+    </div>
+    <div class="row" id="voiceprintSparks"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Week</th>
+            <th class="num">Messages</th>
+            <th class="num">Mean</th>
+            <th class="num">Median</th>
+            <th class="num">Questions</th>
+            <th class="num">Bubbles</th>
+            <th class="num">First texts</th>
+            <th class="num">Flags</th>
+          </tr>
+        </thead>
+        <tbody id="voiceprintRows"></tbody>
+      </table>
+    </div>
+  </section>
 
   <section class="card stack">
     <div class="row between">

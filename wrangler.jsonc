@@ -51,5 +51,11 @@
   },
   "observability": {
     "enabled": true
+  },
+  // Cron (SPEC_V2 sections N, R, Y): 07:00 UTC daily backup to R2; Monday 13:00 UTC drift
+  // check (only when settings.driftCheckEnabled); every 20 minutes her-first-text tick
+  // (only when herFirstTextsPerDay > 0); Monday 14:00 UTC voiceprint. src/index.ts scheduled().
+  "triggers": {
+    "crons": ["0 7 * * *", "0 13 * * 1", "*/20 * * * *", "0 14 * * 1"]
   }
 }

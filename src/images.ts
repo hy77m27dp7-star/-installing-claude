@@ -19,10 +19,10 @@ import { safeErrorMessage } from "./providers/types";
 import { ProviderError } from "./types";
 import type { Env, ModelRunRow, Settings, VisualAssetRow } from "./types";
 
-// "[photo: ...]" anywhere in the text, on one line.
-const MARKER_RE = /\[photo:\s*([^\]\n]*)\]/gi;
-// What a line may be left with once its marker is gone and still count as empty.
-const MARKER_LEFTOVER_RE = /^[\s.,;:!?)]*$/;
+// The marker parser lives in markers.ts (with the song marker); re-exported here so the
+// v1 contract (chat.ts, the unit suite) keeps importing it from images.
+export { parsePhotoMarker } from "./markers";
+
 const CANDIDATE_PREFIX = "candidates/";
 const ASSETS_ORIGIN = "https://assets.local/";
 const MICRO = 1_000_000;
@@ -39,34 +39,6 @@ const REQUEST_STATUSES: ReadonlySet<string> = new Set<RequestStatus>(["pending",
 // is CPU the request does not have to spend twice. Keyed by file and stored hash, so a
 // changed registry row re-verifies.
 const masterCache = new Map<string, ArrayBuffer>();
-
-// ------------------------------------------------------------------ marker
-
-// The photo marker may sit anywhere in the text (models drift from "last line"). Every
-// marker is removed; the last one's description is the request. A line that held only a
-// marker (plus stray punctuation) disappears; one that also carried prose keeps the prose.
-export function parsePhotoMarker(text: string): { clean: string; description: string | null } {
-  let description: string | null = null;
-  const kept: string[] = [];
-
-  for (const line of text.split(/\r?\n/)) {
-    let had = false;
-    const stripped = line.replace(MARKER_RE, (_m, d: string) => {
-      had = true;
-      const t = d.trim();
-      if (t) description = t;
-      return "";
-    });
-    if (!had) {
-      kept.push(line);
-      continue;
-    }
-    if (MARKER_LEFTOVER_RE.test(stripped)) continue;
-    kept.push(stripped.replace(/[ \t]{2,}/g, " ").trimEnd());
-  }
-
-  return { clean: kept.join("\n").trimEnd(), description };
-}
 
 // ------------------------------------------------------------------ helpers
 
@@ -510,4 +482,143 @@ export async function serveMedia(env: Env, db: D1Database, id: string): Promise<
       "x-content-type-options": "nosniff",
     },
   });
+}
+
+// ------------------------------------------------------------------ regenerate (v2, SPEC_V2 section O)
+
+// Reject this candidate (its hash joins the blacklist, its bytes go) and ask for the same
+// picture again: a fresh request on the same message, through the same pipeline, held
+// open by the page exactly like the first one. Only a candidate can be regenerated; an
+// approved photo is canon and a request that has no picture yet is retried, not remade.
+export async function regenerateImage(env: Env, db: D1Database, settings: Settings, id: string, actor: string): Promise<VisualAssetRow> {
+  const row = await getAsset(db, id);
+  if (!row) throw new ApiHttpError(404, "not_found", "asset not found");
+  if (row.role !== "candidate" || row.approval_status !== "candidate") {
+    throw new ApiHttpError(409, "not_candidate", "only a candidate can be regenerated");
+  }
+  const description = (row.prompt ?? "").trim();
+  if (!description) throw new ApiHttpError(409, "no_description", "the candidate carries no description to regenerate from");
+  if (!row.conversation_id) throw new ApiHttpError(409, "no_conversation", "the candidate belongs to no conversation");
+
+  await decideImage(env, db, id, "reject", actor, "regenerate");
+  if (row.message_id) {
+    // The message lets go of the rejected row so a fresh request can open on it.
+    await db.prepare("UPDATE messages SET image_id = NULL, image_status = NULL WHERE id = ?1 AND image_id = ?2").bind(row.message_id, id).run();
+  }
+  return generateCandidate(env, db, settings, { conversationId: row.conversation_id, messageId: row.message_id, description, actor });
+}
+
+// ------------------------------------------------------------------ v2 media: voice notes, his photos, the library
+
+// Voice notes live at voice/<messageId>.mp3 (hers) and voice_in/<id>.<ext> (his), the
+// key on messages.audio_key; his photos at inbox/<id>/<n>.<ext>, listed in
+// messages.images_json; the owner's library at library/<id>.<ext>, one media_library row
+// each. All private, all no-store, all after the owner gate. A column or table that a
+// later migration adds answers 404 until it exists, never a crash.
+
+interface AudioRow { audio_key: string | null }
+interface InboxRow { images_json: string | null }
+interface LibraryRow { id: string; key: string | null; mime: string | null; status: string | null }
+export interface InboxImage { key: string; mime: string; width?: number | null; height?: number | null; bytes?: number | null }
+
+const MAX_INBOX_IMAGES = 10;
+
+async function firstOrNull<T>(stmt: D1PreparedStatement): Promise<T | null> {
+  try {
+    return await stmt.first<T>();
+  } catch {
+    return null;
+  }
+}
+
+// messages.images_json as an array of { key, mime, ... }; a bare list of keys and the
+// { images: [...] } wrapper are read too.
+export function parseInboxImages(json: string | null | undefined): InboxImage[] {
+  if (!json) return [];
+  let v: unknown;
+  try {
+    v = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  const list = Array.isArray(v) ? v : typeof v === "object" && v !== null && Array.isArray((v as { images?: unknown }).images) ? (v as { images: unknown[] }).images : [];
+  const out: InboxImage[] = [];
+  for (const item of list) {
+    if (typeof item === "string" && item) out.push({ key: item, mime: "" });
+    else if (typeof item === "object" && item !== null && typeof (item as InboxImage).key === "string") {
+      const i = item as InboxImage;
+      out.push({ key: i.key, mime: typeof i.mime === "string" ? i.mime : "", width: i.width ?? null, height: i.height ?? null, bytes: i.bytes ?? null });
+    }
+    if (out.length >= MAX_INBOX_IMAGES) break;
+  }
+  return out;
+}
+
+// "bytes=start-end" against a known size, or null for the whole object. A range that
+// cannot be satisfied is reported as such.
+function parseRange(header: string | null, size: number): { offset: number; length: number } | "unsatisfiable" | null {
+  if (!header) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m || (m[1] === "" && m[2] === "")) return null;
+  if (m[1] === "") {
+    const suffix = Number(m[2]);
+    if (!Number.isFinite(suffix) || suffix <= 0) return "unsatisfiable";
+    const length = Math.min(size, suffix);
+    return { offset: size - length, length };
+  }
+  const start = Number(m[1]);
+  const end = m[2] === "" ? size - 1 : Math.min(size - 1, Number(m[2]));
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= size || start > end) return "unsatisfiable";
+  return { offset: start, length: end - start + 1 };
+}
+
+// Streams one private object, honouring a Range header so audio and video can seek.
+async function streamObject(env: Env, key: string, contentType: string, range: string | null): Promise<Response> {
+  const head = await env.MEDIA.head(key);
+  if (!head) return notFound();
+  const type = contentType || head.httpMetadata?.contentType || "application/octet-stream";
+  const base: Record<string, string> = {
+    "content-type": type,
+    "cache-control": "private, no-store",
+    "content-disposition": "inline",
+    "x-content-type-options": "nosniff",
+    "accept-ranges": "bytes",
+  };
+  const r = parseRange(range, head.size);
+  if (r === "unsatisfiable") {
+    return new Response(null, { status: 416, headers: { ...base, "content-range": `bytes */${head.size}` } });
+  }
+  const obj = r ? await env.MEDIA.get(key, { range: r }) : await env.MEDIA.get(key);
+  if (!obj) return notFound();
+  if (r) {
+    return new Response(obj.body, {
+      status: 206,
+      headers: { ...base, "content-length": String(r.length), "content-range": `bytes ${r.offset}-${r.offset + r.length - 1}/${head.size}` },
+    });
+  }
+  return new Response(obj.body, { status: 200, headers: { ...base, "content-length": String(head.size) } });
+}
+
+export async function serveAudio(env: Env, db: D1Database, messageId: string, range: string | null = null): Promise<Response> {
+  if (!messageId || messageId.length > 80) return notFound();
+  const row = await firstOrNull<AudioRow>(db.prepare("SELECT audio_key FROM messages WHERE id = ?1").bind(messageId));
+  if (!row || !row.audio_key) return notFound();
+  return streamObject(env, row.audio_key, "", range);
+}
+
+export async function serveInbox(env: Env, db: D1Database, messageId: string, index: string, range: string | null = null): Promise<Response> {
+  if (!messageId || messageId.length > 80) return notFound();
+  const n = /^\d{1,2}$/.test(index) ? Number(index) : -1;
+  if (n < 0 || n >= MAX_INBOX_IMAGES) return notFound();
+  const row = await firstOrNull<InboxRow>(db.prepare("SELECT images_json FROM messages WHERE id = ?1").bind(messageId));
+  const img = parseInboxImages(row?.images_json)[n];
+  if (!img) return notFound();
+  return streamObject(env, img.key, img.mime, range);
+}
+
+export async function serveLibrary(env: Env, db: D1Database, id: string, range: string | null = null): Promise<Response> {
+  if (!id || id.length > 80) return notFound();
+  const row = await firstOrNull<LibraryRow>(db.prepare("SELECT id, key, mime, status FROM media_library WHERE id = ?1").bind(id));
+  if (!row || !row.key || row.status === "deleted") return notFound();
+  return streamObject(env, row.key, row.mime ?? "", range);
 }

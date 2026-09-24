@@ -4,9 +4,41 @@
 import { ProviderError } from "../types";
 import type { Env, GenerateRequest, GenerateResult, TextProvider } from "../types";
 import { approxTokens, safeErrorMessage } from "./types";
+import { dataUrl, imagesOf, isVisionModel, loadInboxImages, withoutImages } from "../vision";
 
 interface AiLike {
   run(model: string, inputs: Record<string, unknown>): Promise<unknown>;
+}
+
+type ChatPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type ChatParam = { role: string; content: string | ChatPart[] };
+
+// His photos (SPEC_V2 section T): a vision model gets them as image_url data-URL content
+// parts; any other model gets the text plus one plain line saying he sent a photo she
+// could not open, so she never pretends to have seen it.
+async function toParams(env: Env, model: string, messages: GenerateRequest["messages"]): Promise<ChatParam[]> {
+  const vision = isVisionModel(model);
+  const out: ChatParam[] = [];
+  for (const m of messages) {
+    const refs = m.role === "user" ? imagesOf(m) : [];
+    if (!refs.length) {
+      out.push({ role: m.role, content: m.content });
+      continue;
+    }
+    if (!vision) {
+      out.push({ role: m.role, content: withoutImages(m).content });
+      continue;
+    }
+    const blocks = await loadInboxImages(env, refs);
+    if (!blocks.length) {
+      out.push({ role: m.role, content: withoutImages(m).content });
+      continue;
+    }
+    const parts: ChatPart[] = [{ type: "text", text: m.content }];
+    for (const b of blocks) parts.push({ type: "image_url", image_url: { url: dataUrl(b) } });
+    out.push({ role: "user", content: parts });
+  }
+  return out;
 }
 
 interface ReadResult {
@@ -57,7 +89,7 @@ export const workersAiProvider: TextProvider = {
       throw new ProviderError("workersai", "config", "AI binding not available", 503, false);
     }
 
-    const messages = [{ role: "system", content: req.system }, ...req.messages.map((m) => ({ role: m.role, content: m.content }))];
+    const messages: ChatParam[] = [{ role: "system", content: req.system }, ...(await toParams(env, req.model, req.messages))];
 
     let out: unknown;
     try {

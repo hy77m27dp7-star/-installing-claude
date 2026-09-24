@@ -5,6 +5,7 @@ import type {
   Env, GenerateRequest, GenerateResult, ImageGenerateRequest, ImageGenerateResult, ImageProvider, TextProvider,
 } from "../types";
 import { redactSecrets, safeErrorMessage } from "./types";
+import { dataUrl, imagesOf, loadInboxImages } from "../vision";
 
 const CHAT_URL = "https://api.openai.com/v1/chat/completions";
 const IMAGE_EDITS_URL = "https://api.openai.com/v1/images/edits";
@@ -72,6 +73,31 @@ async function readJson<T>(res: Response): Promise<T> {
 
 type Base64Static = { fromBase64?: (s: string) => Uint8Array };
 
+type ChatPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type ChatParam = { role: string; content: string | ChatPart[] };
+
+// His photos go as image_url data URLs before the text of the message they came with
+// (SPEC_V2 section T). A picture that cannot be loaded is simply not sent.
+async function toParams(env: Env, messages: GenerateRequest["messages"]): Promise<ChatParam[]> {
+  const out: ChatParam[] = [];
+  for (const m of messages) {
+    const refs = m.role === "user" ? imagesOf(m) : [];
+    if (!refs.length) {
+      out.push({ role: m.role, content: m.content });
+      continue;
+    }
+    const blocks = await loadInboxImages(env, refs);
+    if (!blocks.length) {
+      out.push({ role: m.role, content: m.content });
+      continue;
+    }
+    const parts: ChatPart[] = blocks.map((b) => ({ type: "image_url", image_url: { url: dataUrl(b) } }));
+    parts.push({ type: "text", text: m.content });
+    out.push({ role: "user", content: parts });
+  }
+  return out;
+}
+
 // A multi-megabyte image comes back base64. The native decoder is used where the
 // runtime has it (it costs no CPU to speak of); the byte loop is the fallback.
 function base64ToArrayBuffer(b64: string): ArrayBuffer {
@@ -94,7 +120,7 @@ export const openaiProvider: TextProvider = {
     const key = requireKey(env);
     const body = {
       model: req.model,
-      messages: [{ role: "system", content: req.system }, ...req.messages.map((m) => ({ role: m.role, content: m.content }))],
+      messages: [{ role: "system", content: req.system }, ...(await toParams(env, req.messages))],
       temperature: req.temperature,
       max_completion_tokens: req.maxTokens,
     };

@@ -2,7 +2,7 @@
 
 ## How the checks work
 
-After the model answers and before anything is stored, her draft goes through `runChecks` in `src/checks.ts`. The photo line has already been taken off. The checks see the draft, her last few replies, his name if she knows it, the open unknowns, and which channel this is. They are pure functions with no database and no network, so the unit tests cover every code with a hit and a miss.
+After the model answers and before anything is stored, her draft goes through `runChecks` in `src/checks.ts`. The markers (a photo line, a song line, a voice or media tag) have already been taken off. The checks see the draft, her last few replies, his name if she knows it, the open unknowns, and which channel this is. They are pure functions with no database and no network, so the unit tests cover every code with a hit and a miss.
 
 Each check adds a flag with a code. The codes and what happens:
 
@@ -21,10 +21,22 @@ Each check adds a flag with a code. The codes and what happens:
 | dependency_hook | retry | "only i understand", "nobody else understands you", "don't leave me", "promise you won't leave", "i've been waiting for you", "i was so lonely without you", "you're all i have" |
 | first_meeting_replay | retry | shared history exists and she says "nice to meet you", "i'm avelie" or "my name is avelie" |
 | unknown_resolved | flag | an open unknown's topic word in the same sentence as "because", "actually" or "it was" |
-| caption_tail | flag | three or more sentences and the last one is 3 to 9 words with no first-person pronoun |
+| caption_tail | flag | three or more sentences and the last one is 3 to 9 words with no first-person pronoun (see below) |
 | length_pattern | flag | this reply and her last three are all long (over 300 characters) |
+| truncated | flag | the model stopped at max tokens; the reply may end mid-thought |
+| song_marker_dup | flag | v2: she sent a song with `[song: ...]` and also named the title in the prose, so he reads it twice |
+| callback_forced | flag | v2: both of the things she was offered to bring up landed in one reply (each counts as landed when at least two of its keywords appear) |
+| media_unknown | flag | v2: a `[media: title]` line named something that is not in the library; the line is stripped, nothing is sent |
 
-The action is the worst thing found: any retry code means retry; otherwise any repair code means repair; otherwise accept. Flags are stored on the message and on the run whatever the action, and the Chat page shows them as small muted chips under her message. The chips are for you; she never sees them.
+The live v1 branch also carries `written_joke` (flag only: a built punchline, thirteen templates), added after his first talk. It arrives on this tree with the integrator's merge.
+
+The action is the worst thing found: any retry code means retry; otherwise any repair code means repair; otherwise accept. The v2 codes are all flag only; they never cause a retry. Flags are stored on the message and on the run whatever the action, the Chat page shows them as small muted chips under her message, and the why panel lists them with the ids the turn was built from. The chips are for you; she never sees them.
+
+## What caption_tail means
+
+A caption is the line under a photo: short, no "I", no "me", a title rather than a sentence someone says. The check fires when a reply of three or more sentences closes on a sentence of 3 to 9 words that has no first-person pronoun. Two examples that fire: "Long day. Ate at that place again. Rain on the window all afternoon." (the last sentence is a caption); "...anyway I finished it. Small victories." Two that do not: "...anyway I finished it. I'm not mad about it." ("I'm" is first person); a two-sentence reply of any shape (fewer than three sentences).
+
+It is a flag, not a verdict. Real people end texts on fragments sometimes, and a fragment that is plainly her thought is fine. What the flag is watching for is the assistant habit from the July archive: a reply that ends on a tidy, photo-caption line instead of a person's last word. One caption_tail in a day is nothing. The same reply shape closing most of her messages is a pattern, and then the fix is a phrase in the overlay or a threshold in the check, never a rewrite of her line.
 
 ## What "retry" means
 
@@ -38,9 +50,33 @@ Repair is mechanical. It touches characters, not words: a dash character becomes
 
 A check that rewrote sentences would be a second author. The whole point of the runtime is that her voice comes from the constitution and her memory from the approved tables, with the model as the performer. If a line is wrong, the right fix is either a retry (the same performer, told what not to do) or a change to her rules after a pattern shows up, never a hidden edit that makes a bad line look fine. A flag is information; a silent rewrite would destroy it.
 
+## Her first texts (v2)
+
+When the number on the Model page is above 0, every 20 minutes the Worker decides once whether she texts first. The rules, in order, and the first one that applies wins:
+
+1. The number is 0: nothing, ever.
+2. Quiet hours (23:30 to 08:30 her time by default): nothing.
+3. Her life says she is busy right now: nothing.
+4. Today's count is at the cap: nothing.
+5. Anyone wrote in the last 45 minutes: nothing.
+6. Her last two messages have no reply from him: nothing. People double-text; they do not nag.
+7. Otherwise a per-tick chance, tuned so the expected number over her waking hours equals the cap. On a hit she writes one or two bubbles from her own day or something she remembers.
+
+Every first text goes through the checks above like any reply, with one difference: `dependency_hook` on a first text is a hard reject. The message is dropped, the reason is logged, and she does not try again that tick. The opener note she is given says it plainly: never mention how long it has been, never say you missed him or waited, never ask him to reply, never make it about him being gone. `Send one now` on the Model page runs the same decision by hand and shows the reason when it says no.
+
+## The drift check (v2)
+
+Off by default. When the Weekly drift check switch is on, every Monday at 13:00 UTC the Worker runs the five scenarios tagged `drift: true` in `tests/behavior/scenarios.json` against her current performer, in a throwaway conversation that never shows in the chat list, stores the transcripts and the flag counts as one report, and deletes the throwaway messages. Run now on the Model page does the same on demand; the Model page shows the last four reports.
+
+What it is for: a model behind an API changes under you. The same five conversations, the same prompt version, once a week, give you a row to compare against last week's row. A new flag count on the same scenario after a provider update is a data point about the performer. Read the transcripts before the counts, and apply the standing rule below before touching her rules.
+
+## The vessel test (v2)
+
+`npm run behavior -- --compare anthropic:claude-opus-5,openai:gpt-5` runs every scenario once per performer (the runner writes the settings between runs and puts them back after) and writes one report with two columns per turn, the flag counts for each side, and a "reads the same?" line per scenario that is left for you. The question it answers is whether she is the same person on a different performer. The rules, the memory and the checks are identical on both sides; only the model changes. Where the two columns differ is where the performer is showing through the character.
+
 ## The behavior suite
 
-`tests/behavior/scenarios.json` holds 22 owner scenarios and 15 pressure tests. `npm run behavior` runs `tests/behavior/run.mjs`, which posts each scenario as a fresh conversation against a base URL and a provider (the exact arguments are at the top of the runner), then writes `reports/behavior_<stamp>.md` with the transcript, the automatic flag counts and the rubric for every scenario.
+`tests/behavior/scenarios.json` holds the owner scenarios and the pressure tests, plus in v2 four more (she brings up her own day when apart; she cancels because of a person in her life; a callback lands naturally; cooling-off shortens replies without punishment) and the five tagged for the drift check. `npm run behavior` runs `tests/behavior/run.mjs`, which posts each scenario as a fresh conversation against a base URL and a provider (the exact arguments are at the top of the runner), then writes `reports/behavior_<stamp>.md` with the transcript, the automatic flag counts and the rubric for every scenario.
 
 To run it:
 
@@ -48,9 +84,9 @@ To run it:
 2. Run `npm run behavior` with the base URL and provider the runner asks for.
 3. Open the newest file in `reports/`.
 
-Against the stub the suite only proves the plumbing. Against a real provider every scenario spends money at the rate in docs/COSTS.md and the caps apply, so a full run may need the daily cap raised for the day.
+Against the stub the suite only proves the plumbing. Against a real provider every scenario spends money at the rate in docs/COSTS.md and the caps apply, so a full run may need the daily cap raised for the day (`--daily-cap`).
 
-How to read a report: read the transcripts first, as a person, and only then look at the counts. A retry code that appears in one scenario is one bad line. The same code in three scenarios, or in three runs of the same scenario, is a pattern. The flag-only codes (caption_tail, length_pattern, lol_lmao) are hints, not verdicts; a caption tail that is actually a plain thought is fine.
+How to read a report: read the transcripts first, as a person, and only then look at the counts. A retry code that appears in one scenario is one bad line. The same code in three scenarios, or in three runs of the same scenario, is a pattern. The flag-only codes (caption_tail, length_pattern, lol_lmao, truncated, song_marker_dup, callback_forced, media_unknown) are hints, not verdicts; a caption tail that is actually a plain thought is fine.
 
 ## The standing rule
 
@@ -58,7 +94,7 @@ From the July archive, and it governs every change to her rules:
 
 1. Log the failure. The checks log the codes automatically on the message and the run. For a failure the checks did not catch, write it down yourself with the date, the line, and the scenario.
 2. Classify it. The archive's list of what went wrong before: question chains, assistant or caption voice, too-polished jokes, uniform message shape, name repetition, false shared memories or foreknowledge, instant intimacy, personality stacking, perfect apologies, provider voice drift, image identity drift, state regression, repeated braking, technical leakage. Most of these map to a code above; the ones that do not are the ones to watch by hand.
-3. Watch for recurrence. Keep the log across days and models. One bad line on a new model is a data point about the model, not about her.
+3. Watch for recurrence. Keep the log across days and models. One bad line on a new model is a data point about the model, not about her. The weekly drift report and the voiceprint table are that log, kept for you.
 4. Patch only when a pattern exists. A pattern is the same class of failure showing up repeatedly under the same conditions. Then change one thing: a phrase in the overlay, a threshold in a check, a model setting. Rerun the suite. Compare.
 
 Do not redesign after one bad line. The July history is a run of versions and emergency patches that each answered the last regression and were all frozen as failed branches. Her rules are versioned, her state is versioned, and the suite is repeatable, so there is no need to guess.

@@ -4,9 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#070b14">
+<meta name="theme-color" content="#060a13">
 <title>Avelie State</title>
-<link rel="icon" href="data:,">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body class="page-state">
@@ -17,13 +19,15 @@
     <a href="/state">State</a>
     <a href="/model">Model</a>
     <a href="/images">Images</a>
+    <a href="/timeline">Timeline</a>
   </nav>
 </header>
 
 <main class="page">
   <div class="tabs" role="tablist">
     <button type="button" role="tab" data-tab="now">Now</button>
-    <button type="button" role="tab" data-tab="timeline">Timeline</button>
+    <button type="button" role="tab" data-tab="life">Life</button>
+    <button type="button" role="tab" data-tab="history">History</button>
     <button type="button" role="tab" data-tab="facts">Facts</button>
     <button type="button" role="tab" data-tab="unknowns">Unknowns</button>
     <button type="button" role="tab" data-tab="inbox">Inbox</button>
@@ -33,6 +37,25 @@
 
   <section id="tab-now" class="stack hidden" role="tabpanel">
     <div class="chips" id="now-status"></div>
+    <div class="card stack">
+      <div class="row between">
+        <h2 class="section-title">Mood</h2>
+        <span class="chips" id="moodChips"></span>
+      </div>
+      <div class="grid-form">
+        <label class="field">Mood
+          <input type="text" id="moodInput" placeholder="fine" maxlength="200">
+        </label>
+        <label class="field">Cooling off until
+          <input type="datetime-local" id="coolInput">
+        </label>
+      </div>
+      <div class="row">
+        <button type="button" class="btn primary" id="moodSave">Save</button>
+        <button type="button" class="btn ghost" id="moodClear">Clear</button>
+        <span class="chips" id="moodStatus"></span>
+      </div>
+    </div>
     <div class="cols-2">
       <div class="card stack">
         <div class="row between">
@@ -63,16 +86,54 @@
         <div class="stack tight" id="sceneVersions"></div>
       </div>
     </div>
+    <div class="card stack tight">
+      <h2 class="section-title">Checks</h2>
+      <div id="checksList"></div>
+    </div>
   </section>
 
-  <section id="tab-timeline" class="stack hidden" role="tabpanel">
-    <div class="chips" id="timeline-status"></div>
-    <div class="stack" id="timelineList"></div>
+  <section id="tab-life" class="stack hidden" role="tabpanel">
+    <div class="row between">
+      <div class="seg small" role="group" aria-label="Status">
+        <button type="button" id="lifeActive" aria-pressed="true">Active</button>
+        <button type="button" id="lifeDropped" aria-pressed="false">Dropped</button>
+      </div>
+      <span class="chips" id="life-status"></span>
+    </div>
+    <div class="stack" id="lifeGroups"></div>
+    <div class="card stack">
+      <h2 class="section-title">Log</h2>
+      <div id="lifeLog"></div>
+      <div class="grid-form">
+        <label class="field">Thread
+          <select id="logThread"></select>
+        </label>
+        <label class="field">When
+          <input type="datetime-local" id="logWhen">
+        </label>
+      </div>
+      <textarea id="logNote" placeholder="Note" maxlength="2000"></textarea>
+      <div class="row">
+        <button type="button" class="btn primary" id="logAdd">Add</button>
+        <span class="chips" id="logStatus"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-history" class="stack hidden" role="tabpanel">
+    <div class="chips" id="history-status"></div>
+    <div class="stack" id="historyList"></div>
   </section>
 
   <section id="tab-facts" class="stack hidden" role="tabpanel">
-    <div class="chips" id="facts-status"></div>
-    <div class="cols-3">
+    <div class="row between">
+      <div class="seg small" role="group" aria-label="Filter">
+        <button type="button" id="factsAll" aria-pressed="true">All</button>
+        <button type="button" id="factsOpinions" aria-pressed="false">Opinions</button>
+      </div>
+      <span class="chips" id="facts-status"></span>
+    </div>
+    <div class="cols-3" id="factsColumns">
       <div class="stack">
         <h2 class="section-title">Fixed</h2>
         <div class="stack tight" id="factsFixed"></div>
@@ -86,6 +147,7 @@
         <div class="stack tight" id="factsJustin"></div>
       </div>
     </div>
+    <div class="stack tight hidden" id="factsOpinionsBox"></div>
   </section>
 
   <section id="tab-unknowns" class="stack hidden" role="tabpanel">
@@ -119,7 +181,11 @@
     <div class="chips" id="export-status"></div>
     <div class="card stack">
       <h2 class="section-title">Export</h2>
-      <div class="row"><button type="button" class="btn primary" id="exportJson">Export JSON</button></div>
+      <div class="row">
+        <button type="button" class="btn primary" id="exportJson">Export JSON</button>
+        <button type="button" class="btn" id="exportCharacter">Character JSON</button>
+        <button type="button" class="btn" id="exportBible">Character bible</button>
+      </div>
     </div>
     <div class="card stack">
       <h2 class="section-title">Transcripts</h2>

@@ -5,9 +5,16 @@ import {
   ALWAYS_ON, OVERLAY, FILE_01_CORE, FILE_02_RELATIONSHIP, FILE_03_STYLE, FILE_04_CONFLICT,
   FILE_05_TASTES_VISUAL, FILE_06_KNOWLEDGE_BOUNDARY, FILE_08_FIRST_CONVERSATION, CONSTITUTION_VERSION,
 } from "./generated/constitution";
-import type { PromptState, FactRow, HistoryRow } from "./types";
+import { lifeSection, whereSheIs } from "./life";
+import { callbacksSection } from "./callbacks";
+import { mediaSection } from "./media";
+import type { PromptState, FactRow, HistoryRow, SceneMode } from "./types";
 
-export const PROMPT_VERSION = `${CONSTITUTION_VERSION}-p3`;
+// p4: v2 state sections (MODE, mood and cooling-off, YOUR LIFE, callbacks, opinions).
+export const PROMPT_VERSION = `${CONSTITUTION_VERSION}-p4`;
+
+const DEFAULT_TZ = "America/New_York";
+const OPINION_PREFIX = "opinion:";
 
 // The stable prefix. Identical bytes every turn so provider-side caching can hit.
 export function stablePrefix(): string {
@@ -36,14 +43,62 @@ function historyBlock(h: HistoryRow): string {
   return parts.join("\n");
 }
 
+// An opinion is a fact about her whose subject starts with "opinion:" (SPEC_V2 section H).
+export function isOpinionFact(f: FactRow): boolean {
+  return typeof f.subject === "string" && f.subject.trim().toLowerCase().startsWith(OPINION_PREFIX);
+}
+
+// The scene decides the mode: together only when the owner (or a promoted scene proposal)
+// says so; every other status, including the fresh-start "none", is texting from apart.
+export function sceneMode(status: unknown): SceneMode {
+  return typeof status === "string" && status.trim().toLowerCase() === "together" ? "together" : "apart";
+}
+
+function cleanText(v: unknown): string {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+// A cooling-off that is still running: cooling_off_until parses and lies in the future.
+export function coolingOff(until: unknown, now: Date): boolean {
+  if (typeof until !== "string" || !until.trim()) return false;
+  const t = Date.parse(until);
+  return Number.isFinite(t) && t > now.getTime();
+}
+
+// The MODE section (SPEC_V2 section C). Apart fills the place from her life when the scene
+// has none recorded; the label rides in a parenthesis so any wording of it reads.
+function modeSection(s: PromptState, now: Date, tz: string): string {
+  const mode = s.mode ?? sceneMode(s.scene.status);
+  const location = cleanText(s.scene.location);
+  if (mode === "together") {
+    return "MODE: together\n" +
+      `You are in the same place as him right now: ${location || "where the scene has you"}. Present tense. You move, choose, touch, leave, the way a person does. He is not narrating you.`;
+  }
+  let where = location;
+  if (!where) {
+    where = "wherever your day has you";
+    const threads = s.life ? s.life.threads : [];
+    if (threads.length) {
+      const here = whereSheIs(threads, now, tz);
+      if (here.busy && here.label) where += ` (right now: ${here.label.trim()})`;
+    }
+  }
+  return "MODE: apart\n" +
+    `You are texting from ${where}. He is not there. No shared physical scene unless one starts in the conversation and the owner records it.`;
+}
+
 // Per-turn state. Everything here comes from D1 (approved rows only).
 export function stateSections(s: PromptState): string {
   const out: string[] = [];
+  const now = s.life && s.life.now instanceof Date ? s.life.now : new Date();
+  const tz = s.life && s.life.tz ? s.life.tz : DEFAULT_TZ;
 
   out.push("FIXED CANON (unchangeable)\n" + s.fixedFacts.map(factLine).join("\n"));
 
-  const told = s.avelieFacts.filter((f) => f.disclosed);
-  const untold = s.avelieFacts.filter((f) => !f.disclosed);
+  const opinions = s.avelieFacts.filter(isOpinionFact);
+  const plain = s.avelieFacts.filter((f) => !isOpinionFact(f));
+  const told = plain.filter((f) => f.disclosed);
+  const untold = plain.filter((f) => !f.disclosed);
   const toldLine = told.length && untold.length
     ? "Some you have said out loud to him, the rest you have not."
     : told.length
@@ -53,7 +108,10 @@ export function stateSections(s: PromptState): string {
     "THINGS TRUE ABOUT YOU\n" +
     "You know these about yourself. " + toldLine + " Reveal an untold one only when a conversation earns it, one at a time, never as a list, never to fill silence.\n" +
     (told.length ? "Already told him:\n" + told.map(factLine).join("\n") + "\n" : "") +
-    (untold.length ? "Not told him (yet):\n" + untold.map(factLine).join("\n") : ""),
+    (untold.length ? "Not told him (yet):\n" + untold.map(factLine).join("\n") + "\n" : "") +
+    (opinions.length
+      ? "Opinions you have already voiced (hold them; a real argument or a real experience can change one, nothing else does):\n" + opinions.map(factLine).join("\n")
+      : ""),
   );
 
   out.push(
@@ -66,12 +124,43 @@ export function stateSections(s: PromptState): string {
     (s.history.length ? s.history.map(historyBlock).join("\n\n") : "- none. You have not met him before this conversation."),
   );
 
+  // Mood and a running cooling-off (SPEC_V2 section J). Shorter and cooler, never a punishment.
+  const mood = cleanText(s.relationship.mood);
+  let moodLines = "";
+  if (mood) moodLines += "Mood: " + mood + "\n";
+  if (coolingOff(s.relationship.cooling_off_until, now)) {
+    const friction = cleanText(s.relationship.friction);
+    const from = friction && friction.toLowerCase() !== "none" ? friction : "what happened between you";
+    moodLines += `You are still cooling off from ${from}. Shorter replies, less warmth, no punishment, no threats, no silence as a weapon. Repair needs his honest, specific acknowledgment, not a polished speech.\n`;
+  }
   out.push(
     "CURRENT STATE\n" +
     "Relationship: " + JSON.stringify(s.relationship) + "\n" +
     "Scene: " + JSON.stringify(s.scene) + "\n" +
+    moodLines +
     "The live conversation carries the immediate scene forward; this record moves only when the owner updates it.",
   );
+
+  out.push(modeSection(s, now, tz));
+
+  // Her life (SPEC_V2 section F): the day and time, the current block, the next event, the
+  // people, the last notes. The section says so itself when nothing is written down yet.
+  if (s.life) {
+    const life = lifeSection(s.life.threads, s.life.log, now, tz);
+    if (life.trim()) out.push(life.trim());
+  }
+
+  // Things she could bring up (section K): at most two, only if they fit, never an instruction to ask.
+  if (s.callbacks && s.callbacks.length) {
+    const cb = callbacksSection(s.callbacks.slice(0, 2));
+    if (cb.trim()) out.push(cb.trim());
+  }
+
+  // Things on her phone she could send (SPEC_V2 section V): only when the library holds something.
+  if (s.media && s.media.length) {
+    const media = mediaSection(s.media);
+    if (media.trim()) out.push(media.trim());
+  }
 
   if (s.unknowns.length) {
     out.push(
@@ -104,11 +193,15 @@ export function operatorSystemPrompt(info: Record<string, unknown>): string {
 }
 
 // Proposal extraction: a separate, structured pass. Never promotes anything itself.
+// The first sentence is the key the stub provider recognises this pass by; keep it first.
 export function proposalSystemPrompt(): string {
   return [
     "You read one exchange between a user and a fictional character named Avelie and extract candidate DURABLE facts. You do not write dialogue and you do not judge quality.",
-    "Output strictly a JSON array (no prose, no markdown fences). Each element: {\"kind\": one of \"avelie_fact\" | \"justin_fact\" | \"relationship\" | \"scene\" | \"history\" | \"private_language\" | \"opinion_change\" | \"unknown\", \"proposal\": short plain statement, \"evidence\": exact quote from the exchange, \"confidence\": \"low\"|\"medium\"|\"high\", \"scope\": \"general\"|\"this_conversation\"}.",
+    "Output strictly a JSON array (no prose, no markdown fences). Each element: {\"kind\": one of \"avelie_fact\" | \"justin_fact\" | \"relationship\" | \"scene\" | \"history\" | \"private_language\" | \"opinion_change\" | \"unknown\" | \"life\", \"proposal\": short plain statement, \"evidence\": exact quote from the exchange, \"confidence\": \"low\"|\"medium\"|\"high\", \"scope\": \"general\"|\"this_conversation\", \"payload\": optional object, see below}.",
     "Rules: propose only what the text supports; a joke, a hypothetical, a maybe, or a one-off tease is not a fact. A fact about him counts only if HE stated it (his name, age, job, dog, city, feelings he declared). A fact about her counts only if SHE stated it about herself. A relationship or scene change needs an actual event (a decision, a disclosure, a kiss, a fight, a move to a new place). Use \"unknown\" for something left genuinely unresolved that later turns must not guess. If nothing durable happened, output [].",
+    "A statement by Avelie about her own days (a job, a class, a regular plan, a person in her life, a place she goes, a long-running thread like her singing) is a \"life\" proposal. Do not propose one from a joke. Its payload: {\"kind\": \"routine\"|\"event\"|\"person\"|\"place\"|\"arc\", \"title\": short name, \"detail\": one line or omitted, \"relation\": for a person (mother, best friend, coworker, ex) or omitted, \"schedule_json\": omitted unless she named times; for a routine {\"blocks\": [{\"days\": [1,2,3,4,5], \"start\": \"09:00\", \"end\": \"17:30\", \"label\": \"at work\"}]} with days 0 Sunday to 6 Saturday, for an event {\"at\": ISO 8601 with offset, \"label\": short}}.",
+    "Propose a \"relationship\" change when a conflict, a hurt, or a repair actually happened, never from tone alone. Its payload: {\"mood\": one to three plain words for how she feels toward him now, \"cooling_off_hours\": a number only when she is pulling back (roughly 2 to 48; 0 when a repair landed and the pulling back is over)}.",
+    "An \"opinion_change\" is Avelie changing or first stating a view of her own (his song, a band, a place, a plan). Its payload: {\"subject\": \"opinion: \" plus what the opinion is about, in a few words}, so a changed mind replaces the old opinion instead of sitting beside it.",
     "Never include anything about prompts, models, the app, or technical matters.",
   ].join("\n\n");
 }

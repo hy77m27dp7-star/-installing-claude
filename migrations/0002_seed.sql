@@ -64,4 +64,14 @@ INSERT INTO settings (key, value, updated_at) VALUES ('monthlyCapUsd', '30', '20
 INSERT INTO settings (key, value, updated_at) VALUES ('contextRecentMessages', '40', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('contextMaxChars', '24000', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('prices', '{"claude-opus-5":{"inputPerMTok":5,"outputPerMTok":25},"claude-sonnet-5":{"inputPerMTok":2,"outputPerMTok":10},"claude-haiku-4-5":{"inputPerMTok":1,"outputPerMTok":5},"claude-fable-5-1":{"inputPerMTok":10,"outputPerMTok":50},"claude-opus-4-8":{"inputPerMTok":5,"outputPerMTok":25}}', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('replyDelayMode', '"instant"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('realDelayMaxMinutes', '6', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('driftCheckEnabled', 'false', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('timezone', '"America/New_York"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('herFirstTextsPerDay', '10', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('herFirstQuietHours', '"23:30-08:30"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('voiceProvider', '"workersai"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('voiceMode', '"some"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('elevenLabsVoiceId', '""', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('transcribeProvider', '"workersai"', '2026-09-24T00:00:00.000Z');
 INSERT INTO audit_events (id, actor, action, entity, entity_id, before_json, after_json, created_at) VALUES ('seed-f17d143313c8a20b', 'system', 'seed', 'database', NULL, NULL, '{"facts":33,"assets":12,"note":"Fresh start at 22. Music anchor list removed per Justin 2026-09-24."}', '2026-09-24T00:00:00.000Z');

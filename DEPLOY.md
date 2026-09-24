@@ -5,12 +5,13 @@ This file is for a Claude Code session running ON JUSTIN'S MAC (a local session 
 ## What already happened (do not redo, do not re-verify)
 
 - The code: repository hy77m27dp7-star/-installing-claude, branch claude/modest-dijkstra-ju73pw. Built and tested in the cloud on 2026-09-24.
-- D1 database `avelie` exists, id 2c14ef65-a599-414d-b0d1-3f71b27c377a, already in wrangler.jsonc. Migrations 0001_init.sql and 0002_seed.sql are ALREADY applied to it (the seed is her fresh start at 22: strangers, no facts about Justin). Migration 0003_messages_seq_unique.sql is NOT yet applied: run `npm run db:remote` once, before the first deploy (step 6), and again whenever a newer migration file appears. A migration that was already applied is never applied twice, so the command is safe to repeat.
+- D1 database `avelie` exists, id 2c14ef65-a599-414d-b0d1-3f71b27c377a, already in wrangler.jsonc. Migrations 0001_init.sql, 0002_seed.sql and 0003_messages_seq_unique.sql are ALREADY applied to it (the seed is her fresh start at 22: strangers, no facts about Justin; 0003 went on with the first Mac deploy on 2026-09-24). The v2 files 0004_life.sql, 0004b_push.sql and 0004c_voiceprint.sql are NOT yet applied: section 13 does that with `npm run db:remote` before the v2 deploy. A migration that was already applied is never applied twice, so the command is safe to repeat.
 - The seed (0002) can never be re-applied: `wrangler d1 migrations apply` records each file by name and skips it forever after. `npm test` rebuilds 0002_seed.sql locally, but a change to canon/seed/*.json only reaches the live database through a NEW migration file (0003 or later) with the UPDATE statements, followed by `npm run db:remote`.
 - R2 bucket `avelie-media` exists.
 - Hostname: avelie.bladepharoh.com (Justin approved it 2026-09-24). wrangler.jsonc attaches it as a Worker custom domain on deploy.
 - Justin lifted the "never touch Cloudflare Access" rule for THIS app only, in his words on 2026-09-24: "I lift the Access rule for this app". Create and edit the Access application named Avelie and nothing else in Access.
 - Justin already said go to the deploy itself, several times, on 2026-09-24 ("deploy Avelie", "you do the cloudflare for me"). Still show the before/after list once (step 6) and take one word from him before the first deploy, because it creates DNS and an Access door.
+- v1 IS LIVE since 2026-09-24 ~4:04pm EDT (Worker `avelie`, custom domain, Access application "Avelie", both secrets set, proof curls passed). Sections 1 to 9 are history now; a session that arrives for v2 starts at section 13.
 
 ## 0. If a wrangler or git command is blocked by the app's permission mode
 
@@ -110,16 +111,17 @@ Open https://avelie.bladepharoh.com/model.html in his Chrome (he logs in with th
 
 Tell Justin: "Open https://avelie.bladepharoh.com in your browser. Type your email. Type the code from your inbox. Say hello to her." Everything after that is theirs.
 
-## 10. Later redeploys (the cloud session keeps improving her)
+## 10. Later redeploys
 
 ```
 cd ~/Documents/ClaudeCode/2026-09-24_avelie
 git pull
 ls migrations
+npm run db:remote
 npm run deploy
 ```
 
-If `ls migrations` shows a file newer than 0002 (0003_..., 0004_...), run `npm run db:remote` BEFORE `npm run deploy`. Secrets and the Access door survive redeploys; never redo steps 2 to 4.
+`npm run db:remote` applies any migration file the live database has not seen yet (today: the three 0004 files of v2) and skips the rest; run it every time, before `npm run deploy`. Secrets and the Access door survive redeploys; never redo steps 2 to 4. Section 13 is the v2 version of this step with its checks.
 
 ## 11. Backups and rollback
 
@@ -135,8 +137,108 @@ If `ls migrations` shows a file newer than 0002 (0003_..., 0004_...), run `npm r
 - Commit and push HQ. Refresh the Google Drive "Claude HQ STATE" doc if the update-hq skill is present.
 - Report to Justin in one short paragraph: what is live, what is set, what is not.
 
+## 13. v2: pull, migrate, deploy (one round, one "go")
+
+v2 adds three migration files, four cron jobs and new pages. The Worker name, the domain, the Access door and the two secrets do not change. Before/after for his one word:
+
+Before: v1 live (Worker avelie, the four pages, no cron jobs, tables through 0003).
+After: the same Worker with the v2 code, new tables (her life, message context, drift reports, first-text counts, push subscriptions, media library, voiceprints) and new columns on messages, four cron triggers on the Worker, the Timeline page, the phone shell. Nothing in the account outside the Worker and its database changes. No row that exists today is touched: the new columns start empty and her life starts empty on purpose.
+
+Then, in order:
+
+```
+cd ~/Documents/ClaudeCode/2026-09-24_avelie
+git pull
+ls migrations
+npm test
+npm run test:integration
+npm run db:remote
+npm run deploy
+```
+
+- `ls migrations` must show 0004_life.sql, 0004b_push.sql and 0004c_voiceprint.sql.
+- `npm test` and `npm run test:integration` must pass. If either fails, stop and show Justin the failing lines; do not deploy a failing build.
+- `npm run db:remote` prints the three 0004 files as applied (and skips 0001 to 0003). Run it BEFORE the deploy: the new code reads the new tables on its first request.
+- `npm run deploy` runs `npm test` again and then `wrangler deploy`. The output must list the custom domain avelie.bladepharoh.com and four cron triggers: `0 7 * * *`, `0 13 * * 1`, `*/20 * * * *`, `0 14 * * 1`. They come from `triggers.crons` in wrangler.jsonc and deploy with the Worker; there is nothing to click. If the output shows `workers.dev` as enabled, stop: wrangler.jsonc has `"workers_dev": false` and must stay so.
+
+Proof, the same two curls as section 7 plus one: `curl -sI https://avelie.bladepharoh.com/timeline.html | head -3` must be `302` to still-leaf-20a0.cloudflareaccess.com, never `200`.
+
+To see the crons in the dashboard: Workers & Pages > avelie > Settings > Triggers > Cron Triggers (four rows). To roll back: `npx wrangler rollback` (the previous code runs fine against the new tables; the new columns are ignored).
+
+## 14. Optional secrets (each one only if he wants the feature)
+
+Every one of these is optional. Without it the feature stays off and the app says so in its log; nothing breaks.
+
+ElevenLabs, for her voice notes in a chosen voice (the default voice needs no key: Cloudflare's own model through the AI binding):
+1. In his Chrome he opens https://elevenlabs.io, signs in, opens his profile's API keys, creates one named `avelie`, clicks copy, and says "copied".
+2. Run `pbpaste | npx wrangler secret put ELEVENLABS_API_KEY`, then `printf '' | pbcopy`.
+3. On the Model page: Voice provider `elevenlabs`, ElevenLabs voice id (from his ElevenLabs voice library, an id, not a secret), Save.
+
+VAPID keys, for the phone notification when she texts first (no account, made on the Mac):
+1. Run `node scripts/gen_vapid.mjs`. It makes a P-256 key pair in memory and prints the public key plus the two commands to run. It never writes the private key to a file.
+2. Run the two printed lines: `... | npx wrangler secret put VAPID_PUBLIC_KEY` and `... | npx wrangler secret put VAPID_PRIVATE_KEY`, exactly as printed.
+3. Redeploy is not needed; secrets are live at once. Then section 17 on the phone.
+
+Never run `pbpaste` on its own, never `echo` a key, never paste one in chat.
+
+## 15. Backups
+
+The Worker writes a backup every day at 07:00 UTC (3am EDT): the full export, the same JSON that State > Export gives, to the R2 bucket `avelie-media` under `backups/avelie-<YYYY-MM-DD>.json`. It keeps the newest 30 and deletes older ones. Each run writes an audit event you can see under State > Rulebook > Audit (or `GET /api/audit`).
+
+To look at them: Cloudflare dashboard > R2 Object Storage > `avelie-media` > `backups/`.
+
+To download one to the Mac (dated example; use the file name you see):
+
+```
+cd ~/Documents/ClaudeCode/2026-09-24_avelie
+mkdir -p backups
+npx wrangler r2 object get avelie-media/backups/avelie-2026-09-25.json --file backups/avelie-2026-09-25.json
+```
+
+To put one back: State > Import in the app takes that file (it snapshots the current state first). The raw SQL dump from section 11 (`npm run export:remote`) still works and is the belt to this suspenders.
+
+## 16. The weekly drift check
+
+Off by default. When on, every Monday at 13:00 UTC (9am EDT) the Worker runs five fixed scenarios against her current performer in a throwaway conversation you never see in the chat list, stores the transcripts and flag counts, and deletes the throwaway messages. It costs five short conversations at the current model's price, inside the normal caps.
+
+To turn it on: open https://avelie.bladepharoh.com/model.html, under Caps tick "Weekly drift check", click Save. To run it by hand: the Run now button in the Drift section of the same page. To read the results: the same section shows the last four reports (date, provider, model, flags per scenario). Read docs/BEHAVIOR.md before judging one.
+
+It needs a real text provider: on the stub or without a key the run answers 503 and stores nothing.
+
+## 17. The phone: home screen and notifications
+
+The app is a web app. Installed to the home screen it opens full screen with her icon, works on the phone's clock, and can receive a notification when she texts first. Two things to know first: the login is the same emailed code, once a day; and on an iPhone the notification only works from the home-screen copy, not from Safari.
+
+iPhone (Safari):
+1. Open https://avelie.bladepharoh.com in Safari. Type the email, type the code from the inbox.
+2. Tap the Share button (the square with the arrow).
+3. Tap "Add to Home Screen". Tap "Add".
+4. Close Safari. Open Avelie from the home screen. Log in again if it asks.
+
+Android (Chrome):
+1. Open https://avelie.bladepharoh.com in Chrome. Log in.
+2. Tap the three dots, then "Install app" (or "Add to Home screen"). Tap "Install".
+3. Open Avelie from the home screen.
+
+Notifications (only after section 14's VAPID keys exist; the switch stays grey until then):
+1. From the home-screen copy, open the Model page (the Model link at the top).
+2. Under Notifications, turn on "Her first texts".
+3. The phone asks to allow notifications. Tap "Allow".
+4. A test: under Her first texts, tap "Send one now". Within a few seconds the phone shows her message. If nothing arrives, the reason is on the same page (off, quiet hours, busy, cap reached, a recent message, or two of hers unanswered).
+
+Turning the switch off removes this phone from the list. No other event ever sends a notification.
+
+## 18. She texts first: what it does and does not do
+
+It is off until the number is above 0. Model page > Her first texts > Per day (0 to 10) and Quiet hours (default 23:30 to 08:30, her time), then Save. He decided the cap: 10 a day, at most.
+
+What it does: every 20 minutes the Worker looks once. It skips if the number is 0, if it is her quiet hours, if her life says she is busy right now, if today's count is at the cap, if anyone wrote in the last 45 minutes, or if her last two messages have no reply from him. Otherwise it rolls a per-tick chance tuned so the expected count over her waking hours equals the cap, and on a hit she writes one or two bubbles from her own day or something she remembers, into the most recent conversation (a new one titled by the date if none). The message goes through the same checks as any reply. If the phone is subscribed, it gets a notification.
+
+What it does not do: she never says she missed him, waited, or wondered where he was; never mentions how long it has been; never asks him to reply; never sends a third message in a row without an answer; never texts during quiet hours or while her schedule says she is busy; never pushes a notification for anything else. A first text that trips the `dependency_hook` check is dropped and logged, not retried. There is no streak, no counter he can see in the story, and nothing happens while the number is 0.
+
 ## Cost ceilings (from the build brief, 2026-09-24; confirm on Cloudflare's pricing pages, they move)
 
 - Workers Paid (5 USD a month) is required for photos: the Free plan's 10 ms CPU per request cannot decode and hash a multi-megabyte image. Paid allows 30 s. Requests: 100,000 per day free on either plan. D1 Free: 5 million rows read and 100,000 written per day, 5 GB. Workers AI: 10,000 free Neurons per day.
 - Anthropic and OpenAI bill separately; the app's own caps (docs/COSTS.md, default 3 USD a day, 30 USD a month) are what stop that spend.
 - R2 for photo candidates is small at this scale but is its own line.
+- v2 lines: the nightly backup is one small R2 write a day; the drift check is five short conversations a week at the text model's price, only when on; her voice notes cost Workers AI Neurons (inside the free 10,000 a day at this scale) or ElevenLabs characters on that account; her first texts are ordinary turns, at most 10 a day, inside the caps; push is free.

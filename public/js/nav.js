@@ -1,4 +1,13 @@
-// Marks the active nav link. "/", "/index.html", "/state" and "/state.html" all resolve.
+// One list of sections for every page header. Rebuilds the nav from it and marks the
+// current page; "/", "/index.html", "/state" and "/state.html" all resolve.
+
+const LINKS = [
+  ["/", "Chat"],
+  ["/state", "State"],
+  ["/model", "Model"],
+  ["/images", "Images"],
+  ["/timeline", "Timeline"],
+];
 
 function normalize(p) {
   const s = String(p || "").replace(/\/+$/, "").replace(/\.html$/, "").replace(/\/index$/, "");
@@ -6,9 +15,15 @@ function normalize(p) {
 }
 
 const here = normalize(location.pathname);
-for (const a of document.querySelectorAll(".nav a")) {
-  const active = normalize(a.getAttribute("href")) === here;
-  a.classList.toggle("active", active);
-  if (active) a.setAttribute("aria-current", "page");
-  else a.removeAttribute("aria-current");
+for (const nav of document.querySelectorAll(".nav")) {
+  nav.replaceChildren();
+  for (const [href, label] of LINKS) {
+    const a = document.createElement("a");
+    a.href = href;
+    a.textContent = label;
+    const active = normalize(href) === here;
+    a.classList.toggle("active", active);
+    if (active) a.setAttribute("aria-current", "page");
+    nav.append(a);
+  }
 }

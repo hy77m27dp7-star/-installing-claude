@@ -4,9 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#070b14">
+<meta name="theme-color" content="#060a13">
 <title>Avelie Images</title>
-<link rel="icon" href="data:,">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body class="page-images">
@@ -17,36 +19,71 @@
     <a href="/state">State</a>
     <a href="/model">Model</a>
     <a href="/images">Images</a>
+    <a href="/timeline">Timeline</a>
   </nav>
 </header>
 
-<main class="page stack">
-  <div class="chips" id="images-status"></div>
+<main class="page">
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" data-tab="photos">Photos</button>
+    <button type="button" role="tab" data-tab="library">Library</button>
+  </div>
 
-  <section class="section">
-    <div class="row between">
-      <h2 class="section-title">Masters</h2>
+  <section id="tab-photos" class="stack hidden" role="tabpanel">
+    <div class="chips" id="images-status"></div>
+
+    <section class="section">
+      <div class="row between">
+        <h2 class="section-title">Masters</h2>
+        <div class="row">
+          <span class="chips" id="verifyAll"></span>
+          <button type="button" class="btn" id="verifyBtn">Verify</button>
+        </div>
+      </div>
+      <div class="grid-imgs" id="masters"></div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Candidates</h2>
+      <div class="grid-imgs" id="candidates"></div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Approved</h2>
+      <div class="grid-imgs" id="scenes"></div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Rejected</h2>
+      <div class="card" id="rejected"></div>
+    </section>
+  </section>
+
+  <section id="tab-library" class="stack hidden" role="tabpanel">
+    <div class="chips" id="library-status"></div>
+    <div class="card stack">
+      <h2 class="section-title">Upload</h2>
+      <input type="file" id="mediaFile" accept="audio/*,video/*,image/*" aria-label="Media file">
+      <div class="grid-form">
+        <label class="field">Title
+          <input type="text" id="mediaTitle" placeholder="Title" maxlength="200">
+        </label>
+        <label class="field">Kind
+          <select id="mediaKind">
+            <option value="clip">clip</option>
+            <option value="video">video</option>
+            <option value="image">image</option>
+            <option value="other">other</option>
+          </select>
+        </label>
+      </div>
+      <textarea id="mediaDescription" placeholder="Description" maxlength="2000"></textarea>
       <div class="row">
-        <span class="chips" id="verifyAll"></span>
-        <button type="button" class="btn" id="verifyBtn">Verify</button>
+        <button type="button" class="btn primary" id="mediaUpload">Upload</button>
+        <span class="chips" id="upload-status"></span>
       </div>
     </div>
-    <div class="grid-imgs" id="masters"></div>
-  </section>
-
-  <section class="section">
-    <h2 class="section-title">Candidates</h2>
-    <div class="grid-imgs" id="candidates"></div>
-  </section>
-
-  <section class="section">
-    <h2 class="section-title">Approved</h2>
-    <div class="grid-imgs" id="scenes"></div>
-  </section>
-
-  <section class="section">
-    <h2 class="section-title">Rejected</h2>
-    <div class="card" id="rejected"></div>
+    <div class="card" id="libraryList"></div>
   </section>
 </main>
 

@@ -1,25 +1,44 @@
 // Route table for /api/*. Handlers throw ApiHttpError (or a Response) and the wrapper
 // renders every failure in the one JSON error shape. No handler reads identity from the
 // request: the actor arrives already verified from index.ts.
+//
+// v2 (SPEC_V2): her life (threads, log), provenance per message, she opens, real-mode
+// timing on the message list, regenerate, drift check, her first texts, voice in, photos
+// in (multipart turn), push, the owner's media library, timeline, voiceprint, character
+// export, and the new settings.
 import { ApiHttpError, errorResponse, json } from "./errors";
 import {
   DEFAULT_SETTINGS, auditStmt, createConversation, getConversation, getMessage, getSettings, listAssets, listConversations,
-  listMessages, listProposals, listStateVersions, putSettings,
+  listMessages, listMessagesVisible, listProposals, listStateVersions, newId, nowIso, putSettings, sha256Hex,
 } from "./db";
 import { runTurn } from "./chat";
+import type { TurnOptions } from "./chat";
 import { operatorTurn, systemInfo } from "./operator";
 import { usageSummary } from "./budget";
-import { decideImage, generateCandidate, verifyMasters } from "./images";
+import { decideImage, generateCandidate, regenerateImage, verifyMasters } from "./images";
+import type { InboxImage } from "./images";
 import { decideProposal } from "./proposals";
 import { exportAll, exportTranscript, importAll } from "./exportImport";
 import {
   createFact, createHistory, createUnknown, deleteFact, deleteHistory, factVersions, getStateBundle, historyVersions, putState,
   restoreFact, restoreHistory, restoreState, updateFact, updateHistory, updateUnknown,
 } from "./state";
+import { createThread, dropThread, listLog, listThreads, logLife, restoreThread, updateThread } from "./life";
+import { readContext } from "./provenance";
+import { listDrift, runDrift } from "./drift";
+import { maybeTextFirst } from "./herfirst";
+import { subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from "./push";
+import { getTimeline } from "./timeline";
+import { listVoiceprints, runVoiceprint } from "./voiceprint";
+import { exportCharacterJson, exportCharacterMarkdown } from "./exportCharacter";
+import { transcribe } from "./voice";
 import { safeErrorMessage } from "./providers/types";
 import { ADAPTATIONS, ALWAYS_ON, CONSTITUTION_VERSION, OVERLAY } from "./generated/constitution";
 import { PROMPT_VERSION } from "./prompt";
-import type { Channel, Env, FactScope, ImageProviderName, ProposalKind, ProposalRow, ProviderName, Settings } from "./types";
+import { ProviderError } from "./types";
+import type {
+  Channel, Env, FactScope, ImageProviderName, MessageRow, ProposalKind, ProposalRow, ProviderName, Settings, TurnResponse,
+} from "./types";
 
 // ------------------------------------------------------------------ router
 
@@ -83,6 +102,7 @@ export async function handleApi(request: Request, env: Env, ctx: ExecutionContex
       return await r.handler({ request, env, ctx, actor, url, params, db: env.DB });
     } catch (e) {
       if (e instanceof ApiHttpError || e instanceof Response) return errorResponse(e);
+      if (e instanceof ProviderError) return errorResponse(providerToApi(e));
       // Class and a redacted message only; never a header, never a key.
       console.error("api error", request.method, url.pathname, e instanceof Error ? e.name : "error", safeErrorMessage(e, 200));
       return json({ error: safeErrorMessage(e, 200) || "internal error", code: "internal" }, 500);
@@ -90,6 +110,13 @@ export async function handleApi(request: Request, env: Env, ctx: ExecutionContex
   }
   if (pathMatched) return json({ error: "method not allowed", code: "method_not_allowed" }, 405);
   return json({ error: "not found", code: "not_found" }, 404);
+}
+
+// A provider failure that reaches a route (voice transcription, for one) in the turn's shape.
+function providerToApi(e: ProviderError): ApiHttpError {
+  const message = safeErrorMessage(e);
+  if (e.kind === "config") return new ApiHttpError(503, "provider_not_configured", message, false, e.provider);
+  return new ApiHttpError(502, "provider_failed", message, e.retryable, e.kind);
 }
 
 // ------------------------------------------------------------------ body helpers
@@ -104,8 +131,16 @@ function invalid(message: string): ApiHttpError {
   return new ApiHttpError(400, "validation", message);
 }
 
-function tooLarge(): ApiHttpError {
-  return new ApiHttpError(413, "too_large", "body exceeds " + MAX_BODY_BYTES + " bytes");
+function tooLarge(limit = MAX_BODY_BYTES): ApiHttpError {
+  return new ApiHttpError(413, "too_large", "body exceeds " + limit + " bytes");
+}
+
+function mediaType(request: Request): string {
+  return (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+}
+
+function isMultipart(request: Request): boolean {
+  return mediaType(request) === "multipart/form-data";
 }
 
 // A non-empty body must declare application/json: a browser form cannot, so a cross-site
@@ -121,8 +156,7 @@ async function readBody(request: Request): Promise<Body> {
   }
   if (!raw.trim()) return {};
   if (raw.length > MAX_BODY_BYTES) throw tooLarge();
-  const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
-  if (type !== "application/json") throw new ApiHttpError(415, "unsupported_media_type", "body must be application/json");
+  if (mediaType(request) !== "application/json") throw new ApiHttpError(415, "unsupported_media_type", "body must be application/json");
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -131,6 +165,34 @@ async function readBody(request: Request): Promise<Body> {
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw invalid("body must be a JSON object");
   return parsed as Body;
+}
+
+// Multipart bodies (his photos, a voice note, a library upload). The declared length is
+// checked before anything is read; each file is checked again against its own limit.
+async function readForm(request: Request, maxBytes: number): Promise<FormData> {
+  if (!isMultipart(request)) throw new ApiHttpError(415, "unsupported_media_type", "body must be multipart/form-data");
+  const declared = Number(request.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > maxBytes) throw tooLarge(maxBytes);
+  try {
+    return await request.formData();
+  } catch {
+    throw invalid("multipart body could not be read");
+  }
+}
+
+function formString(form: FormData, key: string, max: number, required: boolean): string {
+  const v = form.get(key);
+  if (v === null || typeof v !== "string") {
+    if (required) throw invalid(`${key} is required`);
+    return "";
+  }
+  if (required && !v.trim()) throw invalid(`${key} is required`);
+  if (v.length > max) throw invalid(`${key} exceeds ${max} characters`);
+  return v;
+}
+
+function formFiles(form: FormData, key: string): File[] {
+  return form.getAll(key).filter((v): v is File => typeof v !== "string");
 }
 
 function reqString(b: Body, key: string, max = 4000): string {
@@ -188,12 +250,126 @@ function intQuery(url: URL, key: string, fallback: number, min: number, max: num
   return Math.min(max, Math.max(min, Math.trunc(n)));
 }
 
+function flagQuery(url: URL, key: string): boolean {
+  const raw = (url.searchParams.get(key) ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+// A JSON string column that the page may send as a string or as the object itself.
+function optJsonString(b: Body, key: string, max = 4000): string | null | undefined {
+  const v = b[key];
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  if (typeof v === "string") {
+    if (v.length > max) throw invalid(`${key} exceeds ${max} characters`);
+    return v.trim() ? v : null;
+  }
+  if (typeof v === "object" && !Array.isArray(v)) {
+    const s = JSON.stringify(v);
+    if (s.length > max) throw invalid(`${key} exceeds ${max} characters`);
+    return s;
+  }
+  throw invalid(`${key} must be a JSON string or object`);
+}
+
+async function deleteKeys(env: Env, keys: string[]): Promise<void> {
+  if (!keys.length) return;
+  try {
+    await env.MEDIA.delete(keys);
+  } catch (e) {
+    console.warn("media delete failed", safeErrorMessage(e, 120));
+  }
+}
+
+// ------------------------------------------------------------------ bytes: what a file really is
+
+const EXT_BY_MIME: Record<string, string> = {
+  "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif",
+  "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac", "audio/wav": "wav", "audio/x-wav": "wav",
+  "audio/webm": "webm", "audio/ogg": "ogg", "audio/flac": "flac",
+  "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov",
+};
+
+const VOICE_MIMES: ReadonlySet<string> = new Set(["audio/webm", "audio/ogg", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/mpeg", "audio/wav", "audio/x-wav", "video/webm"]);
+
+function extFor(mime: string): string {
+  return EXT_BY_MIME[mime] ?? "bin";
+}
+
+const u16be = (b: Uint8Array, i: number): number => ((b[i] ?? 0) << 8) | (b[i + 1] ?? 0);
+const u32be = (b: Uint8Array, i: number): number => ((u16be(b, i) << 16) | u16be(b, i + 2)) >>> 0;
+const u16le = (b: Uint8Array, i: number): number => (b[i] ?? 0) | ((b[i + 1] ?? 0) << 8);
+const u24le = (b: Uint8Array, i: number): number => u16le(b, i) | ((b[i + 2] ?? 0) << 16);
+const ascii = (b: Uint8Array, i: number, n: number): string => String.fromCharCode(...Array.from(b.slice(i, i + n)));
+
+// Image type and size from the bytes themselves (never from the declared type): PNG,
+// JPEG or WebP, or null for anything else.
+export function sniffImage(b: Uint8Array): { mime: string; width: number | null; height: number | null } | null {
+  if (b.length >= 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 && ascii(b, 12, 4) === "IHDR") {
+    return { mime: "image/png", width: u32be(b, 16), height: u32be(b, 20) };
+  }
+  if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
+    let width: number | null = null;
+    let height: number | null = null;
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xff) {
+        i++;
+        continue;
+      }
+      const marker = b[i + 1] ?? 0;
+      if (marker === 0xff) {
+        i++;
+        continue;
+      }
+      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+        i += 2;
+        continue;
+      }
+      if (marker === 0xd9 || marker === 0xda) break;
+      const len = u16be(b, i + 2);
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        height = u16be(b, i + 5);
+        width = u16be(b, i + 7);
+        break;
+      }
+      if (len < 2) break;
+      i += 2 + len;
+    }
+    return { mime: "image/jpeg", width, height };
+  }
+  if (b.length >= 30 && ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 4) === "WEBP") {
+    const chunk = ascii(b, 12, 4);
+    if (chunk === "VP8 ") return { mime: "image/webp", width: u16le(b, 26) & 0x3fff, height: u16le(b, 28) & 0x3fff };
+    if (chunk === "VP8L") {
+      const b0 = b[21] ?? 0;
+      const b1 = b[22] ?? 0;
+      const b2 = b[23] ?? 0;
+      const b3 = b[24] ?? 0;
+      return { mime: "image/webp", width: 1 + (b0 | ((b1 & 0x3f) << 8)), height: 1 + ((b1 >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10)) };
+    }
+    if (chunk === "VP8X") return { mime: "image/webp", width: 1 + u24le(b, 24), height: 1 + u24le(b, 27) };
+    return { mime: "image/webp", width: null, height: null };
+  }
+  return null;
+}
+
 // ------------------------------------------------------------------ settings validation
 
 const PROVIDERS = ["anthropic", "openai", "workersai", "stub"] as const;
 const IMAGE_PROVIDERS = ["openai", "stub"] as const;
 const LEVELS = ["low", "medium", "high"] as const;
 const SIZE_RE = /^(auto|\d{3,4}x\d{3,4})$/;
+// v2
+const REPLY_DELAY_MODES = ["instant", "real"] as const;
+const VOICE_PROVIDERS = ["elevenlabs", "workersai", "stub", "off"] as const;
+const VOICE_MODES = ["off", "some", "all"] as const;
+const TRANSCRIBE_PROVIDERS = ["workersai", "openai", "stub"] as const;
+const QUIET_HOURS_RE = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
+const MAX_TZ_CHARS = 64;
+// Settings SPEC_V2 sections R and S add. Validated here even before DEFAULT_SETTINGS
+// carries them: getSettings lays stored keys over the defaults, so they round-trip.
+const V2_EXTRA_KEYS: readonly string[] = ["herFirstTextsPerDay", "herFirstQuietHours", "voiceProvider", "voiceMode", "elevenLabsVoiceId", "transcribeProvider"];
 
 function validatePrices(v: unknown): Settings["prices"] {
   if (typeof v !== "object" || v === null || Array.isArray(v)) throw invalid("prices must be an object");
@@ -208,6 +384,18 @@ function validatePrices(v: unknown): Settings["prices"] {
     };
   }
   return out;
+}
+
+// A timezone is whatever Intl accepts (an IANA name such as America/New_York).
+export function validTimezone(v: unknown): string {
+  if (typeof v !== "string" || !v.trim() || v.length > MAX_TZ_CHARS) throw invalid("timezone must be an IANA name");
+  const tz = v.trim();
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+  } catch {
+    throw invalid("timezone is not a known IANA name");
+  }
+  return tz;
 }
 
 // Local-only overlay: .dev.vars may name DEFAULT_PROVIDER / DEFAULT_IMAGE_PROVIDER so
@@ -232,9 +420,9 @@ async function loadSettings(c: RouteCtx): Promise<Settings> {
 
 export function validateSettingsPatch(body: Body): Partial<Settings> {
   for (const key of Object.keys(body)) {
-    if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key)) throw invalid("unknown setting: " + key);
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key) && !V2_EXTRA_KEYS.includes(key)) throw invalid("unknown setting: " + key);
   }
-  const p: Partial<Settings> = {};
+  const p: Record<string, unknown> = {};
   const v = body;
   if (v.provider !== undefined) p.provider = oneOf(v.provider, PROVIDERS, "provider");
   if (v.model !== undefined) p.model = reqString(v, "model", 200).trim();
@@ -261,7 +449,29 @@ export function validateSettingsPatch(body: Body): Partial<Settings> {
   if (v.contextRecentMessages !== undefined) p.contextRecentMessages = int(v.contextRecentMessages, "contextRecentMessages", 1, 400);
   if (v.contextMaxChars !== undefined) p.contextMaxChars = int(v.contextMaxChars, "contextMaxChars", 1000, 400000);
   if (v.prices !== undefined) p.prices = validatePrices(v.prices);
-  return p;
+  // v2: her timing, the drift check, her timezone (SPEC_V2 B, F, N)
+  if (v.replyDelayMode !== undefined) p.replyDelayMode = oneOf(v.replyDelayMode, REPLY_DELAY_MODES, "replyDelayMode");
+  if (v.realDelayMaxMinutes !== undefined) p.realDelayMaxMinutes = int(v.realDelayMaxMinutes, "realDelayMaxMinutes", 1, 120);
+  if (v.driftCheckEnabled !== undefined) {
+    const b = optBool(v, "driftCheckEnabled");
+    if (b !== undefined) p.driftCheckEnabled = b;
+  }
+  if (v.timezone !== undefined) p.timezone = validTimezone(v.timezone);
+  // v2: her first texts and the voices (SPEC_V2 R, S)
+  if (v.herFirstTextsPerDay !== undefined) p.herFirstTextsPerDay = int(v.herFirstTextsPerDay, "herFirstTextsPerDay", 0, 10);
+  if (v.herFirstQuietHours !== undefined) {
+    const s = reqString(v, "herFirstQuietHours", 11).trim();
+    if (!QUIET_HOURS_RE.test(s)) throw invalid("herFirstQuietHours must look like 23:30-08:30");
+    p.herFirstQuietHours = s;
+  }
+  if (v.voiceProvider !== undefined) p.voiceProvider = oneOf(v.voiceProvider, VOICE_PROVIDERS, "voiceProvider");
+  if (v.voiceMode !== undefined) p.voiceMode = oneOf(v.voiceMode, VOICE_MODES, "voiceMode");
+  if (v.elevenLabsVoiceId !== undefined) {
+    const s = optString(v, "elevenLabsVoiceId", 200);
+    p.elevenLabsVoiceId = typeof s === "string" ? s.trim() : "";
+  }
+  if (v.transcribeProvider !== undefined) p.transcribeProvider = oneOf(v.transcribeProvider, TRANSCRIBE_PROVIDERS, "transcribeProvider");
+  return p as Partial<Settings>;
 }
 
 // ------------------------------------------------------------------ identity and system
@@ -284,7 +494,20 @@ route("GET", "/api/rulebook", async () => json({
 
 // ------------------------------------------------------------------ conversations and turns
 
-route("GET", "/api/conversations", async (c) => json(await listConversations(c.db)));
+const MAX_IMAGES = 3;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_VOICE_BYTES = 4 * 1024 * 1024;
+const FORM_SLACK = 64 * 1024;
+const INBOX_PREFIX = "inbox/";
+const VOICE_IN_PREFIX = "voice_in/";
+
+// The one-time operator note for an opener (SPEC_V2 section Q). He never sees it.
+const OPENER_NOTE =
+  "Start the conversation yourself from your own day or something you remember. One or two bubbles. "
+  + "Do not ask him to reply, do not mention how long it has been, do not say you missed him.";
+
+// The throwaway conversations of the drift check never show in the list.
+route("GET", "/api/conversations", async (c) => json((await listConversations(c.db)).filter((r) => r.status !== "drift")));
 
 route("POST", "/api/conversations", async (c) => {
   const body = await readBody(c.request);
@@ -294,6 +517,8 @@ route("POST", "/api/conversations", async (c) => {
   return json(row, 201);
 });
 
+// Real-mode timing (SPEC_V2 section B): a reply whose deliver_at is still ahead is left
+// out unless ?includePending=1 (the page asks for it and shows dots until the time).
 route("GET", "/api/conversations/:id/messages", async (c) => {
   const id = idParam(c, "id");
   const conv = await getConversation(c.db, id);
@@ -302,7 +527,8 @@ route("GET", "/api/conversations/:id/messages", async (c) => {
   let channel: Channel | undefined;
   if (raw !== null && raw !== "") channel = oneOf(raw, ["story", "operator"] as const, "channel");
   const limit = intQuery(c.url, "limit", 500, 1, 2000);
-  return json(await listMessages(c.db, id, channel, limit));
+  if (flagQuery(c.url, "includePending")) return json(await listMessages(c.db, id, channel, limit));
+  return json(await listMessagesVisible(c.db, id, channel, new Date(), limit));
 });
 
 route("DELETE", "/api/conversations/:id", async (c) => {
@@ -316,8 +542,66 @@ route("DELETE", "/api/conversations/:id", async (c) => {
   return json({ ok: true });
 });
 
+// His photos (SPEC_V2 section T): up to three jpeg, png or webp files, 8 MB each, judged
+// by their bytes. They are stored under inbox/<id>/<n>.<ext> before the turn and listed on
+// his message (images_json) once it is committed; a turn that stores nothing (a replay, a
+// failed model call) leaves nothing behind.
+async function multipartTurn(c: RouteCtx, id: string): Promise<Response> {
+  const form = await readForm(c.request, MAX_IMAGES * MAX_IMAGE_BYTES + FORM_SLACK);
+  const content = formString(form, "content", 20000, true);
+  const idempotencyKey = formString(form, "idempotencyKey", 200, true);
+  const files = formFiles(form, "image");
+  if (files.length > MAX_IMAGES) throw invalid(`at most ${MAX_IMAGES} images`);
+  for (const f of files) if (f.size > MAX_IMAGE_BYTES) throw tooLarge(MAX_IMAGE_BYTES);
+  const conv = await getConversation(c.db, id);
+  if (!conv) throw new ApiHttpError(404, "not_found", "conversation not found");
+  const settings = await loadSettings(c);
+
+  const inboxId = newId("in");
+  const stored: InboxImage[] = [];
+  try {
+    for (let n = 0; n < files.length; n++) {
+      const bytes = new Uint8Array(await files[n]!.arrayBuffer());
+      const sniff = sniffImage(bytes);
+      if (!sniff) throw new ApiHttpError(415, "unsupported_media_type", "image must be jpeg, png or webp");
+      const key = `${INBOX_PREFIX}${inboxId}/${n}.${extFor(sniff.mime)}`;
+      await c.env.MEDIA.put(key, bytes, { httpMetadata: { contentType: sniff.mime } });
+      stored.push({ key, mime: sniff.mime, width: sniff.width, height: sniff.height, bytes: bytes.byteLength });
+    }
+  } catch (e) {
+    await deleteKeys(c.env, stored.map((s) => s.key));
+    throw e;
+  }
+
+  // The images ride on the options so the turn can show them to the model.
+  const opts: TurnOptions & { images: InboxImage[] } = { images: stored };
+  let r: TurnResponse;
+  try {
+    r = await runTurn(c.env, c.ctx, c.db, settings, id, content, idempotencyKey, c.actor, stored.length ? opts : undefined);
+  } catch (e) {
+    await deleteKeys(c.env, stored.map((s) => s.key));
+    throw e;
+  }
+  let images: InboxImage[] = [];
+  if (stored.length) {
+    if (!r.replayed && r.userMessage) {
+      try {
+        await c.db.prepare("UPDATE messages SET images_json = ?1 WHERE id = ?2").bind(JSON.stringify(stored), r.userMessage.id).run();
+        images = stored;
+      } catch (e) {
+        console.warn("images_json not written", safeErrorMessage(e, 120));
+        await deleteKeys(c.env, stored.map((s) => s.key));
+      }
+    } else {
+      await deleteKeys(c.env, stored.map((s) => s.key));
+    }
+  }
+  return json({ ...r, images: images.map((i) => ({ mime: i.mime, width: i.width ?? null, height: i.height ?? null, bytes: i.bytes ?? null })) });
+}
+
 route("POST", "/api/conversations/:id/turn", async (c) => {
   const id = idParam(c, "id");
+  if (isMultipart(c.request)) return multipartTurn(c, id);
   const body = await readBody(c.request);
   const content = reqString(body, "content", 20000);
   const idempotencyKey = reqString(body, "idempotencyKey", 200);
@@ -325,10 +609,100 @@ route("POST", "/api/conversations/:id/turn", async (c) => {
   return json(await runTurn(c.env, c.ctx, c.db, settings, id, content, idempotencyKey, c.actor));
 });
 
+// She opens (SPEC_V2 section Q): a turn with no message of his and the one-time note.
+// Refused while his last message is still unanswered (a failed send is retried, not
+// talked over). No scheduling and no notification live here.
+route("POST", "/api/conversations/:id/open", async (c) => {
+  const id = idParam(c, "id");
+  const conv = await getConversation(c.db, id);
+  if (!conv) throw new ApiHttpError(404, "not_found", "conversation not found");
+  const last = await c.db
+    .prepare("SELECT role FROM messages WHERE conversation_id = ?1 AND channel = 'story' ORDER BY seq DESC LIMIT 1")
+    .bind(id)
+    .first<{ role: string }>();
+  if (last && last.role === "user") throw new ApiHttpError(409, "his_turn", "his last message has no reply yet");
+  const settings = await loadSettings(c);
+  return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: OPENER_NOTE }));
+});
+
+// A transcribed voice note as read from the provider: a string, or { text }.
+function transcriptText(v: unknown): string {
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "object" && v !== null && typeof (v as { text?: unknown }).text === "string") return (v as { text: string }).text.trim();
+  return "";
+}
+
+// His voice (SPEC_V2 section S): the recording goes to R2, the words go through the
+// normal turn, and his message keeps the recording's key.
+route("POST", "/api/conversations/:id/voice", async (c) => {
+  const id = idParam(c, "id");
+  const form = await readForm(c.request, MAX_VOICE_BYTES + FORM_SLACK);
+  const audio = formFiles(form, "audio")[0];
+  if (!audio) throw invalid("audio is required");
+  if (audio.size > MAX_VOICE_BYTES) throw tooLarge(MAX_VOICE_BYTES);
+  if (!audio.size) throw invalid("audio is empty");
+  const idempotencyKey = formString(form, "idempotencyKey", 200, true);
+  let mime = (audio.type || "").split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!mime) {
+    const ext = (audio.name || "").split(".").pop()?.toLowerCase() ?? "";
+    mime = ext === "m4a" || ext === "mp4" ? "audio/mp4" : ext === "ogg" ? "audio/ogg" : ext === "mp3" ? "audio/mpeg" : ext === "wav" ? "audio/wav" : "audio/webm";
+  }
+  if (!VOICE_MIMES.has(mime)) throw new ApiHttpError(415, "unsupported_media_type", "audio must be webm, ogg, mp4, mpeg or wav");
+  const conv = await getConversation(c.db, id);
+  if (!conv) throw new ApiHttpError(404, "not_found", "conversation not found");
+  const settings = await loadSettings(c);
+
+  const bytes = await audio.arrayBuffer();
+  const key = VOICE_IN_PREFIX + newId("vin") + "." + extFor(mime);
+  await c.env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
+
+  let transcript: string;
+  try {
+    transcript = transcriptText(await transcribe(c.env, settings, bytes, mime));
+  } catch (e) {
+    await deleteKeys(c.env, [key]);
+    if (e instanceof ProviderError) throw providerToApi(e);
+    throw e;
+  }
+  if (!transcript) {
+    await deleteKeys(c.env, [key]);
+    throw new ApiHttpError(422, "empty_transcript", "nothing was heard in the recording", true);
+  }
+
+  let r: TurnResponse;
+  try {
+    r = await runTurn(c.env, c.ctx, c.db, settings, id, transcript, idempotencyKey, c.actor);
+  } catch (e) {
+    await deleteKeys(c.env, [key]);
+    throw e;
+  }
+  let audioKey: string | null = null;
+  if (!r.replayed && r.userMessage) {
+    try {
+      await c.db.prepare("UPDATE messages SET audio_key = ?1 WHERE id = ?2").bind(key, r.userMessage.id).run();
+      audioKey = key;
+    } catch (e) {
+      console.warn("audio_key not written", safeErrorMessage(e, 120));
+      await deleteKeys(c.env, [key]);
+    }
+  } else {
+    await deleteKeys(c.env, [key]);
+  }
+  return json({ ...r, transcript, audioKey });
+});
+
 route("GET", "/api/messages/:id", async (c) => {
   const row = await getMessage(c.db, idParam(c, "id"));
   if (!row) throw new ApiHttpError(404, "not_found", "message not found");
   return json(row);
+});
+
+// Why she said that (SPEC_V2 section L): the ids the turn was built from, nothing else.
+route("GET", "/api/messages/:id/context", async (c) => {
+  const id = idParam(c, "id");
+  const ctx = await readContext(c.db, id);
+  if (!ctx) throw new ApiHttpError(404, "not_found", "no context for this message");
+  return json(ctx);
 });
 
 route("POST", "/api/operator", async (c) => {
@@ -485,11 +859,78 @@ route("PUT", "/api/unknowns/:id", async (c) => {
   return json(await updateUnknown(c.db, id, patch, c.actor));
 });
 
+// ------------------------------------------------------------------ her life (SPEC_V2 section F)
+
+const LIFE_KINDS = ["routine", "event", "person", "place", "arc"] as const;
+const LIFE_STATUSES = ["active", "done", "dropped", "superseded"] as const;
+const THREAD_STATUS_PATCH = ["active", "done"] as const;
+
+route("GET", "/api/life", async (c) => {
+  const raw = c.url.searchParams.get("status");
+  const status = raw === null || raw === "" ? undefined : oneOf(raw, LIFE_STATUSES, "status");
+  const limit = intQuery(c.url, "limit", 100, 1, 500);
+  const [threads, log] = await Promise.all([listThreads(c.db, status), listLog(c.db, limit)]);
+  return json({ threads, log });
+});
+
+route("POST", "/api/life/threads", async (c) => {
+  const body = await readBody(c.request);
+  const row = await createThread(c.db, {
+    kind: oneOf(body.kind, LIFE_KINDS, "kind"),
+    title: reqString(body, "title", 300),
+    detail: optString(body, "detail") ?? null,
+    schedule_json: optJsonString(body, "schedule_json") ?? null,
+    relation: optString(body, "relation", 200) ?? null,
+    source: optString(body, "source", 500) ?? null,
+  }, c.actor);
+  return json(row, 201);
+});
+
+route("PUT", "/api/life/threads/:id", async (c) => {
+  const id = idParam(c, "id");
+  const body = await readBody(c.request);
+  const patch: Parameters<typeof updateThread>[2] = {};
+  const title = optString(body, "title", 300);
+  if (title !== undefined) {
+    if (title === null || !title.trim()) throw invalid("title cannot be empty");
+    patch.title = title;
+  }
+  const detail = optString(body, "detail");
+  if (detail !== undefined) patch.detail = detail;
+  const schedule = optJsonString(body, "schedule_json");
+  if (schedule !== undefined) patch.schedule_json = schedule;
+  const relation = optString(body, "relation", 200);
+  if (relation !== undefined) patch.relation = relation;
+  if (body.status !== undefined && body.status !== null) patch.status = oneOf(body.status, THREAD_STATUS_PATCH, "status");
+  return json(await updateThread(c.db, id, patch, c.actor));
+});
+
+route("DELETE", "/api/life/threads/:id", async (c) => {
+  await dropThread(c.db, idParam(c, "id"), c.actor);
+  return json({ ok: true });
+});
+
+route("POST", "/api/life/threads/:id/restore", async (c) => json(await restoreThread(c.db, idParam(c, "id"), c.actor)));
+
+route("POST", "/api/life/log", async (c) => {
+  const body = await readBody(c.request);
+  const threadId = optString(body, "threadId", 120);
+  const row = await logLife(
+    c.db,
+    threadId && threadId.trim() ? threadId.trim() : null,
+    reqString(body, "occurred", 64),
+    reqString(body, "note"),
+    optString(body, "source", 500) ?? null,
+    c.actor,
+  );
+  return json(row, 201);
+});
+
 // ------------------------------------------------------------------ proposals
 
 const PROPOSAL_STATUSES = ["pending", "approved", "rejected", "edited", "all"] as const;
 const PROPOSAL_KINDS = [
-  "avelie_fact", "justin_fact", "relationship", "scene", "history", "private_language", "opinion_change", "unknown",
+  "avelie_fact", "justin_fact", "relationship", "scene", "history", "private_language", "opinion_change", "unknown", "life",
 ] as const;
 
 route("GET", "/api/proposals", async (c) => {
@@ -522,14 +963,15 @@ route("GET", "/api/settings", async (c) => json(await loadSettings(c)));
 route("PUT", "/api/settings", async (c) => {
   const body = await readBody(c.request);
   const patch = validateSettingsPatch(body);
-  const before = await getSettings(c.db);
+  const before = (await getSettings(c.db)) as unknown as Record<string, unknown>;
   const after = await putSettings(c.db, patch);
-  const keys = Object.keys(patch) as Array<keyof Settings>;
+  const afterAny = after as unknown as Record<string, unknown>;
+  const keys = Object.keys(patch);
   const beforeSlice: Record<string, unknown> = {};
   const afterSlice: Record<string, unknown> = {};
   for (const k of keys) {
     beforeSlice[k] = before[k];
-    afterSlice[k] = after[k];
+    afterSlice[k] = afterAny[k];
   }
   if (keys.length) await auditStmt(c.db, c.actor, "settings.update", "settings", null, beforeSlice, afterSlice).run();
   return json(overlaySettings(c.env, after));
@@ -590,6 +1032,192 @@ route("POST", "/api/images/:id/decide", async (c) => {
   return json({ asset });
 });
 
+// Reject this candidate and ask again with the same description (SPEC_V2 section O). The
+// page holds the request open, as for any picture.
+route("POST", "/api/images/:id/regenerate", async (c) => {
+  const id = idParam(c, "id");
+  const settings = await loadSettings(c);
+  const asset = await regenerateImage(c.env, c.db, settings, id, c.actor);
+  return json({ asset });
+});
+
+// ------------------------------------------------------------------ drift check (SPEC_V2 section N)
+
+route("POST", "/api/drift/run", async (c) => {
+  const settings = await loadSettings(c);
+  const report = await runDrift(c.env, c.db, settings);
+  return json({ report });
+});
+
+route("GET", "/api/drift", async (c) => json(await listDrift(c.db, intQuery(c.url, "limit", 4, 1, 52))));
+
+// ------------------------------------------------------------------ her first texts (SPEC_V2 section R)
+
+// One tick by hand: the same decision the 20-minute cron makes, with the same rules.
+route("POST", "/api/herfirst/run", async (c) => {
+  const settings = await loadSettings(c);
+  const r: unknown = await maybeTextFirst(c.env, c.db, settings, new Date());
+  return json(typeof r === "object" && r !== null ? r : { result: r ?? null });
+});
+
+// ------------------------------------------------------------------ push (SPEC_V2 section U)
+
+type EnvSecrets = Env & { VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string };
+
+const MAX_ENDPOINT_CHARS = 2000;
+const MAX_KEY_CHARS = 512;
+
+function pushPublicKey(env: Env): string | null {
+  const k = ((env as EnvSecrets).VAPID_PUBLIC_KEY ?? "").trim();
+  return k || null;
+}
+
+function validEndpoint(v: unknown): string {
+  if (typeof v !== "string" || !v.trim() || v.length > MAX_ENDPOINT_CHARS) throw invalid("endpoint is required");
+  let u: URL;
+  try {
+    u = new URL(v.trim());
+  } catch {
+    throw invalid("endpoint must be a URL");
+  }
+  if (u.protocol !== "https:") throw invalid("endpoint must be https");
+  return u.toString();
+}
+
+route("GET", "/api/push/public-key", async (c) => {
+  const publicKey = pushPublicKey(c.env);
+  return json({ publicKey, configured: publicKey !== null });
+});
+
+route("POST", "/api/push/subscribe", async (c) => {
+  const body = await readBody(c.request);
+  const endpoint = validEndpoint(body.endpoint);
+  const keys = body.keys;
+  if (typeof keys !== "object" || keys === null || Array.isArray(keys)) throw invalid("keys is required");
+  const k = keys as Body;
+  const p256dh = reqString(k, "p256dh", MAX_KEY_CHARS).trim();
+  const auth = reqString(k, "auth", MAX_KEY_CHARS).trim();
+  const expirationTime = typeof body.expirationTime === "number" && Number.isFinite(body.expirationTime) ? body.expirationTime : null;
+  await pushSubscribe(c.db, { endpoint, expirationTime, keys: { p256dh, auth } });
+  await auditStmt(c.db, c.actor, "push.subscribe", "push_subscription", null, null, { endpointHost: new URL(endpoint).host }).run();
+  return json({ ok: true, configured: pushPublicKey(c.env) !== null });
+});
+
+route("DELETE", "/api/push/subscribe", async (c) => {
+  const body = await readBody(c.request);
+  const endpoint = validEndpoint(body.endpoint);
+  await pushUnsubscribe(c.db, endpoint);
+  await auditStmt(c.db, c.actor, "push.unsubscribe", "push_subscription", null, null, { endpointHost: new URL(endpoint).host }).run();
+  return json({ ok: true });
+});
+
+// Her latest first text: the newest message of hers that answered nothing of his (an
+// opener or a first text), once it has arrived. The service worker shows this line.
+route("GET", "/api/push/latest", async (c) => {
+  const row = await c.db
+    .prepare("SELECT * FROM messages WHERE role = 'assistant' AND channel = 'story' AND reply_to_id IS NULL AND (deliver_at IS NULL OR deliver_at <= ?1) ORDER BY created_at DESC LIMIT 1")
+    .bind(nowIso())
+    .first<MessageRow>();
+  if (!row) return json({ text: null, messageId: null, conversationId: null, createdAt: null });
+  return json({ text: row.content, messageId: row.id, conversationId: row.conversation_id, createdAt: row.created_at });
+});
+
+// ------------------------------------------------------------------ the owner's media library (SPEC_V2 section V)
+
+const MEDIA_KINDS = ["clip", "video", "image", "other"] as const;
+const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
+const LIBRARY_PREFIX = "library/";
+const MAX_LIBRARY_ROWS = 500;
+
+interface MediaRow {
+  id: string;
+  kind: string;
+  title: string;
+  description: string | null;
+  key: string;
+  mime: string;
+  bytes: number;
+  sha256: string;
+  status: string;
+  created_at: string;
+}
+
+function libraryMime(file: File): string {
+  const declared = (file.type || "").split(";")[0]?.trim().toLowerCase() ?? "";
+  if (declared.startsWith("audio/") || declared.startsWith("video/") || declared.startsWith("image/")) return declared;
+  throw new ApiHttpError(415, "unsupported_media_type", "file must be audio, video or an image");
+}
+
+route("POST", "/api/media", async (c) => {
+  const form = await readForm(c.request, MAX_MEDIA_BYTES + FORM_SLACK);
+  const file = formFiles(form, "file")[0];
+  if (!file) throw invalid("file is required");
+  if (!file.size) throw invalid("file is empty");
+  if (file.size > MAX_MEDIA_BYTES) throw tooLarge(MAX_MEDIA_BYTES);
+  const title = formString(form, "title", 200, true).trim();
+  const description = formString(form, "description", 2000, false).trim();
+  const kindRaw = formString(form, "kind", 20, false).trim();
+  const kind = kindRaw ? oneOf(kindRaw, MEDIA_KINDS, "kind") : "other";
+  let mime = libraryMime(file);
+  const bytes = await file.arrayBuffer();
+  // An image is judged by its bytes, like his photos.
+  if (mime.startsWith("image/")) {
+    const sniff = sniffImage(new Uint8Array(bytes));
+    if (!sniff) throw new ApiHttpError(415, "unsupported_media_type", "image must be jpeg, png or webp");
+    mime = sniff.mime;
+  }
+  const id = newId("md");
+  const key = LIBRARY_PREFIX + id + "." + extFor(mime);
+  const row: MediaRow = {
+    id, kind, title, description: description || null, key, mime, bytes: bytes.byteLength, sha256: await sha256Hex(bytes), status: "active", created_at: nowIso(),
+  };
+  await c.env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
+  try {
+    await c.db.batch([
+      c.db.prepare("INSERT INTO media_library (id, kind, title, description, key, mime, bytes, sha256, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)")
+        .bind(row.id, row.kind, row.title, row.description, row.key, row.mime, row.bytes, row.sha256, row.status, row.created_at),
+      auditStmt(c.db, c.actor, "media.upload", "media_library", id, null, row),
+    ]);
+  } catch (e) {
+    await deleteKeys(c.env, [key]);
+    throw e;
+  }
+  return json(row, 201);
+});
+
+route("GET", "/api/media", async (c) => {
+  const r = await c.db.prepare("SELECT * FROM media_library WHERE status = 'active' ORDER BY created_at DESC LIMIT ?1").bind(MAX_LIBRARY_ROWS).all<MediaRow>();
+  return json(r.results);
+});
+
+route("DELETE", "/api/media/:id", async (c) => {
+  const id = idParam(c, "id");
+  const row = await c.db.prepare("SELECT * FROM media_library WHERE id = ?1").bind(id).first<MediaRow>();
+  if (!row || row.status === "deleted") throw new ApiHttpError(404, "not_found", "media not found");
+  await deleteKeys(c.env, [row.key]);
+  // The row stays (status deleted) so a message that sent it still knows what it was.
+  await c.db.batch([
+    c.db.prepare("UPDATE media_library SET status = 'deleted' WHERE id = ?1").bind(id),
+    auditStmt(c.db, c.actor, "media.delete", "media_library", id, row, { ...row, status: "deleted" }),
+  ]);
+  return json({ ok: true });
+});
+
+// ------------------------------------------------------------------ timeline (SPEC_V2 section X)
+
+route("GET", "/api/timeline", async (c) => {
+  const beforeRaw = c.url.searchParams.get("before");
+  const before = beforeRaw && beforeRaw.trim() ? beforeRaw.trim().slice(0, 64) : undefined;
+  const limit = intQuery(c.url, "limit", 500, 1, 500);
+  return json(await getTimeline(c.db, c.env, before !== undefined ? { before, limit } : { limit }));
+});
+
+// ------------------------------------------------------------------ voiceprint (SPEC_V2 section Y)
+
+route("POST", "/api/voiceprint/run", async (c) => json({ voiceprint: await runVoiceprint(c.db, new Date()) }));
+
+route("GET", "/api/voiceprint", async (c) => json(await listVoiceprints(c.db, intQuery(c.url, "limit", 8, 1, 104))));
+
 // ------------------------------------------------------------------ export and import
 
 route("GET", "/api/export", async (c) => json(await exportAll(c.db, c.env)));
@@ -599,6 +1227,21 @@ route("GET", "/api/export/transcript/:conversationId", async (c) => {
   return new Response(text, {
     status: 200,
     headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+  });
+});
+
+// Her, as a package (SPEC_V2 section Z): JSON, or the readable character bible.
+route("GET", "/api/export/character", async (c) => json(await exportCharacterJson(c.db, c.env)));
+
+route("GET", "/api/export/character.md", async (c) => {
+  const text = await exportCharacterMarkdown(c.db, c.env);
+  return new Response(text, {
+    status: 200,
+    headers: {
+      "content-type": "text/markdown; charset=utf-8",
+      "content-disposition": "inline; filename=\"avelie-character.md\"",
+      "cache-control": "no-store",
+    },
   });
 });
 

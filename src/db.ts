@@ -40,6 +40,19 @@ export const DEFAULT_SETTINGS: Settings = {
     "claude-fable-5-1": { inputPerMTok: 10, outputPerMTok: 50 },
     "claude-opus-4-8": { inputPerMTok: 5, outputPerMTok: 25 },
   },
+  // v2
+  replyDelayMode: "instant",
+  realDelayMaxMinutes: 6,
+  driftCheckEnabled: false,
+  timezone: "America/New_York",
+  // v2, SPEC_V2 section R (the spec's seed number; his word was opt-in, see HANDOFF).
+  herFirstTextsPerDay: 10,
+  herFirstQuietHours: "23:30-08:30",
+  // v2, SPEC_V2 section S. Workers AI needs no key; ElevenLabs needs its key and a voice id.
+  voiceProvider: "workersai",
+  voiceMode: "some",
+  elevenLabsVoiceId: "",
+  transcribeProvider: "workersai",
 };
 
 // ------------------------------------------------------------------ settings
@@ -135,6 +148,25 @@ export async function listMessages(db: D1Database, conversationId: string, chann
   return r.results.reverse();
 }
 
+// The thread as the page may show it: a reply whose deliver_at is still in the future has
+// not arrived yet (real-mode timing, SPEC_V2 section B) and is left out. Same window and
+// order as listMessages. `now` is compared as ISO text, the form deliver_at is stored in.
+export async function listMessagesVisible(
+  db: D1Database,
+  conversationId: string,
+  channel: Channel | undefined,
+  now: Date | string = new Date(),
+  limit = 500,
+): Promise<MessageRow[]> {
+  const at = typeof now === "string" ? now : now.toISOString();
+  const r = channel
+    ? await db.prepare("SELECT * FROM messages WHERE conversation_id = ?1 AND channel = ?2 AND (deliver_at IS NULL OR deliver_at <= ?3) ORDER BY seq DESC LIMIT ?4")
+      .bind(conversationId, channel, at, limit).all<MessageRow>()
+    : await db.prepare("SELECT * FROM messages WHERE conversation_id = ?1 AND (deliver_at IS NULL OR deliver_at <= ?2) ORDER BY seq DESC LIMIT ?3")
+      .bind(conversationId, at, limit).all<MessageRow>();
+  return r.results.reverse();
+}
+
 export async function listRecentStoryMessages(db: D1Database, conversationId: string, limit: number): Promise<MessageRow[]> {
   const r = await db.prepare("SELECT * FROM messages WHERE conversation_id = ?1 AND channel = 'story' ORDER BY seq DESC LIMIT ?2").bind(conversationId, limit).all<MessageRow>();
   return r.results.reverse();
@@ -154,8 +186,8 @@ export async function nextSeq(db: D1Database, conversationId: string): Promise<n
 }
 
 export function insertMessageStmt(db: D1Database, m: MessageRow): D1PreparedStatement {
-  return db.prepare("INSERT INTO messages (id, conversation_id, channel, role, content, created_at, seq, idempotency_key, reply_to_id, model_run_id, flags_json, image_id, image_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")
-    .bind(m.id, m.conversation_id, m.channel, m.role, m.content, m.created_at, m.seq, m.idempotency_key, m.reply_to_id, m.model_run_id, m.flags_json, m.image_id, m.image_status);
+  return db.prepare("INSERT INTO messages (id, conversation_id, channel, role, content, created_at, seq, idempotency_key, reply_to_id, model_run_id, flags_json, image_id, image_status, deliver_at, song_json, audio_key, images_json, media_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)")
+    .bind(m.id, m.conversation_id, m.channel, m.role, m.content, m.created_at, m.seq, m.idempotency_key, m.reply_to_id, m.model_run_id, m.flags_json, m.image_id, m.image_status, m.deliver_at ?? null, m.song_json ?? null, m.audio_key ?? null, m.images_json ?? null, m.media_id ?? null);
 }
 
 export function insertModelRunStmt(db: D1Database, r: ModelRunRow): D1PreparedStatement {

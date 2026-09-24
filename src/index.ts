@@ -1,19 +1,41 @@
 // Fetch entry. The owner gate runs first for every path, static assets and images included
 // (run_worker_first), so nothing is ever served to a stranger. Then: /api/* to the router,
-// /media/:id to R2, everything else to the ASSETS binding.
+// /media/* to R2 (her photos, voice notes, his photos, the library), everything else to
+// the ASSETS binding.
+//
+// v2: a scheduled entry for the four crons in wrangler.jsonc (backup, drift check, her
+// first texts, voiceprint). A cron that fails is logged by class and audited; it never
+// touches a conversation.
 import { requireOwner } from "./auth";
-import { handleApi } from "./api";
-import { serveMedia } from "./images";
+import { handleApi, overlaySettings } from "./api";
+import { serveAudio, serveInbox, serveLibrary, serveMedia } from "./images";
+import { runBackup } from "./backup";
+import { runDrift } from "./drift";
+import { maybeTextFirst } from "./herfirst";
+import { runVoiceprint } from "./voiceprint";
+import { auditStmt, getSettings } from "./db";
+import { safeErrorMessage } from "./providers/types";
 import { json } from "./errors";
 import type { Env } from "./types";
 
 const READ_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
 const MEDIA_PREFIX = "/media/";
 const LOCAL_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1"]);
-const CSP = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+const CSP = "default-src 'self'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+
+// The crons in wrangler.jsonc, by what they do. Not exported: workerd reads every named
+// export of the entry module as a handler and refuses to start on a string.
+const CRON_BACKUP = "0 7 * * *";
+const CRON_DRIFT = "0 13 * * 1";
+const CRON_HER_FIRST = "*/20 * * * *";
+const CRON_VOICEPRINT = "0 14 * * 1";
 
 function methodNotAllowed(): Response {
   return json({ error: "method not allowed", code: "method_not_allowed" }, 405);
+}
+
+function notFound(): Response {
+  return json({ error: "not found", code: "not_found" }, 404);
 }
 
 // A state-changing request from another site is refused, whatever cookie it carries.
@@ -59,6 +81,19 @@ function harden(res: Response): Response {
   return out;
 }
 
+// /media/:id her photos (v1); /media/audio/:messageId a voice note; /media/inbox/:messageId/:n
+// one of his photos; /media/library/:id an owner-uploaded clip, video or image.
+function serveMediaPath(request: Request, env: Env, path: string): Promise<Response> {
+  const parts = path.slice(MEDIA_PREFIX.length).split("/").map(safeDecode);
+  const range = request.headers.get("range");
+  const [kind, a, b] = parts;
+  if (parts.length === 2 && kind === "audio" && a) return serveAudio(env, env.DB, a, range);
+  if (parts.length === 3 && kind === "inbox" && a && b !== undefined) return serveInbox(env, env.DB, a, b, range);
+  if (parts.length === 2 && kind === "library" && a) return serveLibrary(env, env.DB, a, range);
+  if (parts.length === 1 && kind) return serveMedia(env, env.DB, kind);
+  return Promise.resolve(notFound());
+}
+
 async function dispatch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   let owner: { email: string; mode: "access" | "dev" };
   try {
@@ -81,13 +116,37 @@ async function dispatch(request: Request, env: Env, ctx: ExecutionContext): Prom
 
   if (path.startsWith(MEDIA_PREFIX)) {
     if (!READ_METHODS.has(request.method)) return methodNotAllowed();
-    const id = safeDecode(path.slice(MEDIA_PREFIX.length));
-    return serveMedia(env, env.DB, id);
+    return serveMediaPath(request, env, path);
   }
 
   if (!READ_METHODS.has(request.method)) return methodNotAllowed();
   // The assets binding maps "/" to index.html and answers 404 for anything missing.
   return env.ASSETS.fetch(request);
+}
+
+// ------------------------------------------------------------------ cron
+
+async function runCron(cron: string, at: Date, env: Env, db: D1Database): Promise<Record<string, unknown> | null> {
+  if (cron === CRON_BACKUP) {
+    const r = await runBackup(env, db);
+    return { key: r.key, bytes: r.bytes, kept: r.kept };
+  }
+  const settings = overlaySettings(env, await getSettings(db));
+  if (cron === CRON_DRIFT) {
+    if (!settings.driftCheckEnabled) return null;
+    const r = await runDrift(env, db, settings);
+    return { id: r.id, ranAt: r.ranAt };
+  }
+  if (cron === CRON_HER_FIRST) {
+    const r: unknown = await maybeTextFirst(env, db, settings, at);
+    return typeof r === "object" && r !== null ? (r as Record<string, unknown>) : { result: r ?? null };
+  }
+  if (cron === CRON_VOICEPRINT) {
+    const r: unknown = await runVoiceprint(db, at);
+    return typeof r === "object" && r !== null ? (r as Record<string, unknown>) : { result: r ?? null };
+  }
+  console.warn("scheduled: no handler for cron", cron);
+  return null;
 }
 
 export default {
@@ -101,5 +160,25 @@ export default {
       res = json({ error: "internal error", code: "internal" }, 500);
     }
     return harden(res);
+  },
+
+  async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    const cron = controller.cron;
+    const at = new Date(Number.isFinite(controller.scheduledTime) ? controller.scheduledTime : Date.now());
+    const db = env.DB;
+    try {
+      const result = await runCron(cron, at, env, db);
+      if (result) console.log("scheduled ok", cron, JSON.stringify(result).slice(0, 300));
+      else console.log("scheduled skipped", cron);
+    } catch (e) {
+      const cls = e instanceof Error ? e.name || "Error" : "error";
+      const message = safeErrorMessage(e, 200);
+      console.error("scheduled failed", cron, cls, message);
+      try {
+        await auditStmt(db, "cron", "cron.failed", "cron", cron, null, { at: at.toISOString(), error: cls, message }).run();
+      } catch {
+        /* the audit row is best effort */
+      }
+    }
   },
 } satisfies ExportedHandler<Env>;

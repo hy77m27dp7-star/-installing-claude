@@ -37,6 +37,39 @@ function assertFixed(scope: FactScope, verb: string): void {
   if (scope === "fixed") throw new ApiHttpError(403, "fixed_canon", `fixed canon cannot be ${verb}`);
 }
 
+// v2 (SPEC_V2 section J): the relationship state may carry `mood` (free text) and
+// `cooling_off_until` (ISO time or null). Both are checked and normalised here so a
+// malformed value can never reach the prompt; every other key passes through untouched.
+const MAX_MOOD = 200;
+
+function normalizeRelationshipFields(state: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...state };
+  if ("mood" in out) {
+    const mood = out.mood;
+    if (mood === null || mood === undefined) {
+      delete out.mood;
+    } else {
+      if (typeof mood !== "string") throw new ApiHttpError(400, "validation", "mood must be a string");
+      const t = mood.trim();
+      if (t.length > MAX_MOOD) throw new ApiHttpError(400, "validation", `mood exceeds ${MAX_MOOD} characters`);
+      if (t) out.mood = t;
+      else delete out.mood;
+    }
+  }
+  if ("cooling_off_until" in out) {
+    const until = out.cooling_off_until;
+    if (until === null || until === undefined || (typeof until === "string" && !until.trim())) {
+      out.cooling_off_until = null;
+    } else {
+      if (typeof until !== "string") throw new ApiHttpError(400, "validation", "cooling_off_until must be an ISO 8601 time or null");
+      const t = Date.parse(until);
+      if (!Number.isFinite(t)) throw new ApiHttpError(400, "validation", "cooling_off_until must be an ISO 8601 time or null");
+      out.cooling_off_until = new Date(t).toISOString();
+    }
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------ version chains
 
 interface Versioned { id: string; version: number; status: "approved" | "superseded" | "rejected"; supersedes_id: string | null }
@@ -111,7 +144,7 @@ export async function putState(
 ): Promise<{ version: number; state: Record<string, unknown> }> {
   if (entity !== "relationship" && entity !== "scene") throw new ApiHttpError(400, "validation", "entity must be relationship or scene");
   if (!isPlainObject(state)) throw new ApiHttpError(400, "validation", "state must be a plain JSON object");
-  const json = JSON.stringify(state);
+  const json = JSON.stringify(entity === "relationship" ? normalizeRelationshipFields(state) : state);
   if (json.length > MAX_STATE_JSON) throw new ApiHttpError(400, "validation", "state is too large");
   const stored = JSON.parse(json) as Record<string, unknown>;
   const current = await getCurrentState(db, entity);

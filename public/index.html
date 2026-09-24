@@ -4,9 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#070b14">
+<meta name="theme-color" content="#060a13">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Avelie">
 <title>Avelie</title>
-<link rel="icon" href="data:,">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body class="page-chat">
@@ -17,6 +22,7 @@
     <a href="/state">State</a>
     <a href="/model">Model</a>
     <a href="/images">Images</a>
+    <a href="/timeline">Timeline</a>
   </nav>
 </header>
 
@@ -31,28 +37,72 @@
 
   <section class="thread-wrap">
     <div class="thread-bar">
-      <button type="button" class="btn ghost phone-only" id="openDrawer" aria-controls="sidebar">Chats</button>
+      <button type="button" class="icon-btn phone-only" id="openDrawer" aria-controls="sidebar" aria-expanded="false" aria-label="Chats">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
       <span class="conv-title" id="convTitle"></span>
+      <div class="bar-tools">
+        <div class="menu-wrap">
+          <div class="seg small" role="group" aria-label="Scene">
+            <button type="button" id="sceneTogether" aria-pressed="false">Together</button>
+            <button type="button" id="sceneApart" aria-pressed="false">Texting</button>
+          </div>
+          <div class="popover hidden" id="placesPop">
+            <div class="places" id="placesList"></div>
+            <input type="text" id="placeInput" placeholder="Where" maxlength="200" aria-label="Where">
+            <div class="row end">
+              <button type="button" class="btn small ghost" id="placeCancel">Cancel</button>
+              <button type="button" class="btn small primary" id="placeSet">Together</button>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="btn small pill quiet hidden" id="letHerStart">Let her start</button>
+        <button type="button" class="icon-btn" id="photosBtn" aria-label="Photos" aria-controls="photosDrawer" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M4 16l5-5 4 4 3-3 4 4"/><path d="M15.5 9.5h.01"/></svg>
+        </button>
+        <div class="menu-wrap">
+          <button type="button" class="icon-btn" id="moreBtn" aria-label="More" aria-haspopup="true" aria-expanded="false" aria-controls="moreMenu">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg>
+          </button>
+          <div class="menu hidden" id="moreMenu">
+            <label class="switch" for="timingToggle">
+              <input type="checkbox" id="timingToggle" checked>
+              <span class="track"></span>
+              <span class="switch-label">Human timing</span>
+            </label>
+            <label class="switch warm" for="operatorToggle">
+              <input type="checkbox" id="operatorToggle">
+              <span class="track"></span>
+              <span class="switch-label">Operator</span>
+            </label>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div class="thread" id="thread" aria-live="polite"></div>
-
-    <div class="typing hidden" id="typing" aria-label="Typing"><span></span><span></span><span></span></div>
+    <div class="thread" id="thread" aria-live="polite">
+      <div class="typing hidden" id="typing" aria-label="Typing"><span></span><span></span><span></span></div>
+    </div>
 
     <form class="composer" id="composer" autocomplete="off">
       <div class="error-row hidden" id="errorRow">
         <span class="chip danger" id="errorChip"></span>
         <button type="button" class="btn small hidden" id="retryBtn">Retry</button>
       </div>
+      <div class="attach-strip hidden" id="attachStrip"></div>
       <div class="composer-box">
+        <button type="button" class="icon-btn" id="attachBtn" aria-label="Attach photo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
+        <input type="file" id="fileInput" class="hidden" accept="image/jpeg,image/png,image/webp" multiple aria-label="Photos to send">
         <textarea id="input" rows="1" placeholder="Message" maxlength="4000" aria-label="Message"></textarea>
-        <div class="composer-actions">
-          <label class="switch" for="operatorToggle">
-            <input type="checkbox" id="operatorToggle">
-            <span class="track"></span>
-            <span class="switch-label">Operator</span>
-          </label>
-          <button type="submit" class="btn primary" id="sendBtn">Send</button>
+        <div class="composer-tools">
+          <button type="button" class="icon-btn" id="micBtn" aria-label="Hold to record" aria-pressed="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 11v1a7 7 0 0 1-14 0v-1"/><path d="M12 19v3"/><path d="M8 22h8"/></svg>
+          </button>
+          <button type="submit" class="icon-btn primary" id="sendBtn" aria-label="Send">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+          </button>
         </div>
       </div>
     </form>
@@ -60,6 +110,22 @@
 </main>
 
 <div class="scrim hidden" id="scrim"></div>
+
+<aside class="drawer" id="photosDrawer" aria-label="Photos" aria-hidden="true">
+  <div class="drawer-head">
+    <h2>Photos</h2>
+    <button type="button" class="btn small ghost" id="photosClose">Close</button>
+  </div>
+  <div class="drawer-body" id="photosList"></div>
+</aside>
+
+<aside class="drawer" id="whyDrawer" aria-label="Why" aria-hidden="true">
+  <div class="drawer-head">
+    <h2>Why</h2>
+    <button type="button" class="btn small ghost" id="whyClose">Close</button>
+  </div>
+  <div class="drawer-body" id="whyBody"></div>
+</aside>
 
 <script type="module" src="/js/nav.js"></script>
 <script type="module" src="/js/chat.js"></script>

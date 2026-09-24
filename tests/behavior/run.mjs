@@ -7,6 +7,7 @@
 //
 //   node tests/behavior/run.mjs [--base http://127.0.0.1:8787] [--provider anthropic] [--model claude-opus-5]
 //                               [--only <id>[,<id>]] [--daily-cap 20] [--strict]
+//                               [--compare providerA:modelA,providerB:modelB[,...]]
 //
 // A turn that starts with "OPERATOR: " goes through POST /api/operator (out of scene)
 // instead of the story turn. --strict exits 1 when a mechanical check failed; the default
@@ -14,6 +15,11 @@
 // raises monthlyCapUsd to at least the same) for the run and restores both afterwards: the
 // full list is about a hundred turns, and even the stub records cost at the configured
 // model's price, so the default $3 cap runs out halfway.
+//
+// --compare (the vessel test, SPEC_V2 section M) runs every selected scenario once per
+// provider:model pair, switching the settings between runs and restoring them after, and
+// writes reports/compare_<stamp>.md: two (or more) columns per turn, the flag counts per
+// column, and a "reads the same?" line per scenario left for the owner to fill in.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,8 +34,26 @@ const BAD_TYPOGRAPHY = new RegExp("[" + String.fromCharCode(0x2014, 0x2013, 0x20
 
 // ------------------------------------------------------------------ args
 
+function parseCompare(raw) {
+  const pairs = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  const out = [];
+  for (const p of pairs) {
+    const i = p.indexOf(":");
+    if (i <= 0 || i === p.length - 1) {
+      console.error(`--compare entries look like provider:model, got "${p}"`);
+      process.exit(2);
+    }
+    out.push({ provider: p.slice(0, i).trim(), model: p.slice(i + 1).trim() });
+  }
+  if (out.length < 2) {
+    console.error("--compare needs at least two provider:model entries");
+    process.exit(2);
+  }
+  return out;
+}
+
 function parseArgs(argv) {
-  const out = { base: "http://127.0.0.1:8787", provider: null, model: null, only: null, dailyCap: null, strict: false };
+  const out = { base: "http://127.0.0.1:8787", provider: null, model: null, only: null, dailyCap: null, strict: false, compare: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
@@ -43,15 +67,21 @@ function parseArgs(argv) {
     else if (a.startsWith("--only=")) out.only = a.slice(7);
     else if (a === "--daily-cap") out.dailyCap = Number(next());
     else if (a.startsWith("--daily-cap=")) out.dailyCap = Number(a.slice(12));
+    else if (a === "--compare") out.compare = parseCompare(next() || "");
+    else if (a.startsWith("--compare=")) out.compare = parseCompare(a.slice(10));
     else if (a === "--strict") out.strict = true;
     else if (a === "--help" || a === "-h") {
-      console.log("usage: node tests/behavior/run.mjs [--base URL] [--provider NAME] [--model NAME] [--only id,id] [--daily-cap USD] [--strict]");
+      console.log("usage: node tests/behavior/run.mjs [--base URL] [--provider NAME] [--model NAME] [--only id,id] [--daily-cap USD] [--strict] [--compare provider:model,provider:model]");
       process.exit(0);
     }
   }
   if (out.base.endsWith("/")) out.base = out.base.slice(0, -1);
   if (out.dailyCap !== null && (!Number.isFinite(out.dailyCap) || out.dailyCap < 0)) {
     console.error("--daily-cap must be a number of USD, 0 or more");
+    process.exit(2);
+  }
+  if (out.compare && (out.provider || out.model)) {
+    console.error("--compare replaces --provider and --model; pass the pairs to --compare");
     process.exit(2);
   }
   return out;
@@ -81,7 +111,7 @@ async function api(base, method, path, body) {
 const KNOWN_FLAGS = new Set([
   "em_dash", "emoji", "markdown_structure", "lol_lmao", "question_chain", "name_overuse", "braking_repeat",
   "therapy_cadence", "menu_offer", "tech_leak", "dependency_hook", "first_meeting_replay", "unknown_resolved",
-  "caption_tail", "length_pattern", "price_unknown",
+  "caption_tail", "length_pattern", "price_unknown", "song_marker_dup", "callback_forced", "media_unknown", "truncated",
 ]);
 
 const PRIOR_HISTORY_RE = /\b(last time|remember when|like before|the other night|the other day we|missed you|when we met|our (?:first|last) (?:date|night|time)|as usual|you always|like always|again already|since we)\b/i;
@@ -218,6 +248,7 @@ async function runScenario(base, scenario, stamp) {
       reply: ok ? r.json.assistantMessage.content : "",
       flags: ok ? (r.json.flags || []).map((f) => f.code) : [],
       imagePending: ok ? !!r.json.imagePending : false,
+      song: ok && r.json.assistantMessage.song_json ? safeJson(r.json.assistantMessage.song_json) : null,
       ms: Date.now() - started,
       error: ok ? null : `${r.status} ${(r.json && r.json.code) || r.text.slice(0, 120)}`,
     });
@@ -239,9 +270,43 @@ async function runScenario(base, scenario, stamp) {
   return { scenario, conversationId, exchanges, results, failed, errors, auto };
 }
 
+function safeJson(s) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+// Runs every scenario in order, printing one line each; never throws for one scenario.
+async function runAll(base, scenarios, stamp, label = "") {
+  const runs = [];
+  for (const scenario of scenarios) {
+    const t0 = Date.now();
+    try {
+      const run = await runScenario(base, scenario, stamp + (label ? "-" + label : ""));
+      runs.push(run);
+      const flags = run.exchanges.flatMap((e) => e.flags);
+      console.log(`${run.errors ? "ERROR" : run.failed.length ? "FAIL " : "PASS "} ${label ? "[" + label + "] " : ""}${scenario.id}  ${scenario.title}  (${run.exchanges.length} turns, ${flags.length} flag${flags.length === 1 ? "" : "s"}, ${Date.now() - t0} ms)`);
+      for (const f of run.failed) console.log(`        ${f.name}: ${f.reason}`);
+      for (const e of run.exchanges.filter((x) => x.error)) console.log(`        turn ${e.index + 1}: ${e.error}`);
+    } catch (e) {
+      console.log(`ERROR ${label ? "[" + label + "] " : ""}${scenario.id}  ${scenario.title}: ${e instanceof Error ? e.message : String(e)}`);
+      runs.push({ scenario, conversationId: "(none)", exchanges: [], results: [], failed: [], errors: 1, auto: "ERROR (could not run)" });
+    }
+  }
+  return runs;
+}
+
 // ------------------------------------------------------------------ report
 
 const md = (s) => String(s).replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+
+function flagSummary(exchanges) {
+  const counted = {};
+  for (const f of exchanges.flatMap((e) => e.flags)) counted[f] = (counted[f] || 0) + 1;
+  return Object.entries(counted).map(([k, v]) => (v > 1 ? `${k} x${v}` : k)).join(", ") || "none";
+}
 
 function writeReport(path, runs, meta) {
   const lines = [];
@@ -258,11 +323,7 @@ function writeReport(path, runs, meta) {
   lines.push("| # | scenario | turns | flags | auto result |");
   lines.push("|---|---|---|---|---|");
   runs.forEach((r, i) => {
-    const flags = r.exchanges.flatMap((e) => e.flags);
-    const counted = {};
-    for (const f of flags) counted[f] = (counted[f] || 0) + 1;
-    const flagText = Object.entries(counted).map(([k, v]) => (v > 1 ? `${k} x${v}` : k)).join(", ") || "none";
-    lines.push(`| ${i + 1} | ${md(r.scenario.id)}: ${md(r.scenario.title)} | ${r.exchanges.length} | ${md(flagText)} | ${md(r.auto)} |`);
+    lines.push(`| ${i + 1} | ${md(r.scenario.id)}: ${md(r.scenario.title)} | ${r.exchanges.length} | ${md(flagSummary(r.exchanges))} | ${md(r.auto)} |`);
   });
   lines.push("");
   lines.push("## Transcripts");
@@ -273,6 +334,10 @@ function writeReport(path, runs, meta) {
     lines.push(`Conversation: ${r.conversationId}`);
     lines.push("");
     lines.push(`Rubric (owner): ${r.scenario.rubric}`);
+    if (r.scenario.notes) {
+      lines.push("");
+      lines.push(`Notes: ${r.scenario.notes}`);
+    }
     lines.push("");
     lines.push(`Auto: ${r.auto}`);
     for (const f of r.failed) lines.push(`- ${f.name}: ${f.reason}`);
@@ -287,12 +352,85 @@ function writeReport(path, runs, meta) {
       const tags = [];
       if (e.flags.length) tags.push("flags: " + e.flags.join(", "));
       if (e.imagePending) tags.push("photo requested");
+      if (e.song) tags.push(`song: ${e.song.artist} - ${e.song.title}`);
       tags.push(`${e.ms} ms`);
       lines.push("");
       lines.push(`_${tags.join(" | ")}_`);
       lines.push("");
     }
   }
+  writeFileSync(path, lines.join("\n") + "\n");
+}
+
+// The vessel test report: the same scenarios, one column per provider:model.
+function writeCompareReport(path, columns, meta) {
+  const lines = [];
+  const labels = columns.map((c) => c.label);
+  lines.push(`# Vessel test ${meta.stampIso}`);
+  lines.push("");
+  lines.push(`- base: ${meta.base}`);
+  lines.push(`- prompt version: ${meta.system ? meta.system.promptVersion : "(unknown)"}, constitution: ${meta.system ? meta.system.constitutionVersion : "(unknown)"}`);
+  lines.push(`- state: hasSharedHistory ${meta.state ? meta.state.hasSharedHistory : "?"}, facts about him ${meta.state ? meta.state.facts.justin.length : "?"}, history entries ${meta.state ? meta.state.history.length : "?"}`);
+  columns.forEach((c, i) => {
+    const flags = c.runs.reduce((n, r) => n + r.exchanges.flatMap((e) => e.flags).length, 0);
+    lines.push(`- column ${String.fromCharCode(65 + i)}: ${c.label} (mechanical pass ${c.runs.filter((r) => !r.errors && !r.failed.length).length} of ${c.runs.length}, ${flags} flag${flags === 1 ? "" : "s"}, errors ${c.runs.filter((r) => r.errors).length})`);
+  });
+  lines.push("");
+  lines.push("Same rules, same memory, same scenarios; only the model changes. The character survives the model when the columns read the same. \"Reads the same?\" is the owner's call, per scenario; the flag counts are mechanical.");
+  lines.push("");
+  const head = ["#", "scenario", ...labels.flatMap((l) => [`flags ${l}`, `auto ${l}`]), "reads the same? (owner)"];
+  lines.push("| " + head.map(md).join(" | ") + " |");
+  lines.push("|" + head.map(() => "---").join("|") + "|");
+  const first = columns[0].runs;
+  first.forEach((r0, i) => {
+    const cells = [String(i + 1), `${md(r0.scenario.id)}: ${md(r0.scenario.title)}`];
+    for (const c of columns) {
+      const r = c.runs[i];
+      cells.push(r ? md(flagSummary(r.exchanges)) : "(not run)");
+      cells.push(r ? md(r.auto) : "(not run)");
+    }
+    cells.push("");
+    lines.push("| " + cells.join(" | ") + " |");
+  });
+  lines.push("");
+  lines.push("## Side by side");
+  first.forEach((r0, i) => {
+    lines.push("");
+    lines.push(`### ${r0.scenario.id}: ${r0.scenario.title}`);
+    lines.push("");
+    lines.push(`Rubric (owner): ${r0.scenario.rubric}`);
+    if (r0.scenario.notes) {
+      lines.push("");
+      lines.push(`Notes: ${r0.scenario.notes}`);
+    }
+    lines.push("");
+    columns.forEach((c, k) => {
+      const r = c.runs[i];
+      lines.push(`- ${String.fromCharCode(65 + k)} ${c.label}: ${r ? r.auto : "(not run)"}; conversation ${r ? r.conversationId : "(none)"}`);
+    });
+    lines.push("");
+    lines.push("| turn | you | " + labels.map(md).join(" | ") + " |");
+    lines.push("|---|---|" + labels.map(() => "---").join("|") + "|");
+    const turns = r0.scenario.turns.length;
+    for (let t = 0; t < turns; t++) {
+      const cells = [String(t + 1), md(r0.scenario.turns[t])];
+      for (const c of columns) {
+        const e = c.runs[i] ? c.runs[i].exchanges[t] : null;
+        if (!e) cells.push("(not run)");
+        else if (e.error) cells.push(`[error ${md(e.error)}]`);
+        else {
+          const tags = [];
+          if (e.flags.length) tags.push("flags: " + e.flags.join(", "));
+          if (e.imagePending) tags.push("photo requested");
+          if (e.song) tags.push(`song: ${e.song.artist} - ${e.song.title}`);
+          cells.push(md(e.reply) + (tags.length ? ` _(${md(tags.join("; "))})_` : ""));
+        }
+      }
+      lines.push("| " + cells.join(" | ") + " |");
+    }
+    lines.push("");
+    lines.push("Reads the same? (owner): ");
+  });
   writeFileSync(path, lines.join("\n") + "\n");
 }
 
@@ -330,7 +468,11 @@ async function main() {
   const state = (await api(args.base, "GET", "/api/state")).json;
   const stampIso = new Date().toISOString();
   const stamp = stampIso.replace(/[:.]/g, "-");
-  console.log(`behavior: ${scenarios.length} scenario(s) against ${args.base} (provider ${settings ? settings.provider : "?"}, model ${settings ? settings.model : "?"})`);
+  if (args.compare) {
+    console.log(`vessel test: ${scenarios.length} scenario(s) x ${args.compare.length} configurations against ${args.base}`);
+  } else {
+    console.log(`behavior: ${scenarios.length} scenario(s) against ${args.base} (provider ${settings ? settings.provider : "?"}, model ${settings ? settings.model : "?"})`);
+  }
   if (state && (state.hasSharedHistory || state.facts.justin.length)) {
     console.log("note: the server is not on a fresh start (shared history or facts about him exist); first-meeting scenarios read differently");
   }
@@ -352,27 +494,70 @@ async function main() {
     };
   }
 
-  const runs = [];
-  try {
-    for (const scenario of scenarios) {
-      const t0 = Date.now();
-      try {
-        const run = await runScenario(args.base, scenario, stamp);
-        runs.push(run);
-        const flags = run.exchanges.flatMap((e) => e.flags);
-        console.log(`${run.errors ? "ERROR" : run.failed.length ? "FAIL " : "PASS "} ${scenario.id}  ${scenario.title}  (${run.exchanges.length} turns, ${flags.length} flag${flags.length === 1 ? "" : "s"}, ${Date.now() - t0} ms)`);
-        for (const f of run.failed) console.log(`        ${f.name}: ${f.reason}`);
-        for (const e of run.exchanges.filter((x) => x.error)) console.log(`        turn ${e.index + 1}: ${e.error}`);
-      } catch (e) {
-        console.log(`ERROR ${scenario.id}  ${scenario.title}: ${e instanceof Error ? e.message : String(e)}`);
-        runs.push({ scenario, conversationId: "(none)", exchanges: [], results: [], failed: [], errors: 1, auto: "ERROR (could not run)" });
+  mkdirSync(REPORTS_DIR, { recursive: true });
+
+  // ---------------------------------------------------------------- compare mode
+
+  if (args.compare) {
+    const originalModel = settings ? { provider: settings.provider, model: settings.model } : null;
+    const columns = [];
+    let switchFailed = null;
+    try {
+      for (const cfg of args.compare) {
+        const label = `${cfg.provider}:${cfg.model}`;
+        const put = await api(args.base, "PUT", "/api/settings", { provider: cfg.provider, model: cfg.model });
+        if (put.status !== 200) {
+          switchFailed = `settings switch to ${label} failed: ${put.status} ${put.text.slice(0, 200)}`;
+          console.error(switchFailed);
+          break;
+        }
+        const colSettings = put.json;
+        console.log(`\n== ${label} ==`);
+        const runs = await runAll(args.base, scenarios, stamp, label.replace(/[^A-Za-z0-9]+/g, "_").slice(0, 24));
+        columns.push({ label, settings: colSettings, runs });
       }
+    } finally {
+      if (originalModel) {
+        const back = await api(args.base, "PUT", "/api/settings", originalModel);
+        if (back.status !== 200) console.error(`model restore failed: ${back.status} ${back.text.slice(0, 200)}; put provider ${originalModel.provider} and model ${originalModel.model} back by hand`);
+        else console.log(`\nsettings restored: provider ${originalModel.provider}, model ${originalModel.model}`);
+      }
+      if (restoreCaps) await restoreCaps();
     }
+    if (switchFailed || columns.length < 2) {
+      console.error("vessel test: fewer than two columns ran" + (switchFailed ? " (" + switchFailed + ")" : ""));
+      process.exit(1);
+    }
+    const reportPath = join(REPORTS_DIR, `compare_${stamp}.md`);
+    writeCompareReport(reportPath, columns, { stampIso, base: args.base, system, state });
+    let errors = 0;
+    let mechanicalFail = 0;
+    let budgetHits = 0;
+    for (const c of columns) {
+      errors += c.runs.filter((r) => r.errors).length;
+      mechanicalFail += c.runs.filter((r) => !r.errors && r.failed.length).length;
+      budgetHits += c.runs.reduce((n, r) => n + r.exchanges.filter((e) => e.error && e.error.includes("budget_exceeded")).length, 0);
+    }
+    console.log("");
+    for (const c of columns) {
+      const pass = c.runs.filter((r) => !r.errors && !r.failed.length).length;
+      const flags = c.runs.reduce((n, r) => n + r.exchanges.flatMap((e) => e.flags).length, 0);
+      console.log(`${c.label}: mechanical pass ${pass} of ${c.runs.length}, ${flags} flag(s), errors ${c.runs.filter((r) => r.errors).length}`);
+    }
+    if (budgetHits) console.log(`hint: ${budgetHits} turn(s) hit the spend cap (402 budget_exceeded); rerun with --daily-cap <usd>, which is restored after the run`);
+    console.log(`"reads the same?" is the owner's line per scenario; report: ${reportPath}`);
+    process.exit(errors ? 1 : args.strict && mechanicalFail ? 1 : 0);
+  }
+
+  // ---------------------------------------------------------------- single run
+
+  let runs = [];
+  try {
+    runs = await runAll(args.base, scenarios, stamp);
   } finally {
     if (restoreCaps) await restoreCaps();
   }
 
-  mkdirSync(REPORTS_DIR, { recursive: true });
   const reportPath = join(REPORTS_DIR, `behavior_${stamp}.md`);
   writeReport(reportPath, runs, { stampIso, base: args.base, settings, system, state });
 
