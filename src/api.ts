@@ -278,7 +278,7 @@ export function assertSettingsConsistent(current: Settings, patch: Partial<Setti
     const model = String(next[key] ?? "").trim();
     const p = prices[model];
     if (!p || typeof p.inputPerMTok !== "number" || typeof p.outputPerMTok !== "number") {
-      throw invalid(`${key} "${model}" has no entry in prices; add its price (USD per million tokens) before selecting it`);
+      throw invalid(`${key} "${model}" has no entry in prices; add its price (USD per million tokens) in the Prices section of the Model page before selecting it`);
     }
   }
   if (touched("imageCostUsd") || touched("imageProvider")) {

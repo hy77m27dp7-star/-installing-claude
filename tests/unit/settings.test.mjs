@@ -42,6 +42,8 @@ test("mergedPrices: stored entries win, built-in entries fill the rest, junk is 
 
 test("model and proposalModel must be priced: an unpriced id is refused with a clear 400", () => {
   bad(() => assertSettingsConsistent(testSettings(), validateSettingsPatch({ model: "nobody-priced-this" })), /model "nobody-priced-this" has no entry in prices/);
+  // The sentence names the control that resolves it (the Prices section the Model page carries).
+  bad(() => assertSettingsConsistent(testSettings(), validateSettingsPatch({ model: "nobody-priced-this" })), /Prices section of the Model page/);
   bad(() => assertSettingsConsistent(testSettings(), validateSettingsPatch({ proposalModel: "nobody-priced-this" })), /proposalModel "nobody-priced-this"/);
   // Priced in the stored table, or in the built-in one (the Model page can select the Workers AI model).
   assertSettingsConsistent(testSettings(), validateSettingsPatch({ model: "claude-sonnet-5", proposalModel: "claude-opus-5" }));

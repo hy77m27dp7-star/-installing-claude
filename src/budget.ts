@@ -28,7 +28,7 @@ export function priceUnknown(model: string): ApiHttpError {
   return new ApiHttpError(
     402,
     "price_unknown",
-    `no price for model ${model}; add it under prices in the Model panel before using it`,
+    `no price for model ${model}; add it in the Prices section of the Model page before using it`,
     false,
     model,
   );
@@ -76,7 +76,7 @@ function exceeded(period: "daily" | "monthly", spentMicro: number, estimateMicro
 export async function assertBudget(db: D1Database, settings: Settings, estimateUsdValue: number): Promise<void> {
   // No estimate, no call: a missing or broken number is never read as free.
   if (typeof estimateUsdValue !== "number" || !Number.isFinite(estimateUsdValue) || estimateUsdValue < 0) {
-    throw new ApiHttpError(402, "price_unknown", "the call has no usable cost estimate; check the model's price in the Model panel", false);
+    throw new ApiHttpError(402, "price_unknown", "the call has no usable cost estimate; check the model's price in the Prices section of the Model page", false);
   }
   const daily = capUsd(settings, "dailyCapUsd");
   const monthly = capUsd(settings, "monthlyCapUsd");

@@ -95,6 +95,9 @@ const DEFAULT_TEXT_MAX = 4000;
 const ID_MAX = 120;
 const TIME_MAX = 64;
 const MESSAGE_CONTENT_MAX = 20_000;
+// A user line is capped where the turn and operator routes cap it (chat.ts, operator.ts);
+// only her replies may run to the column's ceiling.
+const USER_CONTENT_MAX = 4000;
 const HISTORY_BODY_MAX = 20_000;
 const STATE_JSON_MAX = 100_000;
 const PROPOSAL_MAX = 1000;
@@ -407,13 +410,17 @@ export async function importAll(
     const versions = stateVersions.filter((r) => r.get("entity") === entity).map((r) => Number(r.get("version")));
     if (new Set(versions).size !== versions.length) throw bad("stateVersions", `duplicate version for ${entity}`);
   }
-  // One seq per conversation (the unique index would otherwise fail the whole batch).
+  // One seq per conversation (the unique index would otherwise fail the whole batch), and
+  // a user line no longer than the API would have taken.
   const seqSeen = new Set<string>();
-  for (const r of messages) {
+  messages.forEach((r, i) => {
     const k = String(r.get("conversation_id")) + "#" + String(r.get("seq"));
     if (seqSeen.has(k)) throw bad("messages", `duplicate seq ${String(r.get("seq"))} in conversation ${String(r.get("conversation_id"))}`);
     seqSeen.add(k);
-  }
+    if (r.get("role") === "user" && String(r.get("content")).length > USER_CONTENT_MAX) {
+      throw bad(`messages[${i}]`, `content exceeds ${USER_CONTENT_MAX} characters for a user message`);
+    }
+  });
   for (const r of visualAssets) {
     if (!String(r.get("file")).startsWith(CANDIDATE_PREFIX)) throw bad("visualAssets", "file must be under " + CANDIDATE_PREFIX);
   }

@@ -503,6 +503,29 @@ async function scenarios(report) {
     assert.equal(back.json.model, current.json.model);
   });
 
+  await report.check("PUT /api/settings prices: a model priced through the API becomes selectable, the built-in entries stay; the Model page carries the price table", async () => {
+    const llama = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+    const current = await api("GET", "/api/settings");
+    assert.equal(current.status, 200, current.text);
+    const refused = await api("PUT", "/api/settings", { model: "priced-later" });
+    assert.equal(refused.status, 400, refused.text);
+    assert.ok(/Prices section of the Model page/.test(refused.json.error), "the refusal says where to fix it: " + refused.json.error);
+    const priced = await api("PUT", "/api/settings", { prices: { "priced-later": { inputPerMTok: 1.5, outputPerMTok: 7.5 } } });
+    assert.equal(priced.status, 200, priced.text);
+    assert.deepEqual(priced.json.prices["priced-later"], { inputPerMTok: 1.5, outputPerMTok: 7.5 });
+    assert.ok(priced.json.prices[llama] && priced.json.prices["claude-opus-5"], "built-in entries survive a stored table that omits them");
+    const selected = await api("PUT", "/api/settings", { model: "priced-later" });
+    assert.equal(selected.status, 200, selected.text);
+    assert.equal(selected.json.model, "priced-later");
+    const back = await api("PUT", "/api/settings", { model: current.json.model, prices: current.json.prices });
+    assert.equal(back.status, 200, back.text);
+    assert.equal(back.json.model, current.json.model);
+    assert.equal(back.json.prices["priced-later"], undefined, "the stored table is replaced, not merged, so the test entry is gone");
+    const page = await api("GET", "/model");
+    assert.equal(page.status, 200);
+    assert.ok(page.text.includes('id="priceRows"') && page.text.includes('id="addPriceBtn"'), "the Model page has the price table");
+  });
+
   await report.check("PUT /api/settings: imageCostUsd 0 is refused for openai and allowed for the stub", async () => {
     const current = await api("GET", "/api/settings");
     const paid = await api("PUT", "/api/settings", { imageProvider: "openai", imageCostUsd: 0 });

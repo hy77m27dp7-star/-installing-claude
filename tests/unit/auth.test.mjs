@@ -128,16 +128,19 @@ test("local dev: without DEV_ACTOR_EMAIL even localhost is refused", async () =>
   assert.equal(res.status, 503);
 });
 
-test("production: the dev actor is never granted, even on localhost with DEV_ACTOR_EMAIL set (503)", async () => {
-  const prod = env({ APP_ENV: "production" });
-  for (const url of ["http://127.0.0.1:8790/api/me", "http://localhost:8787/"]) {
-    assert.equal(localActor(new Request(url), prod), null);
-    const res = await denied(requireOwner(new Request(url), prod));
-    assert.equal(res.status, 503);
-    assert.ok(!(await res.text()).includes(OWNER));
+test("production: the dev actor is never granted, even on localhost with DEV_ACTOR_EMAIL set (503); the word matches whatever its case or spacing", async () => {
+  for (const spelling of ["production", "Production", " PRODUCTION ", "production\n"]) {
+    const prod = env({ APP_ENV: spelling });
+    for (const url of ["http://127.0.0.1:8790/api/me", "http://localhost:8787/"]) {
+      assert.equal(localActor(new Request(url), prod), null, "APP_ENV " + JSON.stringify(spelling));
+      const res = await denied(requireOwner(new Request(url), prod));
+      assert.equal(res.status, 503);
+      assert.ok(!(await res.text()).includes(OWNER));
+    }
   }
   // Any other APP_ENV keeps the local rule.
   assert.equal(localActor(new Request("http://localhost:8787/"), env({ APP_ENV: "development" })), OWNER);
+  assert.equal(localActor(new Request("http://localhost:8787/"), env({ APP_ENV: "preproduction" })), OWNER);
 });
 
 test("with Access configured: no token is 401, a garbage token is 403, localhost gets no shortcut", async () => {

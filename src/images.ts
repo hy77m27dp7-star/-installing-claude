@@ -338,7 +338,7 @@ export async function generateCandidate(
     }
     // A paid provider at a zero price would put every photo on the meter for free.
     if (!isKeylessImageProvider(providerName) && !(settings.imageCostUsd > 0)) {
-      throw new ApiHttpError(402, "price_unknown", "imageCostUsd is 0 for image provider " + providerName + "; set the price per photo in the Model panel", false);
+      throw new ApiHttpError(402, "price_unknown", "imageCostUsd is 0 for image provider " + providerName + "; set the price per photo on the Model page", false);
     }
     await assertBudget(db, settings, settings.imageCostUsd);
 

@@ -297,6 +297,8 @@ input[type="file"]::file-selector-button {
 .chip.ok { border-color: rgba(52, 211, 153, 0.6); color: var(--ok); }
 .chip.amber { border-color: rgba(245, 158, 11, 0.6); color: var(--amber); }
 .chip.accent { border-color: rgba(34, 211, 238, 0.6); color: var(--accent-solid); }
+/* A full sentence (a server error on the Model page) wraps instead of being cut. */
+.chip.wrap { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; border-radius: 12px; line-height: 1.35; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }
 
@@ -698,6 +700,11 @@ th {
 }
 
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* The price table on the Model page: one input per cell, sized so a model id reads whole. */
+.prices td { padding: 6px 4px; }
+.prices td input { min-width: 96px; min-height: 40px; padding: 6px 10px; }
+.prices td input.price-model { min-width: 220px; font-family: var(--mono); font-size: 12px; }
 
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 

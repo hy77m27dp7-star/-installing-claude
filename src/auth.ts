@@ -216,9 +216,10 @@ function tokenFrom(request: Request): string | null {
 }
 
 // The local rule, exactly: APP_ENV not production, DEV_ACTOR_EMAIL set, host localhost or
-// 127.0.0.1, ACCESS_AUD empty. Production never grants a local actor, whatever else is set.
+// 127.0.0.1, ACCESS_AUD empty. Production never grants a local actor, whatever else is set;
+// the word is matched without regard to case or surrounding space ("Production" counts).
 export function localActor(request: Request, env: Env): string | null {
-  if ((env.APP_ENV ?? "").trim() === "production") return null;
+  if ((env.APP_ENV ?? "").trim().toLowerCase() === "production") return null;
   const aud = (env.ACCESS_AUD ?? "").trim();
   const dev = (env.DEV_ACTOR_EMAIL ?? "").trim();
   if (aud || !dev) return null;

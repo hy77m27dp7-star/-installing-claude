@@ -68,6 +68,7 @@ export function chip(text, kind) {
 }
 
 // Replaces whatever is in a status slot with one chip; non-error chips fade after a moment.
+// kind is a class list ("danger", "ok", "danger wrap" for a full sentence that may wrap).
 const flashTimers = new WeakMap();
 export function flash(slot, text, kind) {
   if (!slot) return;
@@ -75,7 +76,7 @@ export function flash(slot, text, kind) {
   slot.append(chip(text || "error", kind || ""));
   const prev = flashTimers.get(slot);
   if (prev) clearTimeout(prev);
-  if (kind !== "danger") {
+  if (!/\bdanger\b/.test(kind || "")) {
     flashTimers.set(slot, setTimeout(() => clear(slot), 2500));
   }
 }

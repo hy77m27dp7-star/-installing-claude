@@ -56,12 +56,16 @@ test("caps: facts 4000, history body 20000, message content 20000, state JSON 10
   await rejected(importAll(db(), entry("x".repeat(20001)), ACTOR), /body exceeds 20000/);
   assert.equal((await importAll(db(), entry("x".repeat(20000)), ACTOR)).counts.history, 1);
 
-  const message = (content) => payload({
+  const message = (content, role = "assistant") => payload({
     conversations: [{ id: "c_1" }],
-    messages: [{ id: "m_1", conversation_id: "c_1", role: "user", content, seq: 1 }],
+    messages: [{ id: "m_1", conversation_id: "c_1", role, content, seq: 1 }],
   });
   await rejected(importAll(db(), message("x".repeat(20001)), ACTOR), /content exceeds 20000/);
   assert.equal((await importAll(db(), message("x".repeat(20000)), ACTOR)).counts.messages, 1);
+  // A user line is capped where the turn and operator routes cap it (4000); only her
+  // replies may run to the column's ceiling.
+  await rejected(importAll(db(), message("x".repeat(4001), "user"), ACTOR), /messages\[0\]: content exceeds 4000 characters for a user message/);
+  assert.equal((await importAll(db(), message("x".repeat(4000), "user"), ACTOR)).counts.messages, 1);
 
   const big = { pad: "x".repeat(100_000) };
   const state = (state_json) => payload({ stateVersions: [{ id: "st_1", entity: "scene", version: 2, state_json }] });
