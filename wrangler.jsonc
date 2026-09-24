@@ -16,8 +16,8 @@
     {
       "binding": "DB",
       "database_name": "avelie",
-      // Replace with the id printed by: wrangler d1 create avelie
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      // Created 2026-09-24 through the Cloudflare connector (ENAM).
+      "database_id": "2c14ef65-a599-414d-b0d1-3f71b27c377a",
       "migrations_dir": "migrations"
     }
   ],
