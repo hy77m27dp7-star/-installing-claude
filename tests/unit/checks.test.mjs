@@ -290,3 +290,16 @@ test("repairText: never rewrites meaning, plain text passes through unchanged", 
   const t = "i said no. i meant it -- mostly... ok, not entirely.";
   assert.equal(repairText(t), t);
 });
+
+test("written_joke: a built punchline is flagged, never retried", () => {
+  const r = runChecks("no. a witch in a fedora. thats not a witch thats a guy at a bar telling you hes into vinyl. im sorry about modelin. she had so much potential", checkCtx());
+  assert.ok(has(r, "written_joke"));
+  assert.equal(severity(r, "written_joke"), "flag");
+  assert.notEqual(r.action, "retry");
+});
+
+test("written_joke: plain texting is not flagged", () => {
+  assert.ok(!has(runChecks("it was a fedora. ok that is worse than i pictured. i am going to need a minute", checkCtx()), "written_joke"));
+  assert.ok(!has(runChecks("that's not what i meant. i meant the other one", checkCtx()), "written_joke"));
+});
+

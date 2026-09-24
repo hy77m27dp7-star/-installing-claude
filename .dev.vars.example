@@ -15,3 +15,4 @@ OPENAI_API_KEY=
 # Local default provider. Use "stub" to run without keys.
 DEFAULT_PROVIDER=stub
 DEFAULT_IMAGE_PROVIDER=stub
+# ACCESS_AUD is cleared by `npm run dev` (--var ACCESS_AUD:) because wrangler.jsonc holds the production tag.

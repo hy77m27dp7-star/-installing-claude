@@ -669,6 +669,7 @@ async function main() {
     wrangler = startWrangler([
       "--port", String(PORT), "--local", "--persist-to", STATE_ARG,
       "--var", "APP_ENV:" + APP_ENV_TAG,
+      // wrangler.jsonc carries the production AUD; phase 1 needs the dev actor, so clear it.
       "--var", "ACCESS_AUD:",
       "--var", `DEV_ACTOR_EMAIL:${DEV_ACTOR_EMAIL}`,
       "--var", "DEFAULT_PROVIDER:stub",

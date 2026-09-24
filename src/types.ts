@@ -15,6 +15,8 @@ export interface Env {
   DEFAULT_IMAGE_PROVIDER?: string;
   // Secrets (wrangler secret put ...)
   ANTHROPIC_API_KEY?: string;
+  // Optional: an org-level key that is not scoped to a workspace must name one per request.
+  ANTHROPIC_WORKSPACE_ID?: string;
   OPENAI_API_KEY?: string;
 }
 

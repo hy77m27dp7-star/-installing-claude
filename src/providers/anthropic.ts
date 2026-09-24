@@ -40,7 +40,14 @@ export const anthropicProvider: TextProvider = {
     const apiKey = env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new ProviderError("anthropic", "config", "ANTHROPIC_API_KEY not set", 503, false);
 
-    const client = new Anthropic({ apiKey, timeout: REQUEST_TIMEOUT_MS, maxRetries: MAX_RETRIES });
+    // A key made outside any workspace is refused (400) unless the request names a workspace.
+    const workspace = (env.ANTHROPIC_WORKSPACE_ID ?? "").trim();
+    const client = new Anthropic({
+      apiKey,
+      timeout: REQUEST_TIMEOUT_MS,
+      maxRetries: MAX_RETRIES,
+      ...(workspace ? { defaultHeaders: { "anthropic-workspace-id": workspace } } : {}),
+    });
 
     const systemBlock: Anthropic.TextBlockParam = req.cacheable
       ? { type: "text", text: req.system, cache_control: { type: "ephemeral" } }
