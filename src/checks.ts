@@ -185,6 +185,22 @@ function stripMarkdown(text: string): string {
     .join("\n");
 }
 
+const WRITTEN_JOKE_PATTERNS: RegExp[] = [
+  /\bsomehow (worse|better|more|less)\b/,
+  /\bthat'?s not (a|an|the|your) [^.?!\n]{1,60}?,? that'?s (a|an|the)\b/,
+  /\bhad so much potential\b/,
+  /\bwhich is (honestly|somehow|frankly) /,
+  /\ba whole (other|different|new) (level|thing|situation|person)\b/,
+  /\bin this economy\b/,
+  /\bbold of you\b/,
+  /\bon brand\b/,
+  /\bthe audacity\b/,
+  /\bwe love (that|to see it)\b/,
+  /\bi'?m obsessed\b/,
+  /\bi (respect|support) (that|it)\b/,
+  /\bvery sheltered\b/,
+];
+
 function flag(code: string, severity: FlagSeverity, detail: string): Flag {
   return { code, severity, detail };
 }
@@ -298,6 +314,12 @@ export function runChecks(text: string, ctx: CheckContext): CheckResult {
       flags.push(flag("caption_tail", "flag", "closing sentence reads like a caption"));
     }
   }
+
+  // A written punchline: the shapes a performer lands on and a person texting does not
+  // (Justin, 2026-09-24: "thats not a witch thats a guy at a bar telling you hes into vinyl").
+  const lower = text.toLowerCase();
+  const joke = WRITTEN_JOKE_PATTERNS.find((re) => re.test(lower));
+  if (joke) flags.push(flag("written_joke", "flag", `punchline shape ${joke.source}`));
 
   if (lengthBand(text) === "long" && recent.length >= 3 && recent.slice(-3).every((r) => lengthBand(r) === "long")) {
     flags.push(flag("length_pattern", "flag", "four long replies in a row"));
