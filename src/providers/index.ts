@@ -62,3 +62,11 @@ export function imageProviderConfigured(env: Env, name: ImageProviderName): bool
       return false;
   }
 }
+
+// An image provider that bills nothing per photo. Only such a provider may run with
+// imageCostUsd at 0; a paid one at 0 would put photos on the meter for free.
+const KEYLESS_IMAGE_PROVIDERS: ReadonlySet<string> = new Set<ImageProviderName>(["stub"]);
+
+export function isKeylessImageProvider(name: unknown): boolean {
+  return typeof name === "string" && KEYLESS_IMAGE_PROVIDERS.has(name);
+}

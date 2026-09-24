@@ -482,6 +482,68 @@ async function scenarios(report) {
     assert.equal(r.json.code, "validation");
   });
 
+  await report.check("PUT /api/settings: an unpriced model or proposalModel -> 400; the Workers AI model is priced by default and selectable", async () => {
+    const llama = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+    const current = await api("GET", "/api/settings");
+    assert.equal(current.status, 200, current.text);
+    assert.ok(current.json.prices && current.json.prices[llama], "the built-in price reaches a seeded database");
+    const model = await api("PUT", "/api/settings", { model: "nobody-priced-this" });
+    assert.equal(model.status, 400, model.text);
+    assert.equal(model.json.code, "validation");
+    assert.ok(/prices/.test(model.json.error), model.json.error);
+    const proposal = await api("PUT", "/api/settings", { proposalModel: "nobody-priced-this" });
+    assert.equal(proposal.status, 400, proposal.text);
+    const unchanged = await api("GET", "/api/settings");
+    assert.equal(unchanged.json.model, current.json.model);
+    assert.equal(unchanged.json.proposalModel, current.json.proposalModel);
+    const ok = await api("PUT", "/api/settings", { model: llama });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(ok.json.model, llama);
+    const back = await api("PUT", "/api/settings", { model: current.json.model });
+    assert.equal(back.status, 200, back.text);
+    assert.equal(back.json.model, current.json.model);
+  });
+
+  await report.check("PUT /api/settings prices: a model priced through the API becomes selectable, the built-in entries stay; the Model page carries the price table", async () => {
+    const llama = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+    const current = await api("GET", "/api/settings");
+    assert.equal(current.status, 200, current.text);
+    const refused = await api("PUT", "/api/settings", { model: "priced-later" });
+    assert.equal(refused.status, 400, refused.text);
+    assert.ok(/Prices section of the Model page/.test(refused.json.error), "the refusal says where to fix it: " + refused.json.error);
+    const priced = await api("PUT", "/api/settings", { prices: { "priced-later": { inputPerMTok: 1.5, outputPerMTok: 7.5 } } });
+    assert.equal(priced.status, 200, priced.text);
+    assert.deepEqual(priced.json.prices["priced-later"], { inputPerMTok: 1.5, outputPerMTok: 7.5 });
+    assert.ok(priced.json.prices[llama] && priced.json.prices["claude-opus-5"], "built-in entries survive a stored table that omits them");
+    const selected = await api("PUT", "/api/settings", { model: "priced-later" });
+    assert.equal(selected.status, 200, selected.text);
+    assert.equal(selected.json.model, "priced-later");
+    const back = await api("PUT", "/api/settings", { model: current.json.model, prices: current.json.prices });
+    assert.equal(back.status, 200, back.text);
+    assert.equal(back.json.model, current.json.model);
+    assert.equal(back.json.prices["priced-later"], undefined, "the stored table is replaced, not merged, so the test entry is gone");
+    const page = await api("GET", "/model");
+    assert.equal(page.status, 200);
+    assert.ok(page.text.includes('id="priceRows"') && page.text.includes('id="addPriceBtn"'), "the Model page has the price table");
+  });
+
+  await report.check("PUT /api/settings: imageCostUsd 0 is refused for openai and allowed for the stub", async () => {
+    const current = await api("GET", "/api/settings");
+    const paid = await api("PUT", "/api/settings", { imageProvider: "openai", imageCostUsd: 0 });
+    assert.equal(paid.status, 400, paid.text);
+    assert.equal(paid.json.code, "validation");
+    assert.ok(/imageCostUsd/.test(paid.json.error), paid.json.error);
+    const after = await api("GET", "/api/settings");
+    assert.equal(after.json.imageProvider, "stub", "a refused patch changes nothing");
+    assert.equal(after.json.imageCostUsd, current.json.imageCostUsd);
+    const free = await api("PUT", "/api/settings", { imageCostUsd: 0 });
+    assert.equal(free.status, 200, free.text);
+    assert.equal(free.json.imageCostUsd, 0);
+    const back = await api("PUT", "/api/settings", { imageCostUsd: current.json.imageCostUsd });
+    assert.equal(back.status, 200, back.text);
+    assert.equal(back.json.imageCostUsd, current.json.imageCostUsd);
+  });
+
   await report.check("unknown route -> 404 JSON", async () => {
     const r = await api("GET", "/api/nope");
     assert.equal(r.status, 404, r.text);
@@ -1338,8 +1400,9 @@ async function main() {
     console.log(`migrations applied (${Date.now() - tm} ms)`);
 
     // --local: remote bindings off (the AI binding would otherwise open a remote session
-    // that needs a Cloudflare API token). The three --var flags mirror .dev.vars so the run
-    // does not depend on what a developer keeps there.
+    // that needs a Cloudflare API token). The --var flags mirror .dev.vars so the run does
+    // not depend on what a developer keeps there. ACCESS_AUD is passed empty on purpose:
+    // wrangler.jsonc carries the production tag, and the local actor rule needs it empty.
     const tb = Date.now();
     if (await answering()) throw new Error("something already answers on " + BASE + "; stop it (or set AVELIE_TEST_PORT) and rerun");
     // --test-scheduled: GET /__scheduled?cron=... runs the Worker's scheduled handler, so

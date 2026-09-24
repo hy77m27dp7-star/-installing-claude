@@ -2,6 +2,11 @@
 // breakpoint (the constitution prefix is byte-stable, so repeat turns hit the cache).
 // Sampling parameters are never sent: current models reject temperature and top_p.
 // Thinking is left at the model default; effort is the only depth control.
+//
+// The SDK never retries on its own: a re-send after a timeout, a 429 or a 5xx can bill a
+// second generation the adapter would never see (it records one response), and the app
+// has its own retry-with-draft in chat.ts plus a manual Retry on the page. A transport
+// failure surfaces as a retryable ProviderError instead.
 import Anthropic from "@anthropic-ai/sdk";
 import { ProviderError } from "../types";
 import type { Env, GenerateRequest, GenerateResult, TextProvider } from "../types";
@@ -9,6 +14,7 @@ import { safeErrorMessage } from "./types";
 import { imageMime, imagesOf, loadInboxImages } from "../vision";
 
 const REQUEST_TIMEOUT_MS = 120_000;
+const MAX_RETRIES = 0;
 
 // His photos go as base64 image blocks before the text of the message they came with
 // (SPEC_V2 section T). A picture that cannot be loaded is simply not sent.
@@ -43,6 +49,9 @@ function mapError(e: unknown): ProviderError {
   if (e instanceof Anthropic.RateLimitError) return new ProviderError("anthropic", "rate_limit", "rate limited", 429, true);
   if (e instanceof Anthropic.BadRequestError) return new ProviderError("anthropic", "bad_request", safeErrorMessage(e), 400, false);
   if (e instanceof Anthropic.NotFoundError) return new ProviderError("anthropic", "bad_request", safeErrorMessage(e), 404, false);
+  // Timeouts extend the connection error: both are the retryable transport path the page
+  // answers with its manual Retry.
+  if (e instanceof Anthropic.APIConnectionTimeoutError) return new ProviderError("anthropic", "network", "request timed out", 504, true);
   if (e instanceof Anthropic.APIConnectionError) return new ProviderError("anthropic", "network", "connection failed", 502, true);
   if (e instanceof Anthropic.APIError) {
     const status = typeof e.status === "number" ? e.status : 502;
@@ -62,7 +71,7 @@ export const anthropicProvider: TextProvider = {
     const client = new Anthropic({
       apiKey,
       timeout: REQUEST_TIMEOUT_MS,
-      maxRetries: 1,
+      maxRetries: MAX_RETRIES,
       ...(workspace ? { defaultHeaders: { "anthropic-workspace-id": workspace } } : {}),
     });
 

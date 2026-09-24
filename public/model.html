@@ -126,6 +126,25 @@
       </label>
     </div>
 
+    <h2 class="section-title">Prices</h2>
+    <p class="small muted">USD per million tokens. A model must be priced here before it can be selected above or called. A built-in price can be changed, not removed.</p>
+    <div class="table-wrap prices">
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th class="num">Input per 1M</th>
+            <th class="num">Output per 1M</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="priceRows"></tbody>
+      </table>
+    </div>
+    <div class="row">
+      <button type="button" class="btn small" id="addPriceBtn">Add model</button>
+    </div>
+
     <h2 class="section-title">Images</h2>
     <div class="grid-form">
       <label class="field">Image provider

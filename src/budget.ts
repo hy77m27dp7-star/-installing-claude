@@ -1,5 +1,9 @@
 // Spend caps, cost estimation and usage accounting. Money is compared as micro-USD
 // integers so float drift never lets a turn slip past a cap.
+//
+// A model with no price is never called: an unpriced model would meter at $0, so no cap
+// could ever trip. The estimate refuses it (402 price_unknown) before anything is spent,
+// and assertBudget refuses an estimate that is not a finite number for the same reason.
 import { DEFAULT_SETTINGS, dayKey, monthKey, spendMicro, usageByDay } from "./db";
 import { ApiHttpError } from "./errors";
 import type { Settings } from "./types";
@@ -16,7 +20,23 @@ function priceFor(settings: Settings, model: string): Price | null {
   return p;
 }
 
-// Cost in micro-USD: tokens * price-per-million-tokens is already micro-USD.
+export function hasPrice(settings: Settings, model: string): boolean {
+  return priceFor(settings, model) !== null;
+}
+
+export function priceUnknown(model: string): ApiHttpError {
+  return new ApiHttpError(
+    402,
+    "price_unknown",
+    `no price for model ${model}; add it in the Prices section of the Model page before using it`,
+    false,
+    model,
+  );
+}
+
+// Cost in micro-USD: tokens * price-per-million-tokens is already micro-USD. This runs
+// after a call, when the money is spent; an unknown price is reported, not refused (the
+// pre-call gate in estimateUsd is what keeps an unpriced model from being called at all).
 export function costMicro(settings: Settings, model: string, inputTokens: number, outputTokens: number): { micro: number; priceKnown: boolean } {
   const p = priceFor(settings, model);
   if (!p) return { micro: 0, priceKnown: false };
@@ -24,10 +44,11 @@ export function costMicro(settings: Settings, model: string, inputTokens: number
   return { micro, priceKnown: true };
 }
 
-// Pre-call estimate in USD. Input is sized from characters (four per token).
+// Pre-call estimate in USD. Input is sized from characters (four per token). Throws 402
+// price_unknown for a model that is not in the price table.
 export function estimateUsd(settings: Settings, model: string, inputChars: number, expectedOutputTokens: number): number {
   const p = priceFor(settings, model);
-  if (!p) return 0;
+  if (!p) throw priceUnknown(model);
   const inputTokens = Math.ceil(Math.max(0, inputChars) / CHARS_PER_TOKEN);
   return (inputTokens * p.inputPerMTok + Math.max(0, expectedOutputTokens) * p.outputPerMTok) / MICRO;
 }
@@ -53,9 +74,13 @@ function exceeded(period: "daily" | "monthly", spentMicro: number, estimateMicro
 }
 
 export async function assertBudget(db: D1Database, settings: Settings, estimateUsdValue: number): Promise<void> {
+  // No estimate, no call: a missing or broken number is never read as free.
+  if (typeof estimateUsdValue !== "number" || !Number.isFinite(estimateUsdValue) || estimateUsdValue < 0) {
+    throw new ApiHttpError(402, "price_unknown", "the call has no usable cost estimate; check the model's price in the Prices section of the Model page", false);
+  }
   const daily = capUsd(settings, "dailyCapUsd");
   const monthly = capUsd(settings, "monthlyCapUsd");
-  const estimateMicro = Math.max(0, Math.round((Number.isFinite(estimateUsdValue) ? estimateUsdValue : 0) * MICRO));
+  const estimateMicro = Math.round(estimateUsdValue * MICRO);
   const dailyMicro = Math.max(0, Math.round(daily * MICRO));
   const monthlyMicro = Math.max(0, Math.round(monthly * MICRO));
 

@@ -9,12 +9,13 @@
 import { ApiHttpError, errorResponse, json } from "./errors";
 import {
   DEFAULT_SETTINGS, auditStmt, createConversation, getConversation, getMessage, getSettings, listAssets, listConversations,
-  listMessages, listMessagesVisible, listProposals, listStateVersions, newId, nowIso, putSettings, sha256Hex,
+  listMessages, listMessagesVisible, listProposals, listStateVersions, mergedPrices, newId, nowIso, putSettings, sha256Hex,
 } from "./db";
 import { runTurn } from "./chat";
 import type { TurnOptions } from "./chat";
 import { operatorTurn, systemInfo } from "./operator";
 import { usageSummary } from "./budget";
+import { isKeylessImageProvider } from "./providers/index";
 import { decideImage, generateCandidate, regenerateImage, verifyMasters } from "./images";
 import type { InboxImage } from "./images";
 import { decideProposal } from "./proposals";
@@ -472,6 +473,30 @@ export function validateSettingsPatch(body: Body): Partial<Settings> {
   }
   if (v.transcribeProvider !== undefined) p.transcribeProvider = oneOf(v.transcribeProvider, TRANSCRIBE_PROVIDERS, "transcribeProvider");
   return p as Partial<Settings>;
+}
+
+// Rules that need the stored settings next to the patch. A model in use must be priced
+// (an unpriced model would meter at $0 and no cap could trip), and a paid image provider
+// needs a price per photo. The price table is read the way getSettings serves it: the
+// stored entries over the built-in ones.
+export function assertSettingsConsistent(current: Settings, patch: Partial<Settings>): void {
+  const next = { ...current, ...patch };
+  const prices = mergedPrices(next.prices);
+  const touched = (key: keyof Settings): boolean => patch[key] !== undefined;
+  for (const key of ["model", "proposalModel"] as const) {
+    if (!touched(key) && !touched("prices")) continue;
+    const model = String(next[key] ?? "").trim();
+    const p = prices[model];
+    if (!p || typeof p.inputPerMTok !== "number" || typeof p.outputPerMTok !== "number") {
+      throw invalid(`${key} "${model}" has no entry in prices; add its price (USD per million tokens) in the Prices section of the Model page before selecting it`);
+    }
+  }
+  if (touched("imageCostUsd") || touched("imageProvider")) {
+    const cost = typeof next.imageCostUsd === "number" ? next.imageCostUsd : 0;
+    if (!isKeylessImageProvider(next.imageProvider) && !(cost > 0)) {
+      throw invalid(`imageCostUsd must be above 0 for image provider ${String(next.imageProvider)}; only a keyless provider may run at 0`);
+    }
+  }
 }
 
 // ------------------------------------------------------------------ identity and system
@@ -963,14 +988,16 @@ route("GET", "/api/settings", async (c) => json(await loadSettings(c)));
 route("PUT", "/api/settings", async (c) => {
   const body = await readBody(c.request);
   const patch = validateSettingsPatch(body);
-  const before = (await getSettings(c.db)) as unknown as Record<string, unknown>;
+  const before = await getSettings(c.db);
+  assertSettingsConsistent(before, patch);
+  const beforeAny = before as unknown as Record<string, unknown>;
   const after = await putSettings(c.db, patch);
   const afterAny = after as unknown as Record<string, unknown>;
   const keys = Object.keys(patch);
   const beforeSlice: Record<string, unknown> = {};
   const afterSlice: Record<string, unknown> = {};
   for (const k of keys) {
-    beforeSlice[k] = before[k];
+    beforeSlice[k] = beforeAny[k];
     afterSlice[k] = afterAny[k];
   }
   if (keys.length) await auditStmt(c.db, c.actor, "settings.update", "settings", null, beforeSlice, afterSlice).run();

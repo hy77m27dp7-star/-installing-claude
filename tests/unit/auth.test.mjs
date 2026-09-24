@@ -1,9 +1,9 @@
 // Access JWT verification against a locally generated RSA key, and the local-actor rule.
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { loadSrc, makeRsaKeys, signJwt, b64url } from "./helpers.mjs";
 
-const { verifyAccessJwt, requireOwner } = await loadSrc("auth");
+const { verifyAccessJwt, requireOwner, localActor } = await loadSrc("auth");
 
 const TEAM = "team.example.cloudflareaccess.com";
 const AUD = "aud-1234567890abcdef";
@@ -128,6 +128,21 @@ test("local dev: without DEV_ACTOR_EMAIL even localhost is refused", async () =>
   assert.equal(res.status, 503);
 });
 
+test("production: the dev actor is never granted, even on localhost with DEV_ACTOR_EMAIL set (503); the word matches whatever its case or spacing", async () => {
+  for (const spelling of ["production", "Production", " PRODUCTION ", "production\n"]) {
+    const prod = env({ APP_ENV: spelling });
+    for (const url of ["http://127.0.0.1:8790/api/me", "http://localhost:8787/"]) {
+      assert.equal(localActor(new Request(url), prod), null, "APP_ENV " + JSON.stringify(spelling));
+      const res = await denied(requireOwner(new Request(url), prod));
+      assert.equal(res.status, 503);
+      assert.ok(!(await res.text()).includes(OWNER));
+    }
+  }
+  // Any other APP_ENV keeps the local rule.
+  assert.equal(localActor(new Request("http://localhost:8787/"), env({ APP_ENV: "development" })), OWNER);
+  assert.equal(localActor(new Request("http://localhost:8787/"), env({ APP_ENV: "preproduction" })), OWNER);
+});
+
 test("with Access configured: no token is 401, a garbage token is 403, localhost gets no shortcut", async () => {
   const withAud = env({ ACCESS_AUD: AUD });
   const none = await denied(requireOwner(new Request("http://127.0.0.1:8790/api/me"), withAud));
@@ -149,4 +164,25 @@ test("denials are JSON bodies with a code and never echo the token", async () =>
   const body = await res.json();
   assert.equal(typeof body.code, "string");
   assert.ok(!JSON.stringify(body).includes("secret-token-value"));
+});
+
+test("a 403 never says why: a fixed body, no detail; the reason goes to console.warn as a class-level message without the token", async () => {
+  const warn = mock.method(console, "warn", () => {});
+  try {
+    for (const token of ["secret-token-value", "a.b.c", "..", b64url("{}") + "." + b64url("{}") + ".sig"]) {
+      const res = await denied(requireOwner(new Request("http://127.0.0.1:8790/api/me", { headers: { "cf-access-jwt-assertion": token } }), env({ ACCESS_AUD: AUD })));
+      assert.equal(res.status, 403);
+      const body = await res.json();
+      assert.deepEqual(body, { error: "forbidden", code: "forbidden" });
+      assert.ok(!("detail" in body));
+    }
+    assert.ok(warn.mock.callCount() >= 1, "the reason is logged");
+    for (const call of warn.mock.calls) {
+      const line = call.arguments.map(String).join(" ");
+      assert.ok(!line.includes("secret-token-value") && !line.includes("sig"), "log must not carry the token: " + line);
+      assert.ok(/^access denied (malformed token|unsupported algorithm|unusable key|unknown key id|bad signature|wrong (issuer|audience|email)|expired|not yet valid|verification failed)$/.test(line), "log names the class: " + line);
+    }
+  } finally {
+    warn.mock.restore();
+  }
 });

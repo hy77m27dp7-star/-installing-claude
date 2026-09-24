@@ -77,6 +77,47 @@ export function signJwt(privateKey, header, payload) {
   return `${h}.${p}.${signature.toString("base64url")}`;
 }
 
+// ------------------------------------------------------------------ fake D1
+
+// A D1 stand-in for modules that read and write the database. Every prepared statement is
+// recorded in `log` (sql, binds, and whether it ran through all/first/run/batch), and
+// `answer(sql, binds)` supplies the rows a read gets back (an array; anything else is no
+// rows). Writes always report one change.
+export function fakeD1(answer = () => []) {
+  const log = [];
+  const rows = (sql, binds) => {
+    const r = answer(sql, binds);
+    return Array.isArray(r) ? r : [];
+  };
+  function statement(sql, binds) {
+    return {
+      sql,
+      binds,
+      bind: (...b) => statement(sql, b),
+      async all() {
+        log.push({ sql, binds, via: "all" });
+        return { results: rows(sql, binds), success: true, meta: {} };
+      },
+      async first() {
+        log.push({ sql, binds, via: "first" });
+        return rows(sql, binds)[0] ?? null;
+      },
+      async run() {
+        log.push({ sql, binds, via: "run" });
+        return { results: [], success: true, meta: { changes: 1 } };
+      },
+    };
+  }
+  return {
+    log,
+    prepare: (sql) => statement(sql, []),
+    async batch(stmts) {
+      for (const s of stmts) log.push({ sql: s.sql, binds: s.binds, via: "batch" });
+      return stmts.map((s) => ({ results: rows(s.sql, s.binds), success: true, meta: { changes: 1 } }));
+    },
+  };
+}
+
 // ------------------------------------------------------------------ fixtures
 
 const T0 = "2026-09-24T00:00:00.000Z";

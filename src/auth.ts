@@ -215,8 +215,11 @@ function tokenFrom(request: Request): string | null {
   return null;
 }
 
-// The local rule, exactly: DEV_ACTOR_EMAIL set, host localhost or 127.0.0.1, ACCESS_AUD empty.
+// The local rule, exactly: APP_ENV not production, DEV_ACTOR_EMAIL set, host localhost or
+// 127.0.0.1, ACCESS_AUD empty. Production never grants a local actor, whatever else is set;
+// the word is matched without regard to case or surrounding space ("Production" counts).
 export function localActor(request: Request, env: Env): string | null {
+  if ((env.APP_ENV ?? "").trim().toLowerCase() === "production") return null;
   const aud = (env.ACCESS_AUD ?? "").trim();
   const dev = (env.DEV_ACTOR_EMAIL ?? "").trim();
   if (aud || !dev) return null;
@@ -229,10 +232,16 @@ export function localActor(request: Request, env: Env): string | null {
   return LOCAL_HOSTS.has(host) ? dev : null;
 }
 
-function deny(status: number, code: string, error: string, detail?: string): Response {
-  const body: Record<string, unknown> = { error, code };
-  if (detail) body.detail = detail;
-  return json(body, status);
+function deny(status: number, code: string, error: string): Response {
+  return json({ error, code }, status);
+}
+
+// A refused token gets one fixed answer. Why it failed (wrong audience, wrong email, bad
+// signature, expired, unknown key id, wrong issuer, malformed) is a class-level message
+// from the verifier that never carries the token; it goes to the log, never to the caller.
+function forbidden(reason: string): Response {
+  console.warn("access denied", reason);
+  return deny(403, "forbidden", "forbidden");
 }
 
 export async function requireOwner(request: Request, env: Env): Promise<{ email: string; mode: "access" | "dev" }> {
@@ -255,7 +264,7 @@ export async function requireOwner(request: Request, env: Env): Promise<{ email:
   try {
     kid = peekKid(token);
   } catch {
-    throw deny(403, "forbidden", "forbidden", "malformed token");
+    throw forbidden("malformed token");
   }
 
   try {
@@ -269,7 +278,6 @@ export async function requireOwner(request: Request, env: Env): Promise<{ email:
     return { email, mode: "access" };
   } catch (e) {
     if (e instanceof JwksUnavailable) throw deny(503, "access_unavailable", "access key set unavailable");
-    const reason = e instanceof Error && e.message ? e.message : "verification failed";
-    throw deny(403, "forbidden", "forbidden", reason);
+    throw forbidden(e instanceof Error && e.message ? e.message : "verification failed");
   }
 }

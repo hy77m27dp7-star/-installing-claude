@@ -454,11 +454,27 @@ export async function runTurn(
   let retryDraft: Draft | null = null;
 
   if (firstDraft.checks.action === "retry") {
-    retryCall = await callModel(provider, env, { ...req, messages: retryMessages(req.messages, first.result.text, firstDraft.checks.flags) });
-    if (retryCall.ok) {
-      retryDraft = evaluate(retryCall, checkCtx, callbacks);
-      // Still failing: keep whichever draft carries fewer retry flags; the retry wins a tie.
-      if (retryDraft.text.trim() && retryDraft.retryFlags <= firstDraft.retryFlags) chosen = retryDraft;
+    const retryReq: GenerateRequest = { ...req, messages: retryMessages(req.messages, first.result.text, firstDraft.checks.flags) };
+    // The retry is a second full call, gated like the first. The first call's own cost is
+    // not on the meter yet (it is committed below), so it is counted into this estimate.
+    // Over a cap the retry is skipped, the first draft stands, and the message says so.
+    const firstCostUsd = costMicro(settings, settings.model, Math.max(0, first.result.inputTokens), Math.max(0, first.result.outputTokens)).micro / MICRO;
+    const retryChars = retryReq.system.length + retryReq.messages.reduce((n, m) => n + m.content.length, 0);
+    let retryAllowed = true;
+    try {
+      await assertBudget(db, settings, firstCostUsd + estimateUsd(settings, settings.model, retryChars, settings.maxTokens));
+    } catch (e) {
+      if (!(e instanceof ApiHttpError && e.status === 402)) throw e;
+      retryAllowed = false;
+      firstDraft.checks.flags.push({ code: "retry_skipped", severity: "flag", detail: e.detail ?? e.message });
+    }
+    if (retryAllowed) {
+      retryCall = await callModel(provider, env, retryReq);
+      if (retryCall.ok) {
+        retryDraft = evaluate(retryCall, checkCtx, callbacks);
+        // Still failing: keep whichever draft carries fewer retry flags; the retry wins a tie.
+        if (retryDraft.text.trim() && retryDraft.retryFlags <= firstDraft.retryFlags) chosen = retryDraft;
+      }
     }
   }
 

@@ -80,7 +80,7 @@ No other identity source exists.
 9. Return `TurnResponse` (`imagePending` true when a photo request was recorded).
 10. After the response (`ctx.waitUntil`): if proposals are enabled, `extractProposals(...)` (proposals.ts) inserts pending proposals; failures are logged to model_runs and swallowed. The photo is NOT generated here: Workers cancel `waitUntil` work 30 seconds after the response is sent, and an image edit with five references takes longer than that. The page calls `POST /api/images/generate { conversationId, messageId }` and holds that request open until the picture exists (an HTTP request has no duration limit while the client stays connected); a reload resumes a request that is still pending.
 
-Cost: `costMicro = round(inputTokens * price.in / 1e6 * 1e6 + outputTokens * price.out / 1e6 * 1e6)` using `settings.prices[model]` (unknown model -> 0 and a `price_unknown` flag on the run). Images add `imageCostUsd`.
+Cost: `costMicro = round(inputTokens * price.in / 1e6 * 1e6 + outputTokens * price.out / 1e6 * 1e6)` using `settings.prices[model]` (the stored table over the built-in defaults). A model with no price is never called: the pre-call estimate refuses it with 402 `price_unknown`, and PUT /api/settings refuses to select it (400). The `price_unknown` flag on a run row remains as a post-call fallback. Images add `imageCostUsd`, which must be above 0 for a paid image provider.
 
 ## Checks (src/checks.ts) -- pure, unit-tested
 

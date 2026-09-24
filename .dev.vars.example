@@ -1,7 +1,12 @@
 # Copy to .dev.vars for local `wrangler dev`. Never commit .dev.vars.
-# Local-only identity. The Worker honours it only for requests to localhost/127.0.0.1
-# and only when ACCESS_AUD is empty. Production ignores it.
+# Local-only identity. The Worker honours it only for requests to localhost/127.0.0.1,
+# only when ACCESS_AUD is empty, and never when APP_ENV is production. Production ignores it.
 DEV_ACTOR_EMAIL=justin@newsomeprojects.com
+
+# wrangler.jsonc carries the production values of these two (the Access tag and
+# APP_ENV=production); .dev.vars overrides them locally so the local actor rule can apply.
+ACCESS_AUD=
+APP_ENV=development
 
 # Text model keys (optional locally; the stub provider needs none).
 ANTHROPIC_API_KEY=

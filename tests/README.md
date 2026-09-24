@@ -20,12 +20,17 @@ Node 22 treats a bare directory argument to `--test` as a file to import, so the
 uses a quoted glob rather than `tests/unit/`.
 
 v1 files: every check code positive and negative plus `repairText` (checks.test.mjs);
-`parsePhotoMarker` (images.test.mjs); `keywords`, `selectHistory`, `boundMessages`
-(context.test.mjs); the stable prefix and state sections of the system prompt
-(prompt.test.mjs); `costMicro` and `estimateUsd` (budget.test.mjs); `parseProposalJson`
-(proposals.test.mjs); `verifyAccessJwt` against a locally generated RSA key and the
-`requireOwner` local-actor rule (auth.test.mjs). Modules that touch D1 or R2 at call time
-are imported but only their pure functions are exercised.
+`parsePhotoMarker` and `loadMasterBytes` (images.test.mjs); `keywords`, `selectHistory`,
+`boundMessages` (context.test.mjs); the stable prefix and state sections of the system prompt
+(prompt.test.mjs); `costMicro`, `estimateUsd` and `assertBudget`, including the refusal of an
+unpriced model (budget.test.mjs); `parseProposalJson` and `extractProposals` under the caps
+(proposals.test.mjs); `importAll` validation: the plain-object rule for state, the length
+caps and fixed canon staying put (exportImport.test.mjs); the settings rules that need the
+stored settings, the merged price table and the deploy guard (settings.test.mjs);
+`verifyAccessJwt` against a locally generated RSA key, the `requireOwner` local-actor rule
+including `APP_ENV=production`, and the fixed 403 body (auth.test.mjs). Modules that touch D1
+are driven through `fakeD1()` in helpers.mjs, which records every statement and answers reads
+from a function the test supplies; nothing touches a real database.
 
 v2 files (`*_v2.test.mjs`; fixtures in `helpers_v2.mjs`, which also holds a small D1
 stand-in that answers table reads with fixture rows):
@@ -114,7 +119,9 @@ Notes on the environment:
 - The Worker never sees the runner's process environment. The stub configuration reaches it
   through `.dev.vars` (a temporary one is written when the repo has none, and removed after)
   and through `--var` flags for `DEV_ACTOR_EMAIL`, `DEFAULT_PROVIDER` and
-  `DEFAULT_IMAGE_PROVIDER`, so the run does not depend on a developer's local file.
+  `DEFAULT_IMAGE_PROVIDER`, so the run does not depend on a developer's local file. The first
+  phase also passes `ACCESS_AUD` empty and a non-production `APP_ENV`: `wrangler.jsonc` carries
+  the production tag and `APP_ENV=production`, and the local actor rule needs both off.
 - The run refuses to start while anything answers on the port, and it recognises its own
   server by the `APP_ENV` tag it passes (`test-<stamp>`, echoed by `/api/me`), so a leftover
   `wrangler dev` can never make a run pass against stale code.

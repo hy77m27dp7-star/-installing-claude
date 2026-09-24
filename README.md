@@ -19,6 +19,8 @@ Avelie is a private, single-owner character runtime that runs inside your own Cl
 5. Run `npm run dev`.
 6. Open http://127.0.0.1:8787 in a browser.
 
+Step 2 is not optional: `wrangler.jsonc` carries the production Access tag and `APP_ENV=production`, and `.dev.vars.example` sets `ACCESS_AUD=` and `APP_ENV=development` so the local actor rule can apply. Without a `.dev.vars`, `npm run dev` answers 503 to every request.
+
 Out of the box `.dev.vars` names the stub providers, so the local app needs no keys and spends no money. The stub answers with short lines and hands back one of the master images when she "sends a photo", so you can see the whole photo flow (pending, ready, approve, reject) without paying. One thing to know: the stub returns the same bytes every time, so once you reject a stub photo its hash is on the local blacklist and later stub photos are refused as blacklisted. That is the blacklist working. Approve stub photos instead, or delete `.wrangler/state` and run `npm run db:local` to start the local database over.
 
 To talk to the real models on your machine, edit `.dev.vars`: paste the two keys, then either delete the two DEFAULT_ lines or set `DEFAULT_PROVIDER=anthropic` and `DEFAULT_IMAGE_PROVIDER=openai`. While a DEFAULT_ line is present it overrides the Model page locally. Never commit `.dev.vars`; it is in `.gitignore`.

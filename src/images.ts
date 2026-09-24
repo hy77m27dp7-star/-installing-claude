@@ -14,7 +14,7 @@ import {
 import { ApiHttpError, json } from "./errors";
 import { imageIdentityPrompt } from "./prompt";
 import { assertBudget } from "./budget";
-import { getImageProvider, imageProviderConfigured } from "./providers";
+import { getImageProvider, imageProviderConfigured, isKeylessImageProvider } from "./providers";
 import { safeErrorMessage } from "./providers/types";
 import { ProviderError } from "./types";
 import type { Env, ModelRunRow, Settings, VisualAssetRow } from "./types";
@@ -198,20 +198,20 @@ export async function loadMasterBytes(env: Env, db: D1Database): Promise<Array<{
   if (!rows.length) throw new ProviderError("assets", "config", "no master images in the registry", 503, false);
 
   return Promise.all(rows.map(async (r) => {
-    const cacheKey = r.sha256 ? r.file + "|" + r.sha256 : null;
-    const cached = cacheKey ? masterCache.get(cacheKey) : undefined;
+    // The hash is the identity. A master with no hash on file is not a reference (the same
+    // rule verifyMasters applies), and neither is one whose bytes drifted from it.
+    if (!r.sha256) throw new ProviderError("assets", "config", "master image has no recorded hash: " + r.file, 503, false);
+    const cacheKey = r.file + "|" + r.sha256;
+    const cached = masterCache.get(cacheKey);
     // A copy, so nothing downstream can detach or alter the cached buffer.
     if (cached) return { name: basename(r.file), bytes: cached.slice(0) };
 
     const res = await env.ASSETS.fetch(new Request(assetUrl(r.file)));
     if (!res.ok) throw new ProviderError("assets", "config", "master image missing: " + r.file, 503, false);
     const bytes = await res.arrayBuffer();
-    // The hash is the identity. A master that drifted is not a reference.
-    if (r.sha256) {
-      const actual = await sha256Hex(bytes);
-      if (actual !== r.sha256) throw new ProviderError("assets", "config", "master image hash mismatch: " + r.file, 503, false);
-    }
-    if (cacheKey) masterCache.set(cacheKey, bytes.slice(0));
+    const actual = await sha256Hex(bytes);
+    if (actual !== r.sha256) throw new ProviderError("assets", "config", "master image hash mismatch: " + r.file, 503, false);
+    masterCache.set(cacheKey, bytes.slice(0));
     return { name: basename(r.file), bytes };
   }));
 }
@@ -307,6 +307,10 @@ export async function generateCandidate(
     if (!description) throw new ApiHttpError(400, "validation", "description is required");
     if (!imageProviderConfigured(env, providerName)) {
       throw new ProviderError(providerName, "config", providerName + " image provider not configured", 503, false);
+    }
+    // A paid provider at a zero price would put every photo on the meter for free.
+    if (!isKeylessImageProvider(providerName) && !(settings.imageCostUsd > 0)) {
+      throw new ApiHttpError(402, "price_unknown", "imageCostUsd is 0 for image provider " + providerName + "; set the price per photo on the Model page", false);
     }
     await assertBudget(db, settings, settings.imageCostUsd);
 
