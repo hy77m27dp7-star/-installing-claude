@@ -1,75 +1,138 @@
-# Deploying Avelie behind Cloudflare Access
+# Deploying Avelie from a Claude Code session on Justin's Mac
 
-Twelve steps. Do them in order. The middle column is yours; the right column says what Claude can do for you instead, which depends on the token described at the end of this file.
+This file is for a Claude Code session running ON JUSTIN'S MAC (a local session with his browser, his folders and his logged-in Chrome). A cloud session cannot do this: its network cannot reach Cloudflare's API. Read the whole file, then do it in order. Justin gives ONE "go" before the first deploy (step 6). Never print, log, echo or paste a key. Typography " -- " and "..." only.
 
-Before step 1, run `npm test` once on your machine so the canon is built and the master hashes pass.
+## What already happened (do not redo, do not re-verify)
 
-| # | You do | Claude does |
-|---|---|---|
-| 1 | Run `npx wrangler login` and finish the login in the browser that opens. | Nothing. A browser login is yours. With a CLOUDFLARE_API_TOKEN in its environment Claude skips this step. |
-| 2 | The D1 database `avelie` already exists and its id is in wrangler.jsonc (created 2026-09-24). Only if you ever start from a different account: run `npx wrangler d1 create avelie` and paste the printed `database_id` into wrangler.jsonc. | Can run the create command and paste the id. |
-| 3 | Run `npx wrangler r2 bucket create avelie-media`. | Can run it. |
-| 4 | Run `npm run db:remote`. This applies `0001_init.sql` and the generated `0002_seed.sql` to the live database. | Can run it. |
-| 5 | Create the two keys, then store them: run `npx wrangler secret put ANTHROPIC_API_KEY` and paste the Anthropic key at the prompt; run `npx wrangler secret put OPENAI_API_KEY` and paste the OpenAI key. | Never creates a key. Can run the two `secret put` commands only if you have also placed the key values as secrets in Claude's build environment. |
-| 6 | Run `npm run deploy`. It runs `npm test` and then `wrangler deploy`. `workers_dev` stays `false`, so the Worker exists but has no public address yet. | Can run it. |
-| 7 | Create the Access application. Sub-steps 7a to 7h are below this table. | Nothing. This step stays in your hands. |
-| 8 | Paste the AUD tag from 7g into wrangler.jsonc as `vars.ACCESS_AUD`, then run `npm run deploy` again. | Can paste and deploy once you give it the tag. |
-| 9 | Run the two proofs below this table. | Can run them and read the result to you. |
-| 10 | Open `https://<host>/` in a browser, type your email, type the code that arrives by email, send her one message, watch the reply land. | Nothing. The code arrives in your inbox. |
-| 11 | Backups: run `mkdir -p backups` once, then `npm run export:remote` for a SQL dump into `backups/` (git ignores that folder), and use State > Export > Export JSON in the app for the JSON that Import accepts. | Can run the SQL export. |
-| 12 | Rollback: run `npx wrangler rollback` and pick the previous deployment at the prompt. | Can run it. |
+- The code: repository hy77m27dp7-star/-installing-claude, branch claude/modest-dijkstra-ju73pw. Built and tested in the cloud on 2026-09-24.
+- D1 database `avelie` exists, id 2c14ef65-a599-414d-b0d1-3f71b27c377a, already in wrangler.jsonc. Migrations 0001_init.sql and 0002_seed.sql are ALREADY applied to it (the seed is her fresh start at 22: strangers, no facts about Justin). Do not run `npm run db:remote` unless a NEW migration file (0003 or later) has appeared in migrations/.
+- R2 bucket `avelie-media` exists.
+- Hostname: avelie.bladepharoh.com (Justin approved it 2026-09-24). wrangler.jsonc attaches it as a Worker custom domain on deploy.
+- Justin lifted the "never touch Cloudflare Access" rule for THIS app only, in his words on 2026-09-24: "I lift the Access rule for this app". Create and edit the Access application named Avelie and nothing else in Access.
+- Justin already said go to the deploy itself, several times, on 2026-09-24 ("deploy Avelie", "you do the cloudflare for me"). Still show the before/after list once (step 6) and take one word from him before the first deploy, because it creates DNS and an Access door.
 
-## Step 7 in detail: the Access application
+## 0. If a wrangler or git command is blocked by the app's permission mode
 
-Do one action per line.
+Justin's HQ rule: wrangler deploys from Claude Code only work when the desktop app's permission mode is Manual with Always-allow; Auto mode blocks them. If a command is refused, ask Justin to switch the session's permission mode (the picker at the bottom of the chat box) and to answer "Always allow" when the prompt appears. Do not work around it.
 
-7a. Decide the hostname. Either attach a custom domain: in the Cloudflare dashboard open Workers & Pages, open `avelie`, open Settings, open Domains & Routes, click Add, choose Custom domain, enter `avelie.<your domain>`. Or plan to use the workers.dev address, which you switch on only in 7h, after Access exists.
-
-7b. Open Zero Trust in the dashboard sidebar. Open Access. Open Applications. Click Add an application. Choose Self-hosted.
-
-7c. Name it `Avelie`. Under Application domain enter the hostname from 7a. For workers.dev that is `avelie.<your account subdomain>.workers.dev`.
-
-7d. Under Identity providers untick everything except One-time PIN.
-
-7e. Set Session duration to 24 hours.
-
-7f. Add a policy. Name it `Owner`. Action: Allow. Under Include choose Emails and enter the OWNER_EMAIL that is in wrangler.jsonc. Save the policy, then save the application.
-
-7g. Open the application you just made. On its overview find the Application Audience (AUD) Tag. Copy it. That string goes into wrangler.jsonc in step 8.
-
-7h. Only if you chose workers.dev in 7a: change `"workers_dev": false` to `true` in wrangler.jsonc. The deploy in step 8 switches the address on, and by then Access is already in front of it.
-
-The team domain is already set in wrangler.jsonc as ACCESS_TEAM_DOMAIN. Do not change it unless your Zero Trust team name changes.
-
-## Step 9 in detail: the two proofs
-
-Run these from any machine. Replace `<host>` with the hostname from 7a.
+## 1. Get the code (about two minutes)
 
 ```
-curl -sI https://<host>/
-curl -sI https://<host>/api/me
+mkdir -p ~/Documents/ClaudeCode
+cd ~/Documents/ClaudeCode
+git clone -b claude/modest-dijkstra-ju73pw https://github.com/hy77m27dp7-star/-installing-claude.git 2026-09-24_avelie
+cd 2026-09-24_avelie
+npm install
+npm test
 ```
 
-The first must answer `302` with a `location:` header that points at your cloudflareaccess.com team domain. That is Access sending a stranger to the login page.
+If the clone asks for GitHub credentials, `~/.local/bin/gh auth setup-git` then retry (gh is logged in on this Mac). `npm test` builds the constitution from the canon, checks typography and the five master image hashes, typechecks, and runs the unit tests. It must pass. If it fails, stop and show Justin the failing lines; do not deploy a failing build.
 
-The second must answer `302` or `401`. It must never answer `200`. A `200` here would mean the API is open to the world; stop and fix step 7 before doing anything else.
+## 2. Log in to Cloudflare (one click from Justin)
 
-If Access were somehow missing, the Worker on its own answers `503` while ACCESS_AUD is empty and `401` once it is set, because it trusts no identity it cannot verify. That is the second lock. The proof above checks the first one.
+```
+npx wrangler login
+```
 
-## Cost ceilings
+A Cloudflare page opens in his browser. Tell him: "Click Allow." That is his only action. When the terminal says it is logged in, continue. No API token is created and none is needed.
 
-From the build brief, as of September 24, 2026. Confirm every number on the Cloudflare pricing pages at deploy time; they move.
+`npx wrangler whoami` must show account id 0cfd47fde7b8ec136a3ee459f9481edb.
 
-- Workers Free: 100,000 requests per day.
-- D1 Free: 5 million rows read per day, 100,000 rows written per day, 5 GB storage. Since September 1 a day that runs past the free row limits fails until the reset instead of silently continuing.
-- Workers AI: 10,000 free Neurons per day. Some models need the paid plan, and quality varies. Workers AI is an option in the Model panel, not the default.
-- API model calls (Anthropic for text, OpenAI for photos) are billed by those companies separately. The app's own caps are what stop that spend; see docs/COSTS.md.
-- R2 storage for photo candidates is small at this scale but is its own line on the Cloudflare bill.
+## 3. The Access door (you do this in his Chrome; he watches)
 
-These are capacity ceilings, not a promise that the app runs for free.
+Use the browser tool. His Chrome is logged in to Cloudflare. If the browser tool is missing in this session, read each line below to Justin as one click at a time and let him click.
 
-## What Claude can run with a token
+3a. Open https://dash.cloudflare.com/0cfd47fde7b8ec136a3ee459f9481edb/one/access-controls/apps (the older /one/access/apps URL 404s).
+3b. Click "Add an application". Choose "Self-hosted".
+3c. Application name: `Avelie`. Session duration: 24 hours. Application domain: `avelie.bladepharoh.com` (no path).
+3d. Identity providers: only "One-time PIN" ticked. Untick everything else.
+3e. Policy: name `Owner`, action Allow, Include: Emails, `justin@newsomeprojects.com`. Save the policy. Save the application.
+3f. Open the Avelie application you just made. Copy its "Application Audience (AUD) Tag" (a long hex string; it is an identifier, not a secret, fine to paste in chat).
+3g. Put it in wrangler.jsonc: `"ACCESS_AUD": "<the tag>"` under vars. Leave ACCESS_TEAM_DOMAIN as it is (still-leaf-20a0.cloudflareaccess.com).
 
-If you give Claude a `CLOUDFLARE_API_TOKEN` (and `CLOUDFLARE_ACCOUNT_ID`) as secrets in its build environment, it can run steps 2, 3, 4, 6, 8, 9, 11 and 12 without you. Make the token from the "Edit Cloudflare Workers" template and add D1 Edit and Workers R2 Storage Edit to it.
+Do not touch any other Access application (BLADEGOD, BLADEGOD MCP, BLADEGOD well-known, bladeversedemo, or anything else).
 
-Claude does not create your Anthropic or OpenAI keys and does not create the Access application. Step 5 becomes Claude's only if the two key values are also in its build environment as secrets; it never types a key into a file or a log. Step 10 is yours because the login code goes to your email.
+## 4. Her two keys (never through chat, never on screen)
+
+She talks through Anthropic (Claude Opus 5) and makes her photos through OpenAI (gpt-image-1). Each needs an API key stored as a Worker secret. The keys go from Justin's clipboard straight into Cloudflare through `pbpaste`; you never see them, print them or write them to a file. The Worker must exist before secrets can be set, so this step runs AFTER the first deploy in step 6. Read it now so you can prepare him.
+
+Ask Justin, yes or no, without asking him to paste anything:
+- "Do you have an OpenAI account with API billing (platform.openai.com)?" Photos need it.
+- "Do you have an Anthropic account with API billing (console.anthropic.com)?" Her voice needs it. If no, she can start on Cloudflare's own model (step 8) and be upgraded later.
+
+For each key he has or makes:
+1. In his Chrome, open the key page (https://platform.openai.com/api-keys or https://console.anthropic.com/settings/keys). He clicks "Create key", names it `avelie`, and clicks the copy button. If he has no account, open the sign-up page and let him do the account and the card himself; you fill nothing on a payment page.
+2. He tells you "copied".
+3. Run, for the OpenAI key: `pbpaste | npx wrangler secret put OPENAI_API_KEY` and for the Anthropic key: `pbpaste | npx wrangler secret put ANTHROPIC_API_KEY`. Then clear his clipboard: `printf '' | pbcopy`.
+4. Never run `pbpaste` on its own, never pipe it to anything but wrangler, never `echo` it.
+
+## 5. Before/after (show this once, then take ONE word)
+
+Before: nothing at avelie.bladepharoh.com; Worker `avelie` does not exist.
+After: Worker `avelie` deployed with the code from this folder, custom domain avelie.bladepharoh.com created (DNS record and certificate made by Cloudflare), Access application "Avelie" in front of it with One-time PIN for justin@newsomeprojects.com only, secrets ANTHROPIC_API_KEY and OPENAI_API_KEY stored in the Worker. Nothing else in the account changes.
+
+Wait for his one word.
+
+## 6. Deploy
+
+```
+npm run deploy
+```
+
+That runs `npm test` again and then `wrangler deploy`. Expected output includes the custom domain avelie.bladepharoh.com. If wrangler says a DNS record for avelie.bladepharoh.com already exists and conflicts, open DNS for bladepharoh.com in his Chrome, delete that one record only, and rerun. If the deploy output shows `workers.dev` as enabled, stop: wrangler.jsonc has `"workers_dev": false` and must stay so.
+
+Now do step 4 (the secrets). Then, since wrangler.jsonc changed in 3g, commit and push it so the repository stays the truth:
+
+```
+git add wrangler.jsonc
+git commit -m "deploy: Access AUD for avelie.bladepharoh.com"
+git push -u origin claude/modest-dijkstra-ju73pw
+```
+
+## 7. Proof (two commands, read the answers to Justin)
+
+```
+curl -sI https://avelie.bladepharoh.com/ | head -5
+curl -sI https://avelie.bladepharoh.com/api/me | head -5
+```
+
+The first must be `302` with a `location:` pointing at still-leaf-20a0.cloudflareaccess.com. The second must be `302` or `401`, never `200`. A `200` means the door is open to the world: stop and fix step 3 before anything else. The Worker itself answers `401` to anything without a valid Access identity, so there are two locks; the curl checks the first.
+
+## 8. If there is no Anthropic key yet
+
+Open https://avelie.bladepharoh.com/model.html in his Chrome (he logs in with the emailed PIN once). Provider: `workersai`. Model: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. Save. She talks on Cloudflare's model until the Anthropic key exists; then switch provider back to `anthropic`, model `claude-opus-5`. Photos stay off until the OpenAI key exists (a photo request then shows as failed, nothing breaks).
+
+## 9. First words
+
+Tell Justin: "Open https://avelie.bladepharoh.com in your browser. Type your email. Type the code from your inbox. Say hello to her." Everything after that is theirs.
+
+## 10. Later redeploys (the cloud session keeps improving her)
+
+```
+cd ~/Documents/ClaudeCode/2026-09-24_avelie
+git pull
+ls migrations
+npm run deploy
+```
+
+If `ls migrations` shows a file newer than 0002 (0003_..., 0004_...), run `npm run db:remote` BEFORE `npm run deploy`. Secrets and the Access door survive redeploys; never redo steps 2 to 4.
+
+## 11. Backups and rollback
+
+- `mkdir -p backups && npm run export:remote` writes a SQL dump into backups/ (git ignores it). In the app, State > Export gives the JSON that Import accepts.
+- `npx wrangler rollback` returns to the previous deployment.
+
+## 12. HQ, before you stop
+
+- `cd ~/Documents/ClaudeCode/HQ && git pull`.
+- STATE.md: a new dated section at the top: Avelie live at avelie.bladepharoh.com, Worker avelie, D1 avelie, R2 avelie-media, Access app Avelie (One-time PIN, owner only), which keys are set (names only), provider in use, the two proof results.
+- MAP.md: add the row `avelie.bladepharoh.com | Worker avelie = Avelie (D1 avelie, R2 avelie-media), behind Cloudflare Access | 2026-09-24_avelie` to the live sites table, and the folder to the job folders list.
+- memory/avelie.md: one file with the facts above and the standing rules: she is 22, fresh start 2026-09-24, nothing becomes canon without Justin's approval, no retention hooks, Access rule lifted for this app only.
+- Commit and push HQ. Refresh the Google Drive "Claude HQ STATE" doc if the update-hq skill is present.
+- Report to Justin in one short paragraph: what is live, what is set, what is not.
+
+## Cost ceilings (from the build brief, 2026-09-24; confirm on Cloudflare's pricing pages, they move)
+
+- Workers Free: 100,000 requests per day. D1 Free: 5 million rows read and 100,000 written per day, 5 GB. Workers AI: 10,000 free Neurons per day.
+- Anthropic and OpenAI bill separately; the app's own caps (docs/COSTS.md, default 3 USD a day, 30 USD a month) are what stop that spend.
+- R2 for photo candidates is small at this scale but is its own line.
