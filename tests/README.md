@@ -38,7 +38,12 @@ conversations and turns, idempotent replay, failed and refused model calls writi
 mechanical repairs, the photo pipeline through `/media/:id` and reject, proposals through
 approval, the operator channel staying out of the story, state versioning and restore, facts
 and history and unknowns CRUD, export and import roundtrip, master verification, the budget
-cap, settings validation, unknown routes, and the auth gate for a non-local host. Every check
+cap, settings validation, and unknown routes. It then restarts `wrangler dev` on the same
+state with `ACCESS_AUD` set and checks the production gate: no token 401, garbage token or
+cookie 403, the dev actor and a client email header never granting identity, static files and
+media gated. (A non-local Host header cannot be probed through `wrangler dev` once a route is
+configured, because it rewrites every request's origin; `wrangler.jsonc` pins `dev.host` to
+127.0.0.1 so the local rule works, and the unit suite covers the non-local branch.) Every check
 prints PASS or FAIL with its time; the exit code is non-zero on any failure.
 
 Notes on the environment:

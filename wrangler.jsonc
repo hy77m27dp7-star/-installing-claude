@@ -11,6 +11,13 @@
   "routes": [
     { "pattern": "avelie.bladepharoh.com", "custom_domain": true }
   ],
+  // Local dev only (ignored by deploy). With a route configured, wrangler dev rewrites the
+  // origin every local request carries (request.url and Host) to the route's hostname, which
+  // would defeat the local actor rule in src/auth.ts (host must be localhost or 127.0.0.1)
+  // and answer 503 to every local request. This keeps the local origin.
+  "dev": {
+    "host": "127.0.0.1"
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",

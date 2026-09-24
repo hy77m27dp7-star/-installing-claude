@@ -10,7 +10,7 @@
 // is switched to the stubs as the first request after boot.
 import assert from "node:assert/strict";
 import {
-  BASE, DEV_ACTOR_EMAIL, EM_DASH, BAD_TYPOGRAPHY, PORT, STATE_DIR, api, fetchBytes, rawRequest, waitFor, Report, removeDir,
+  BASE, DEV_ACTOR_EMAIL, EM_DASH, BAD_TYPOGRAPHY, PORT, STATE_DIR, api, fetchBytes, waitFor, Report, removeDir,
   ensureDevVars, runCommand, startWrangler, stopWrangler,
 } from "./helpers.mjs";
 
@@ -458,17 +458,42 @@ async function scenarios(report) {
     assert.equal(r.status, 200, r.text);
     assert.equal(r.json.email, DEV_ACTOR_EMAIL);
   });
+}
 
-  await report.check("Host: avelie.example without a token -> 503 or 401 (never authorized)", async () => {
-    const r = await rawRequest("/api/me", { Host: "avelie.example" });
-    assert.ok(r.status === 503 || r.status === 401, `status ${r.status}: ${r.text}`);
-    assert.ok(!r.text.includes(DEV_ACTOR_EMAIL), "dev actor must not be granted to a non-local host");
-    return `got ${r.status}` + (r.status === 503 ? " access_not_configured (ACCESS_AUD empty: fail closed)" : " unauthorized");
+// The gate as production runs it: ACCESS_AUD set, so the dev actor is off and only a
+// verified Access token could get in. (A non-local Host header cannot be probed through
+// wrangler dev: with a route configured it rewrites every request's origin, and
+// wrangler.jsonc pins dev.host to 127.0.0.1 so the local rule works at all; the non-local
+// branch of requireOwner is covered by tests/unit/auth.test.mjs.)
+async function gateScenarios(report) {
+  await report.check("ACCESS_AUD set: GET /api/me without a token -> 401, dev actor not granted", async () => {
+    const r = await api("GET", "/api/me");
+    assert.equal(r.status, 401, r.text);
+    assert.equal(r.json.code, "unauthorized");
+    assert.ok(!r.text.includes(DEV_ACTOR_EMAIL), "dev actor must be off while ACCESS_AUD is set");
   });
 
-  await report.check("email header from the client never grants identity on a non-local host", async () => {
-    const r = await rawRequest("/api/me", { Host: "avelie.example", "cf-access-authenticated-user-email": DEV_ACTOR_EMAIL });
-    assert.ok(r.status === 503 || r.status === 401, `status ${r.status}: ${r.text}`);
+  await report.check("ACCESS_AUD set: garbage token (header) and garbage cookie -> 403, never the email", async () => {
+    const h = await api("GET", "/api/me", undefined, { "cf-access-jwt-assertion": "garbage" });
+    assert.equal(h.status, 403, h.text);
+    assert.equal(h.json.code, "forbidden");
+    const c = await api("GET", "/api/me", undefined, { cookie: "CF_Authorization=garbage.garbage.garbage" });
+    assert.equal(c.status, 403, c.text);
+    assert.ok(!h.text.includes(DEV_ACTOR_EMAIL) && !c.text.includes(DEV_ACTOR_EMAIL));
+  });
+
+  await report.check("ACCESS_AUD set: client email header never grants identity -> 401", async () => {
+    const r = await api("GET", "/api/me", undefined, { "cf-access-authenticated-user-email": DEV_ACTOR_EMAIL });
+    assert.equal(r.status, 401, r.text);
+  });
+
+  await report.check("ACCESS_AUD set: static / and /media/:id are gated too -> 401", async () => {
+    const root = await api("GET", "/");
+    assert.equal(root.status, 401, root.text);
+    const css = await api("GET", "/css/app.css");
+    assert.equal(css.status, 401, css.text);
+    const media = await api("GET", "/media/img_nothing");
+    assert.equal(media.status, 401, media.text);
   });
 }
 
@@ -525,6 +550,30 @@ async function main() {
     console.log(`wrangler dev ready on ${BASE} (${Date.now() - tb} ms)\n`);
 
     await scenarios(report);
+
+    // Second phase, same port and state, with the production gate switched on.
+    await stopWrangler(wrangler);
+    const tg = Date.now();
+    wrangler = startWrangler([
+      "--port", String(PORT), "--local", "--persist-to", STATE_ARG,
+      "--var", "APP_ENV:test",
+      "--var", `DEV_ACTOR_EMAIL:${DEV_ACTOR_EMAIL}`,
+      "--var", "DEFAULT_PROVIDER:stub",
+      "--var", "DEFAULT_IMAGE_PROVIDER:stub",
+      "--var", "ACCESS_AUD:integration-aud-tag",
+    ], STUB_ENV);
+    await waitFor("wrangler dev (gated) on " + BASE, async () => {
+      if (wrangler.hasExited()) throw new Error("wrangler dev exited before it was ready");
+      const r = await api("GET", "/api/me");
+      return r.status > 0;
+    }, BOOT_TIMEOUT_MS, 500).catch((e) => {
+      console.log("wrangler output (tail):");
+      console.log(wrangler.tail());
+      throw e;
+    });
+    console.log(`\nwrangler dev (ACCESS_AUD set) ready on ${BASE} (${Date.now() - tg} ms)\n`);
+
+    await gateScenarios(report);
     report.summary();
     exitCode = report.failed ? 1 : 0;
   } catch (e) {
