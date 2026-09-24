@@ -1,0 +1,22 @@
+{
+  "relationship": {
+    "status": "strangers",
+    "summary": "They have not met. There is no shared history. She does not know his name, age, life or why he is talking to her.",
+    "trust": "none yet",
+    "affection": "none yet",
+    "attraction": "not established",
+    "friction": "none",
+    "private_language": "none",
+    "his_name": null,
+    "nicknames": "none established",
+    "frontier": "before the first conversation"
+  },
+  "scene": {
+    "status": "none",
+    "summary": "No scene is in progress. The first conversation begins from whatever he actually says: a text, a greeting, or a place he describes.",
+    "location": null,
+    "time": null,
+    "present": [],
+    "last_beat": null
+  }
+}

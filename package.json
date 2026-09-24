@@ -1,0 +1,33 @@
+{
+  "name": "avelie",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Avelie: a creator-owned persistent character runtime on Cloudflare Workers + D1 + R2. The character survives the model.",
+  "scripts": {
+    "build:canon": "node scripts/build_constitution.mjs && node scripts/build_seed.mjs",
+    "typecheck": "tsc --noEmit",
+    "check:typography": "node scripts/check_typography.mjs",
+    "check:assets": "node scripts/verify_assets.mjs",
+    "test:unit": "node --test tests/unit/",
+    "test": "npm run build:canon && npm run check:typography && npm run check:assets && npm run typecheck && npm run test:unit",
+    "test:integration": "node tests/integration/run.mjs",
+    "behavior": "node tests/behavior/run.mjs",
+    "db:local": "wrangler d1 migrations apply avelie --local",
+    "db:remote": "wrangler d1 migrations apply avelie --remote",
+    "dev": "wrangler dev --port 8787",
+    "deploy": "npm test && wrangler deploy",
+    "export:remote": "wrangler d1 export avelie --remote --output backups/avelie-export.sql"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260924.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.138.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

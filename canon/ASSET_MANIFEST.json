@@ -1,0 +1,11 @@
+{
+  "masters": [
+    {"path": "public/images/masters/01_MASTER_ORIGINAL_CREAM_SWEATER.png", "bytes": 762577, "sha256": "3e879b7aa64e66fadabbddb2f6151a406b729aa3821ff2d0ffb11ab5163ea672"},
+    {"path": "public/images/masters/02_MASTER_ORIGINAL_BLACK_DRESS_NIGHT.png", "bytes": 551917, "sha256": "c9699156c9bf9d11fa49e41d27ecb23e73099a9a1a8f56500b8babd6e09db92f"},
+    {"path": "public/images/masters/03_MASTER_ORIGINAL_BLACK_HOODIE.png", "bytes": 571955, "sha256": "b0b7913a1971805cd4e31d833ba463a502c14304593334f16001274fb6b291f1"},
+    {"path": "public/images/masters/04_MASTER_ORIGINAL_BEIGE_BLAZER.png", "bytes": 695245, "sha256": "2f270492864db36b5b8cc16d1e006d31590c5e4b6b802daaeb7b0919666f31ba"},
+    {"path": "public/images/masters/05_MASTER_GAVINS_BLACK_DRESS_APPROVED.png", "bytes": 2217800, "sha256": "87e879b77f269cbe975e887a58f22ee85d2464f794d1a6c05afcee9262891d7d"}
+  ],
+  "constitution_dir": "canon/constitution",
+  "constitution_sums": "canon/constitution/SHA256SUMS.txt"
+}

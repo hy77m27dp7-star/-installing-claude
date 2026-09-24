@@ -1,0 +1,44 @@
+{
+  // Avelie runtime. Private, single owner. Every route runs through the Worker first
+  // (run_worker_first) so static assets and images are never served without auth.
+  "name": "avelie",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // Keep the workers.dev address off until Cloudflare Access is in front (DEPLOY.md step 5).
+  "workers_dev": false,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "avelie",
+      // Replace with the id printed by: wrangler d1 create avelie
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "avelie-media"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "vars": {
+    // Cloudflare Access team domain for this account (from HQ MAP.md).
+    "ACCESS_TEAM_DOMAIN": "still-leaf-20a0.cloudflareaccess.com",
+    // AUD tag of the Access application that fronts this Worker. Empty = fail closed.
+    "ACCESS_AUD": "",
+    "OWNER_EMAIL": "justin@newsomeprojects.com",
+    "APP_ENV": "production"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

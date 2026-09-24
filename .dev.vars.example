@@ -1,0 +1,12 @@
+# Copy to .dev.vars for local `wrangler dev`. Never commit .dev.vars.
+# Local-only identity. The Worker honours it only for requests to localhost/127.0.0.1
+# and only when ACCESS_AUD is empty. Production ignores it.
+DEV_ACTOR_EMAIL=justin@newsomeprojects.com
+
+# Text model keys (optional locally; the stub provider needs none).
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+
+# Local default provider. Use "stub" to run without keys.
+DEFAULT_PROVIDER=stub
+DEFAULT_IMAGE_PROVIDER=stub

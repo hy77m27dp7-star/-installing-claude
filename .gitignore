@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+.dev.vars
+backups/
+reports/
+*.log
+.DS_Store
+tests/integration/.state/
