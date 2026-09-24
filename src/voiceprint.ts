@@ -27,6 +27,16 @@ export interface VoiceprintStats {
   firstTexts: number;
   flagsPerCode: Record<string, number>;
   flagsTotal: number;
+  // v3 (SPEC_V3 section GG): the shape of her texting. Share of replies that are one word;
+  // share with no uppercase letter; share carrying a typo-fix bubble (a single token ending
+  // in "*"); bubbles per reply; and the three shape flags counted from flags_json.
+  oneWordShare: number;
+  lowercaseShare: number;
+  typoFixShare: number;
+  avgBubbles: number;
+  shapeUniformCount: number;
+  overPolishCount: number;
+  writtenJokeCount: number;
 }
 
 export interface VoiceprintRow {
@@ -90,6 +100,20 @@ function bubbleCount(text: string): number {
   return Math.max(1, parts.length);
 }
 
+// v3 shape reads (pure, exported so the unit test can pin them).
+export function isOneWord(text: string): boolean {
+  return /^\S+$/.test(text.trim());
+}
+
+export function isLowercase(text: string): boolean {
+  return /\p{L}/u.test(text) && !/\p{Lu}/u.test(text);
+}
+
+// A bubble that is a single token ending in "*": her own fix of a slip ("weird*").
+export function hasTypoFix(text: string): boolean {
+  return text.split(/\n\s*\n/).map((p) => p.trim()).some((p) => /^\S+\*$/.test(p));
+}
+
 function parseFlags(json: string | null | undefined): Flag[] {
   if (typeof json !== "string" || !json) return [];
   try {
@@ -147,6 +171,9 @@ export function computeVoiceprint(rows: MessageRow[], since: string, until: stri
   let named = 0;
   let bubbles = 0;
   let firstTexts = 0;
+  let oneWord = 0;
+  let lowercase = 0;
+  let typoFix = 0;
   const words = new Map<string, number>();
   const flagsPerCode: Record<string, number> = {};
   let flagsTotal = 0;
@@ -159,6 +186,9 @@ export function computeVoiceprint(rows: MessageRow[], since: string, until: stri
     if (nameRe && nameRe.test(text)) named += 1;
     bubbles += bubbleCount(text);
     if (m.reply_to_id === null || m.reply_to_id === undefined) firstTexts += 1;
+    if (isOneWord(text)) oneWord += 1;
+    if (isLowercase(text)) lowercase += 1;
+    if (hasTypoFix(text)) typoFix += 1;
     for (const raw of text.toLowerCase().split(/[^\p{L}\p{N}']+/u)) {
       const w = raw.replace(/^'+|'+$/g, "");
       if (w.length < 2 || STOP_WORDS.has(w) || /^\d+$/.test(w)) continue;
@@ -195,6 +225,13 @@ export function computeVoiceprint(rows: MessageRow[], since: string, until: stri
     firstTexts,
     flagsPerCode,
     flagsTotal,
+    oneWordShare: share(oneWord),
+    lowercaseShare: share(lowercase),
+    typoFixShare: share(typoFix),
+    avgBubbles: count ? round(bubbles / count, 2) : 0,
+    shapeUniformCount: flagsPerCode["shape_uniform"] ?? 0,
+    overPolishCount: flagsPerCode["over_polish"] ?? 0,
+    writtenJokeCount: flagsPerCode["written_joke"] ?? 0,
   };
 }
 

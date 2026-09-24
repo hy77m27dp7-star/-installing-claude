@@ -4,6 +4,7 @@
 import { agoLabel, parseSchedule, seededUnit } from "./life";
 import type { LifeLog, LifeThread } from "./life";
 import type { HistoryRow } from "./types";
+import type { AskRow, WantLogRow, WantRow } from "./wants";
 
 export interface Callback {
   text: string;
@@ -11,11 +12,16 @@ export interface Callback {
   sourceId: string;
 }
 
+// v3 (SPEC_V3 section CC) adds kinds want and ask.
+export type CallbackKind = "history" | "arc" | "person" | "event" | "log" | "want" | "ask";
+
 interface Candidate extends Callback {
-  kind: "history" | "arc" | "person" | "event" | "log";
+  kind: CallbackKind;
   // The words that identify it (a name, a title) and every word of its line.
   key: Set<string>;
   words: Set<string>;
+  // v3: a want whose newest log row is a setback (kept out of an opener).
+  setback?: boolean;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -24,6 +30,10 @@ const EVENT_WINDOW_DAYS = 14;
 const LOG_WINDOW_DAYS = 14;
 const MAX_PICK = 2;
 const MAX_TEXT = 160;
+// v3: a want counts once it has sat still for two days; an ask once it has waited three
+// and she has not brought it up yet.
+const WANT_STILL_DAYS = 2;
+const ASK_MIN_AGE_DAYS = 3;
 
 // The same stop list context.ts uses for history selection (kept local: prompt.ts
 // imports this module, and context.ts imports prompt.ts).
@@ -77,6 +87,19 @@ function mentioned(c: Candidate, recent: Set<string>): boolean {
   return c.words.size >= 3 && overlap(c.words, recent) >= 3;
 }
 
+// The newest want_log row per want (by occurred, then created_at).
+function newestLogByWant(log: WantLogRow[]): Map<string, WantLogRow> {
+  const out = new Map<string, WantLogRow>();
+  for (const l of log) {
+    if (!l || !l.want_id) continue;
+    const cur = out.get(l.want_id);
+    if (!cur) { out.set(l.want_id, l); continue; }
+    const diff = (parseDate(l.occurred) || 0) - (parseDate(cur.occurred) || 0) || (l.created_at ?? "").localeCompare(cur.created_at ?? "");
+    if (diff > 0) out.set(l.want_id, l);
+  }
+  return out;
+}
+
 export function pickCallbacks(args: {
   history: HistoryRow[];
   threads: LifeThread[];
@@ -84,13 +107,46 @@ export function pickCallbacks(args: {
   recentTexts: string[];
   now: Date;
   seed: string;
+  // v3 (SPEC_V3 section CC): her wants and open asks as candidates; `opener` is true for
+  // her own first text of a conversation or of the day (POST /open, her first texts).
+  wants?: WantRow[];
+  wantLog?: WantLogRow[];
+  asks?: AskRow[];
+  opener?: boolean;
 }): Array<{ text: string; ageDays: number; sourceId: string }> {
   const now = args.now;
   const t = now.getTime();
+  const opener = args.opener === true;
   const threads = Array.isArray(args.threads) ? args.threads : [];
   const titles = new Map<string, string>();
   for (const th of threads) titles.set(th.id, th.title);
   const list: Candidate[] = [];
+
+  // v3: active wants that have sat still for two days, with their last note; open asks
+  // older than three days that she has not brought up again. Her first text never opens
+  // with an ask or a setback (the retention hook the opener note forbids by another name).
+  const newestLog = newestLogByWant(Array.isArray(args.wantLog) ? args.wantLog : []);
+  for (const w of Array.isArray(args.wants) ? args.wants : []) {
+    if (!w || w.status !== "active" || typeof w.title !== "string" || !w.title.trim()) continue;
+    const moved = Number.isFinite(parseDate(w.last_moved)) ? parseDate(w.last_moved) : parseDate(w.created_at);
+    if (!Number.isFinite(moved) || t - moved < WANT_STILL_DAYS * DAY_MS) continue;
+    const last = newestLog.get(w.id);
+    const setback = !!last && last.kind === "setback";
+    if (opener && setback) continue;
+    const note = last ? firstSentence(last.note, MAX_TEXT) : "";
+    const c = candidate("want", w.id, w.title, w.title + (note ? ": " + note : ""), ageDays(moved, now));
+    if (c) { c.setback = setback; list.push(c); }
+  }
+  if (!opener) {
+    for (const a of Array.isArray(args.asks) ? args.asks : []) {
+      if (!a || a.status !== "open" || typeof a.text !== "string" || !a.text.trim()) continue;
+      if ((a.brought_up ?? 0) !== 0) continue;
+      const asked = parseDate(a.asked_at);
+      if (!Number.isFinite(asked) || t - asked < ASK_MIN_AGE_DAYS * DAY_MS) continue;
+      const c = candidate("ask", a.id, a.text, "you asked him: " + a.text, ageDays(asked, now));
+      if (c) list.push(c);
+    }
+  }
 
   for (const h of Array.isArray(args.history) ? args.history : []) {
     if (!h || h.status !== "approved") continue;
