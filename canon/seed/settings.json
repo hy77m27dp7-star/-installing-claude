@@ -21,7 +21,8 @@
     "claude-sonnet-5": {"inputPerMTok": 2, "outputPerMTok": 10},
     "claude-haiku-4-5": {"inputPerMTok": 1, "outputPerMTok": 5},
     "claude-fable-5-1": {"inputPerMTok": 10, "outputPerMTok": 50},
-    "claude-opus-4-8": {"inputPerMTok": 5, "outputPerMTok": 25}
+    "claude-opus-4-8": {"inputPerMTok": 5, "outputPerMTok": 25},
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {"inputPerMTok": 0.29, "outputPerMTok": 2.25}
   },
   "replyDelayMode": "instant",
   "realDelayMaxMinutes": 6,

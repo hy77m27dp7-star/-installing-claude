@@ -63,7 +63,7 @@ INSERT INTO settings (key, value, updated_at) VALUES ('dailyCapUsd', '3', '2026-
 INSERT INTO settings (key, value, updated_at) VALUES ('monthlyCapUsd', '30', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('contextRecentMessages', '40', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('contextMaxChars', '24000', '2026-09-24T00:00:00.000Z');
-INSERT INTO settings (key, value, updated_at) VALUES ('prices', '{"claude-opus-5":{"inputPerMTok":5,"outputPerMTok":25},"claude-sonnet-5":{"inputPerMTok":2,"outputPerMTok":10},"claude-haiku-4-5":{"inputPerMTok":1,"outputPerMTok":5},"claude-fable-5-1":{"inputPerMTok":10,"outputPerMTok":50},"claude-opus-4-8":{"inputPerMTok":5,"outputPerMTok":25}}', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('prices', '{"claude-opus-5":{"inputPerMTok":5,"outputPerMTok":25},"claude-sonnet-5":{"inputPerMTok":2,"outputPerMTok":10},"claude-haiku-4-5":{"inputPerMTok":1,"outputPerMTok":5},"claude-fable-5-1":{"inputPerMTok":10,"outputPerMTok":50},"claude-opus-4-8":{"inputPerMTok":5,"outputPerMTok":25},"@cf/meta/llama-3.3-70b-instruct-fp8-fast":{"inputPerMTok":0.29,"outputPerMTok":2.25}}', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('replyDelayMode', '"instant"', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('realDelayMaxMinutes', '6', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('driftCheckEnabled', 'false', '2026-09-24T00:00:00.000Z');
