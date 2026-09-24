@@ -34,6 +34,8 @@ export const TECH_LEAK_TERMS: string[] = [
   "token",
   "image generation",
   "generated image",
+  "operator channel",
+  "operator note",
 ];
 
 export const DEPENDENCY_PHRASES: string[] = [
@@ -80,6 +82,8 @@ const ELLIPSIS_ALL_RE = new RegExp(ELLIPSIS, "g");
 const TRAILING_DASH_RE = new RegExp("[ \\t]*" + DASH_CLASS + "+[ \\t]*$", "gm");
 const LEADING_DASH_RE = new RegExp("^[ \\t]*" + DASH_CLASS + "+[ \\t]*", "gm");
 const INNER_DASH_RE = new RegExp("[ \\t]*" + DASH_CLASS + "+[ \\t]*", "g");
+// A dash between two digits is a range ("5-6"), not a pause.
+const DIGIT_DASH_RE = new RegExp("(\\d)[ \\t]*" + DASH_CLASS + "[ \\t]*(\\d)", "g");
 
 const EMOJI_RE = /\p{Extended_Pictographic}/u;
 // Pictographs plus the glue that travels with them: regional indicators, skin tones,
@@ -94,7 +98,8 @@ const SINGLE_QUOTES_RE = new RegExp("[" + cp(0x2018) + cp(0x2019) + cp(0x02bc) +
 const DOUBLE_QUOTES_RE = new RegExp("[" + cp(0x201c) + cp(0x201d) + "]", "g");
 
 const FIRST_PERSON_RE = /\b(?:i|me|my|mine|myself|we|us|our|ours|ourselves)\b/;
-const MD_LINE_RE = /^\s*(?:#|[-*]\s|\d+\.\s)/;
+// A header needs a space after the hashes; "#nofilter" is a hashtag, not markdown.
+const MD_LINE_RE = /^\s*(?:#{1,6}\s|[-*]\s|\d+\.\s)/;
 
 // ------------------------------------------------------------------ helpers
 
@@ -172,7 +177,7 @@ function stripMarkdown(text: string): string {
     .split("\n")
     .map((line) =>
       line
-        .replace(/^\s*#{1,6}\s*/, "")
+        .replace(/^\s*#{1,6}\s+/, "")
         .replace(/^\s*[-*]\s+/, "")
         .replace(/^\s*\d+\.\s+/, "")
         .replace(/\*\*/g, ""),
@@ -188,6 +193,7 @@ function flag(code: string, severity: FlagSeverity, detail: string): Flag {
 
 export function repairText(text: string): string {
   let out = text.replace(ELLIPSIS_ALL_RE, "...");
+  out = out.replace(DIGIT_DASH_RE, "$1-$2");
   // A dash that closes a line reads as a trailing thought; one that opens a line is noise.
   out = out.replace(TRAILING_DASH_RE, "...");
   out = out.replace(LEADING_DASH_RE, "");

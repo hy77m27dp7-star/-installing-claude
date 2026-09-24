@@ -83,17 +83,19 @@ export async function getStateBundle(db: D1Database): Promise<{
     listHistory(db),
     listUnknowns(db),
   ]);
+  const justin = facts.filter((f) => f.scope === "justin" || f.scope === "shared");
   return {
     relationship: { version: rel.version, state: rel.state },
     scene: { version: scene.version, state: scene.state },
     facts: {
       fixed: facts.filter((f) => f.scope === "fixed"),
       avelie: facts.filter((f) => f.scope === "avelie"),
-      justin: facts.filter((f) => f.scope === "justin" || f.scope === "shared"),
+      justin,
     },
     history,
     unknowns,
-    hasSharedHistory: history.length > 0,
+    // The same rule context.ts applies to the prompt: anything known about him means they met.
+    hasSharedHistory: history.length > 0 || justin.length > 0,
   };
 }
 

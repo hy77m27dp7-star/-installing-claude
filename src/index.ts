@@ -9,9 +9,30 @@ import type { Env } from "./types";
 
 const READ_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
 const MEDIA_PREFIX = "/media/";
+const LOCAL_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1"]);
+const CSP = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
 
 function methodNotAllowed(): Response {
   return json({ error: "method not allowed", code: "method_not_allowed" }, 405);
+}
+
+// A state-changing request from another site is refused, whatever cookie it carries.
+// Browsers say where a request came from (Sec-Fetch-Site, Origin); a request that says
+// nothing (curl, the test runner) is not a browser form. Local dev is lenient about
+// localhost versus 127.0.0.1, which wrangler dev rewrites.
+function crossSite(request: Request, url: URL): boolean {
+  const site = request.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none") return true;
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  let o: URL;
+  try {
+    o = new URL(origin);
+  } catch {
+    return true;
+  }
+  if (o.origin === url.origin) return false;
+  return !(LOCAL_HOSTS.has(o.hostname) && LOCAL_HOSTS.has(url.hostname));
 }
 
 function safeDecode(s: string): string {
@@ -28,10 +49,12 @@ function harden(res: Response): Response {
   const h = out.headers;
   h.set("cache-control", "private, no-store");
   h.set("x-content-type-options", "nosniff");
+  h.set("strict-transport-security", "max-age=31536000");
   const type = (h.get("content-type") ?? "").toLowerCase();
   if (type.includes("text/html")) {
     h.set("x-frame-options", "DENY");
     h.set("referrer-policy", "no-referrer");
+    h.set("content-security-policy", CSP);
   }
   return out;
 }
@@ -47,6 +70,10 @@ async function dispatch(request: Request, env: Env, ctx: ExecutionContext): Prom
 
   const url = new URL(request.url);
   const path = url.pathname;
+
+  if (!READ_METHODS.has(request.method) && crossSite(request, url)) {
+    return json({ error: "cross-site request refused", code: "forbidden" }, 403);
+  }
 
   if (path === "/api" || path.startsWith("/api/")) {
     return handleApi(request, env, ctx, owner.email, url);

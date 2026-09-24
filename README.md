@@ -4,7 +4,7 @@ Avelie is a private, single-owner character runtime that runs inside your own Cl
 
 ## What you need
 
-- A Cloudflare account. Workers, D1, R2 and Zero Trust Access are all on the free tier for this app's own traffic.
+- A Cloudflare account on the Workers Paid plan (5 USD a month). D1, R2 and Zero Trust Access stay within their free tiers for this app's own traffic, but a photo runs several megabytes of image data through the Worker, and the Free plan's 10 ms of CPU per request is not enough for that. Text alone works on Free; photos do not.
 - One email address. It is the only identity the app accepts. It is set as OWNER_EMAIL in wrangler.jsonc.
 - An Anthropic API key for her text. Claude Opus 5 is the default model.
 - An OpenAI API key for her photos. Photos use gpt-image-1 with the five master images as identity references. Without this key she still talks; a photo line in her reply fails quietly and the message shows a failed photo instead of a picture.

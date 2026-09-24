@@ -1,9 +1,7 @@
-// Helpers for the integration runner: a fetch wrapper, a raw HTTP request (for a custom
-// Host header, which fetch refuses to send), polling, a PASS/FAIL report with timings, and
-// wrangler process control. Plain Node 22, no Workers runtime.
+// Helpers for the integration runner: a fetch wrapper, polling, a PASS/FAIL report with
+// timings, and wrangler process control. Plain Node 22, no Workers runtime.
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync, createWriteStream } from "node:fs";
-import http from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,8 +23,8 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function api(method, path, body, headers = {}) {
   const init = { method, headers: { ...headers } };
   if (body !== undefined) {
-    init.headers["content-type"] = "application/json";
-    init.body = JSON.stringify(body);
+    if (!init.headers["content-type"]) init.headers["content-type"] = "application/json";
+    init.body = typeof body === "string" ? body : JSON.stringify(body);
   }
   const res = await fetch(BASE + path, init);
   const text = await res.text();
@@ -43,20 +41,6 @@ export async function fetchBytes(path, headers = {}) {
   const res = await fetch(BASE + path, { headers });
   const buf = new Uint8Array(await res.arrayBuffer());
   return { status: res.status, contentType: res.headers.get("content-type") || "", bytes: buf };
-}
-
-// fetch drops a caller-supplied Host header, so the non-local-host probe goes over node:http.
-export function rawRequest(path, headers = {}) {
-  return new Promise((resolvePromise, reject) => {
-    const req = http.request({ host: HOST, port: PORT, path, method: "GET", headers, setHost: false }, (res) => {
-      let data = "";
-      res.setEncoding("utf8");
-      res.on("data", (c) => { data += c; });
-      res.on("end", () => resolvePromise({ status: res.statusCode, text: data }));
-    });
-    req.on("error", reject);
-    req.end();
-  });
 }
 
 export async function waitFor(label, fn, timeoutMs, intervalMs = 500) {

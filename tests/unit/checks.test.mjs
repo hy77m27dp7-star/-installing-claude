@@ -70,6 +70,12 @@ test("markdown_structure: a dash inside a line and a number in prose are fine", 
   assert.ok(!has(r, "markdown_structure"));
 });
 
+test("markdown_structure: a hashtag is not a header", () => {
+  const r = runChecks("#nofilter obviously", checkCtx());
+  assert.ok(!has(r, "markdown_structure"));
+  assert.equal(repairText("#nofilter obviously"), "#nofilter obviously");
+});
+
 // ------------------------------------------------------------------ flag codes
 
 test("lol_lmao: lol or lmao as a word is flagged, not retried", () => {
@@ -191,7 +197,7 @@ test("menu_offer: a plain offer is fine", () => {
 });
 
 test("tech_leak: technical terms in the story channel are a retry", () => {
-  for (const t of ["the system prompt says i should be nice.", "as an ai i cannot.", "chatgpt told me.", "the app is slow today.", "file 07 says otherwise.", "that is a token thing.", "image generation is off."]) {
+  for (const t of ["the system prompt says i should be nice.", "as an ai i cannot.", "chatgpt told me.", "the app is slow today.", "file 07 says otherwise.", "that is a token thing.", "image generation is off.", "what operator note?", "ask the operator channel."]) {
     const r = runChecks(t, checkCtx({ channel: "story" }));
     assert.ok(has(r, "tech_leak"), "expected tech_leak for " + JSON.stringify(t));
     assert.equal(r.action, "retry");
@@ -253,6 +259,11 @@ test("action: flag-only codes never change the action", () => {
 test("repairText: inner em and en dashes become a comma and a space", () => {
   assert.equal(repairText("wait " + EM_DASH + " no"), "wait, no");
   assert.equal(repairText("a " + EN_DASH + " b"), "a, b");
+});
+
+test("repairText: a dash between digits is a range, not a pause", () => {
+  assert.equal(repairText("5" + EN_DASH + "6 reasons"), "5-6 reasons");
+  assert.equal(repairText("from 9 " + EM_DASH + " 5"), "from 9-5");
 });
 
 test("repairText: the Unicode ellipsis becomes three dots", () => {

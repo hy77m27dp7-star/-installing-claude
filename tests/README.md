@@ -43,21 +43,23 @@ state with `ACCESS_AUD` set and checks the production gate: no token 401, garbag
 cookie 403, the dev actor and a client email header never granting identity, static files and
 media gated. (A non-local Host header cannot be probed through `wrangler dev` once a route is
 configured, because it rewrites every request's origin; `wrangler.jsonc` pins `dev.host` to
-127.0.0.1 so the local rule works, and the unit suite covers the non-local branch.) Every check
-prints PASS or FAIL with its time; the exit code is non-zero on any failure.
+127.0.0.1 so the local rule works, and the unit suite covers the non-local branch.) The first
+phase also checks the cross-site gate (a POST with a foreign `Origin` or `Sec-Fetch-Site` is
+403, a non-JSON body 415) and that an import never touches fixed canon. Every check prints
+PASS or FAIL with its time; the exit code is non-zero on any failure.
 
 Notes on the environment:
 
-- `wrangler dev` runs with `--local` (remote bindings off). The `AI` binding is otherwise
-  treated as remote and wrangler tries to open a remote session, which needs a Cloudflare API
-  token and fails in a non-interactive shell.
+- `wrangler dev` runs with `--local`. The `AI` binding stays local either way (wrangler only
+  warns that AI bindings do not support local development, and `env.AI.run` throws locally);
+  the flag keeps every other binding local too and needs no Cloudflare login.
 - The Worker never sees the runner's process environment. The stub configuration reaches it
   through `.dev.vars` (a temporary one is written when the repo has none, and removed after)
   and through `--var` flags for `DEV_ACTOR_EMAIL`, `DEFAULT_PROVIDER` and
   `DEFAULT_IMAGE_PROVIDER`, so the run does not depend on a developer's local file.
-- The non-local host probe (`Host: avelie.example`, no token) answers 503
-  `access_not_configured` locally because `ACCESS_AUD` is empty and the gate fails closed.
-  With `ACCESS_AUD` set it would be 401. Either is accepted; the run prints which.
+- The run refuses to start while anything answers on the port, and it recognises its own
+  server by the `APP_ENV` tag it passes (`test-<stamp>`, echoed by `/api/me`), so a leftover
+  `wrangler dev` can never make a run pass against stale code.
 - With the stub text provider the operator endpoint answers with the runtime facts as text
   (no model call); a model-backed stub reply starts with `operator:`. Both are accepted.
 - Port: set `AVELIE_TEST_PORT` to move off 8790.

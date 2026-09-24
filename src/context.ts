@@ -53,11 +53,14 @@ export async function loadPromptState(db: D1Database, recentText = ""): Promise<
     getCurrentState<SceneState>(db, "scene"),
   ]);
   const history = selectHistory(historyAll, recentText);
+  const justinFacts = facts.filter((f) => f.scope === "justin" || f.scope === "shared");
   return {
-    hasSharedHistory: historyAll.length > 0,
+    // A fact about him can only exist because they talked: it ends the stranger mode
+    // just as a history entry does, so the prompt never says both at once.
+    hasSharedHistory: historyAll.length > 0 || justinFacts.length > 0,
     fixedFacts: facts.filter((f) => f.scope === "fixed"),
     avelieFacts: facts.filter((f) => f.scope === "avelie"),
-    justinFacts: facts.filter((f) => f.scope === "justin" || f.scope === "shared"),
+    justinFacts,
     history,
     unknowns,
     relationship: rel.state,
@@ -65,8 +68,18 @@ export async function loadPromptState(db: D1Database, recentText = ""): Promise<
   };
 }
 
-export async function assembleContext(db: D1Database, conversationId: string, settings: Settings, pendingUserText: string): Promise<AssembledContext> {
-  const recentRows = await listRecentStoryMessages(db, conversationId, settings.contextRecentMessages);
+// pendingMessageId names a stored user row that pendingUserText repeats (an idempotent
+// resume), so it is not sent twice. Rows with no text are dropped: providers reject
+// empty content, and an empty row would otherwise block every later turn.
+export async function assembleContext(
+  db: D1Database,
+  conversationId: string,
+  settings: Settings,
+  pendingUserText: string,
+  pendingMessageId: string | null = null,
+): Promise<AssembledContext> {
+  const recentRows = (await listRecentStoryMessages(db, conversationId, settings.contextRecentMessages))
+    .filter((r) => r.content.trim().length > 0 && r.id !== pendingMessageId);
   const chat: ChatMessage[] = recentRows.map((r) => ({ role: r.role, content: r.content }));
   chat.push({ role: "user", content: pendingUserText });
   const messages = boundMessages(chat, settings.contextMaxChars);

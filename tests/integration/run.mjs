@@ -19,6 +19,9 @@ const STATE_ARG = "tests/integration/.state";
 const STUB_ENV = { DEV_ACTOR_EMAIL, DEFAULT_PROVIDER: "stub", DEFAULT_IMAGE_PROVIDER: "stub" };
 
 const stamp = Date.now().toString(36);
+// The Worker echoes this from /api/me, so a leftover server on the port is never mistaken
+// for the one this run started.
+const APP_ENV_TAG = "test-" + stamp;
 let keyCounter = 0;
 const key = (label) => `it-${stamp}-${label}-${(keyCounter++).toString().padStart(3, "0")}`;
 
@@ -189,10 +192,16 @@ async function scenarios(report) {
     assert.deepEqual(Array.from(media.bytes.slice(0, 4)), [0x89, 0x50, 0x4e, 0x47]);
     const assets = await api("GET", "/api/assets");
     assert.ok(assets.json.candidates.some((a) => a.id === imageId), "listed as a candidate");
-    // Asking again for a finished picture regenerates nothing.
+    // Asking again for a finished picture regenerates nothing, with or without a description.
     const again = await api("POST", "/api/images/generate", { conversationId, messageId: photoMessageId });
     assert.equal(again.status, 409, again.text);
     assert.equal(again.json.code, "already_generated");
+    const override = await api("POST", "/api/images/generate", { conversationId, messageId: photoMessageId, description: "owner override" });
+    assert.equal(override.status, 409, override.text);
+    assert.equal(override.json.code, "already_generated");
+    const m2 = await api("GET", `/api/messages/${photoMessageId}`);
+    assert.equal(m2.json.image_id, imageId, "the message keeps its candidate");
+    assert.equal(m2.json.image_status, "ready");
     return `image ${imageId}, ${media.bytes.length} bytes`;
   });
 
@@ -303,6 +312,14 @@ async function scenarios(report) {
     assert.ok(!JSON.stringify(r.json).includes("sk-"), "no key material in the system panel");
   });
 
+  await report.check("GET /api/rulebook -> adaptation list and always-on text", async () => {
+    const r = await api("GET", "/api/rulebook");
+    assert.equal(r.status, 200, r.text);
+    assert.ok(Array.isArray(r.json.adaptations) && r.json.adaptations.length > 50);
+    assert.equal(typeof r.json.alwaysOn, "string");
+    assert.equal(typeof r.json.constitutionVersion, "string");
+  });
+
   await report.check("PUT relationship state -> version +1; restore first version -> version +2 with his_name null", async () => {
     const s = await state();
     const v0 = s.relationship.version;
@@ -405,6 +422,24 @@ async function scenarios(report) {
     return `${imp.json.counts.facts} facts`;
   });
 
+  await report.check("POST /api/import: fixed canon in the payload is ignored; a non-object state_json is refused", async () => {
+    const before = await state();
+    const exp = await api("GET", "/api/export");
+    assert.equal(exp.status, 200, exp.text);
+    const payload = { ...exp.json, facts: [...exp.json.facts, { id: "f_evil", scope: "fixed", subject: "age", fact: "She is 24." }] };
+    const imp = await api("POST", "/api/import", payload);
+    assert.equal(imp.status, 200, imp.text);
+    assert.ok(imp.json.counts.fixedIgnored >= 1, "fixed rows should be counted as ignored");
+    const after = await state();
+    assert.deepEqual(after.facts.fixed.map((f) => f.fact).sort(), before.facts.fixed.map((f) => f.fact).sort());
+    assert.ok(!after.facts.fixed.some((f) => f.fact === "She is 24."));
+    const bad = await api("POST", "/api/import", { version: 1, stateVersions: [{ id: "s_bad", entity: "relationship", version: 999, state_json: "null" }] });
+    assert.equal(bad.status, 400, bad.text);
+    assert.equal(bad.json.code, "validation");
+    const still = await state();
+    assert.equal(still.relationship.version, before.relationship.version);
+  });
+
   await report.check("GET /api/export/transcript/:id -> text/plain, story channel only", async () => {
     const r = await api("GET", `/api/export/transcript/${conversationId}`);
     assert.equal(r.status, 200, r.text);
@@ -453,6 +488,33 @@ async function scenarios(report) {
     assert.ok((r.headers.get("content-type") || "").includes("application/json"));
   });
 
+  await report.check("cross-site POST (Origin or Sec-Fetch-Site from elsewhere) -> 403; same-origin and local origins pass", async () => {
+    const evil = await api("POST", "/api/conversations", { title: "csrf" }, { origin: "https://evil.example" });
+    assert.equal(evil.status, 403, evil.text);
+    assert.equal(evil.json.code, "forbidden");
+    const site = await api("POST", "/api/conversations", { title: "csrf" }, { "sec-fetch-site": "cross-site" });
+    assert.equal(site.status, 403, site.text);
+    const nullOrigin = await api("POST", "/api/conversations", { title: "csrf" }, { origin: "null" });
+    assert.equal(nullOrigin.status, 403, nullOrigin.text);
+    const local = await api("POST", "/api/conversations", { title: "same-origin" }, { origin: "http://localhost:" + PORT, "sec-fetch-site": "same-origin" });
+    assert.equal(local.status, 201, local.text);
+    const read = await api("GET", "/api/me", undefined, { origin: "https://evil.example" });
+    assert.equal(read.status, 200, "reads are not gated by origin");
+    const conv = await api("GET", "/api/conversations");
+    assert.ok(!conv.json.some((c) => c.title === "csrf"), "no cross-site conversation was created");
+  });
+
+  await report.check("POST with a text/plain body -> 415; a 17 MB body -> 413", async () => {
+    const plain = await api("POST", "/api/conversations", "{\"title\":\"plain\"}", { "content-type": "text/plain" });
+    assert.equal(plain.status, 415, plain.text);
+    assert.equal(plain.json.code, "unsupported_media_type");
+    const big = await api("POST", "/api/import", "{\"version\":1,\"pad\":\"" + "x".repeat(17 * 1024 * 1024) + "\"}");
+    assert.equal(big.status, 413, big.text.slice(0, 200));
+    assert.equal(big.json.code, "too_large");
+    const conv = await api("GET", "/api/conversations");
+    assert.ok(!conv.json.some((c) => c.title === "plain"));
+  });
+
   await report.check("garbage Access token on a local host -> 200 (dev actor wins while ACCESS_AUD is empty)", async () => {
     const r = await api("GET", "/api/me", undefined, { "cf-access-jwt-assertion": "garbage" });
     assert.equal(r.status, 200, r.text);
@@ -499,6 +561,16 @@ async function gateScenarios(report) {
 
 // ------------------------------------------------------------------ main
 
+// True when anything at all answers on the test port.
+async function answering() {
+  try {
+    await fetch(BASE + "/api/me", { signal: AbortSignal.timeout(2000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const report = new Report();
   const t0 = Date.now();
@@ -530,9 +602,10 @@ async function main() {
     // that needs a Cloudflare API token). The three --var flags mirror .dev.vars so the run
     // does not depend on what a developer keeps there.
     const tb = Date.now();
+    if (await answering()) throw new Error("something already answers on " + BASE + "; stop it (or set AVELIE_TEST_PORT) and rerun");
     wrangler = startWrangler([
       "--port", String(PORT), "--local", "--persist-to", STATE_ARG,
-      "--var", "APP_ENV:test",
+      "--var", "APP_ENV:" + APP_ENV_TAG,
       "--var", `DEV_ACTOR_EMAIL:${DEV_ACTOR_EMAIL}`,
       "--var", "DEFAULT_PROVIDER:stub",
       "--var", "DEFAULT_IMAGE_PROVIDER:stub",
@@ -541,7 +614,8 @@ async function main() {
     await waitFor("wrangler dev on " + BASE, async () => {
       if (wrangler.hasExited()) throw new Error("wrangler dev exited before it was ready");
       const r = await api("GET", "/api/me");
-      return r.status === 200;
+      // Only this run's server carries this run's tag.
+      return r.status === 200 && r.json && r.json.env === APP_ENV_TAG;
     }, BOOT_TIMEOUT_MS, 500).catch((e) => {
       console.log("wrangler output (tail):");
       console.log(wrangler.tail());
@@ -551,12 +625,14 @@ async function main() {
 
     await scenarios(report);
 
-    // Second phase, same port and state, with the production gate switched on.
+    // Second phase, same port and state, with the production gate switched on. The gated
+    // server cannot be told apart by /api/me (401), so nothing may answer before it boots.
     await stopWrangler(wrangler);
+    if (await answering()) throw new Error("the first server is still answering on " + BASE + " after shutdown");
     const tg = Date.now();
     wrangler = startWrangler([
       "--port", String(PORT), "--local", "--persist-to", STATE_ARG,
-      "--var", "APP_ENV:test",
+      "--var", "APP_ENV:" + APP_ENV_TAG,
       "--var", `DEV_ACTOR_EMAIL:${DEV_ACTOR_EMAIL}`,
       "--var", "DEFAULT_PROVIDER:stub",
       "--var", "DEFAULT_IMAGE_PROVIDER:stub",

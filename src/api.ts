@@ -17,6 +17,8 @@ import {
   restoreFact, restoreHistory, restoreState, updateFact, updateHistory, updateUnknown,
 } from "./state";
 import { safeErrorMessage } from "./providers/types";
+import { ADAPTATIONS, ALWAYS_ON, CONSTITUTION_VERSION, OVERLAY } from "./generated/constitution";
+import { PROMPT_VERSION } from "./prompt";
 import type { Channel, Env, FactScope, ImageProviderName, ProposalKind, ProposalRow, ProviderName, Settings } from "./types";
 
 // ------------------------------------------------------------------ router
@@ -94,11 +96,23 @@ export async function handleApi(request: Request, env: Env, ctx: ExecutionContex
 
 type Body = Record<string, unknown>;
 
+// Room for a full export (messages plus the log tables) and nothing like the 100 MB an
+// isolate could be asked to parse.
+const MAX_BODY_BYTES = 16 * 1024 * 1024;
+
 function invalid(message: string): ApiHttpError {
   return new ApiHttpError(400, "validation", message);
 }
 
+function tooLarge(): ApiHttpError {
+  return new ApiHttpError(413, "too_large", "body exceeds " + MAX_BODY_BYTES + " bytes");
+}
+
+// A non-empty body must declare application/json: a browser form cannot, so a cross-site
+// form post never reaches a handler as JSON.
 async function readBody(request: Request): Promise<Body> {
+  const declared = Number(request.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge();
   let raw: string;
   try {
     raw = await request.text();
@@ -106,6 +120,9 @@ async function readBody(request: Request): Promise<Body> {
     throw invalid("body could not be read");
   }
   if (!raw.trim()) return {};
+  if (raw.length > MAX_BODY_BYTES) throw tooLarge();
+  const type = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  if (type !== "application/json") throw new ApiHttpError(415, "unsupported_media_type", "body must be application/json");
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -255,6 +272,15 @@ route("GET", "/api/system", async (c) => {
   const settings = await loadSettings(c);
   return json(await systemInfo(c.env, c.db, settings));
 });
+
+// The Rulebook tab: what the build changed in the frozen files, and the always-on text.
+route("GET", "/api/rulebook", async () => json({
+  constitutionVersion: CONSTITUTION_VERSION,
+  promptVersion: PROMPT_VERSION,
+  adaptations: ADAPTATIONS.map((a) => `${a.file} ${a.id}: ${a.from} => ${a.to}`),
+  overlay: OVERLAY,
+  alwaysOn: ALWAYS_ON,
+}));
 
 // ------------------------------------------------------------------ conversations and turns
 

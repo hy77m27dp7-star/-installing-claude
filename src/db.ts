@@ -126,11 +126,13 @@ export async function createConversation(db: D1Database, title: string | null): 
   return row;
 }
 
+// The newest `limit` messages, returned oldest first. (Oldest-first with a cap would hide
+// everything after the cap in a long conversation.)
 export async function listMessages(db: D1Database, conversationId: string, channel?: Channel, limit = 500): Promise<MessageRow[]> {
   const r = channel
-    ? await db.prepare("SELECT * FROM messages WHERE conversation_id = ?1 AND channel = ?2 ORDER BY seq ASC LIMIT ?3").bind(conversationId, channel, limit).all<MessageRow>()
-    : await db.prepare("SELECT * FROM messages WHERE conversation_id = ?1 ORDER BY seq ASC LIMIT ?2").bind(conversationId, limit).all<MessageRow>();
-  return r.results;
+    ? await db.prepare("SELECT * FROM messages WHERE conversation_id = ?1 AND channel = ?2 ORDER BY seq DESC LIMIT ?3").bind(conversationId, channel, limit).all<MessageRow>()
+    : await db.prepare("SELECT * FROM messages WHERE conversation_id = ?1 ORDER BY seq DESC LIMIT ?2").bind(conversationId, limit).all<MessageRow>();
+  return r.results.reverse();
 }
 
 export async function listRecentStoryMessages(db: D1Database, conversationId: string, limit: number): Promise<MessageRow[]> {

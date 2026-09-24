@@ -14,10 +14,15 @@ test("stablePrefix: identical bytes on every call (cacheable)", () => {
   assert.ok(stablePrefix().length > 1000);
 });
 
-test("stablePrefix: never names him, never points at a file number", () => {
+test("stablePrefix: never names him, his initial, a file number or the operator channel", () => {
   const p = stablePrefix();
+  const quotedJ = String.fromCharCode(0x201c) + "J" + String.fromCharCode(0x201d);
   assert.ok(!p.includes("Justin"), "the stable prefix must not contain Justin");
+  assert.ok(!p.includes(quotedJ), "the stable prefix must not hand her his initial as a nickname");
   assert.ok(!/file 07/i.test(p), "the stable prefix must not mention file 07");
+  assert.ok(!/operator channel/i.test(p), "the stable prefix must not name the operator channel");
+  assert.ok(!/whichever system is performing her/i.test(p));
+  assert.ok(/CORRECTIONS/.test(p), "the overlay carries the correction rule");
 });
 
 test("stablePrefix: she is 22, never 24", () => {
@@ -49,6 +54,14 @@ test("stateSections: with shared history the FIRST CONVERSATION section is omitt
   assert.ok(s.includes("the bench"));
   assert.ok(s.includes("they talked for an hour"));
   assert.ok(s.includes("What changed:"));
+});
+
+test("stateSections: the told/untold sentence follows the lists (nothing told on a fresh start)", () => {
+  const fresh = stateSections(promptState({ avelieFacts: [factRow({ id: "f1", fact: "she sings in the car", disclosed: 0 })] }));
+  assert.ok(fresh.includes("You have said none of them out loud to him yet."));
+  assert.ok(!fresh.includes("Some you have said out loud"));
+  const mixed = stateSections(promptState({ avelieFacts: [factRow({ id: "f1", disclosed: 1 }), factRow({ id: "f2", fact: "x", disclosed: 0 })] }));
+  assert.ok(mixed.includes("Some you have said out loud to him, the rest you have not."));
 });
 
 test("stateSections: told and untold facts land in separate blocks, provisional facts are tagged", () => {

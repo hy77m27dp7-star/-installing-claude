@@ -1,6 +1,6 @@
 // Full JSON export, plain-text transcript export, and import with a snapshot taken first.
 // Import replaces the story tables in one batch; settings and visual_assets are merged,
-// never dropped. Fixed canon facts and master images survive a payload that lacks them.
+// never dropped. Fixed canon facts and master images are never touched by a payload.
 import { CONSTITUTION_VERSION } from "./generated/constitution";
 import { PROMPT_VERSION } from "./prompt";
 import { DEFAULT_SETTINGS, auditStmt, getSettings, listMessages, newId, nowIso, putSettings } from "./db";
@@ -205,16 +205,22 @@ const PROPOSALS: TableSpec = {
   ],
 };
 
+// Only what the runtime itself produces is imported: masters and archive rows come from
+// the seed, and a payload cannot add a "master" that points at an arbitrary file.
+const RUNTIME_ASSET_ROLES: readonly string[] = ["candidate", "scene"];
+const ASSET_STATUSES: readonly string[] = ["approved", "candidate", "rejected", "archive", "missing", "pending", "generating", "failed"];
+const CANDIDATE_PREFIX = "candidates/";
+
 const VISUAL_ASSETS: TableSpec = {
   table: "visual_assets",
   key: "visualAssets",
   cols: [
     { name: "id", type: "text", required: true },
     { name: "file", type: "text", required: true },
-    { name: "role", type: "text", required: true },
+    { name: "role", type: "text", required: true, oneOf: RUNTIME_ASSET_ROLES },
     { name: "sha256", type: "text" },
     { name: "bytes", type: "int" },
-    { name: "approval_status", type: "text", required: true },
+    { name: "approval_status", type: "text", required: true, oneOf: ASSET_STATUSES },
     { name: "conversation_id", type: "text" },
     { name: "message_id", type: "text" },
     { name: "prompt", type: "text" },
@@ -247,16 +253,20 @@ function coerce(value: unknown, col: Col, where: string, at: string): Cell {
       return value;
     }
     case "json": {
+      // State is read back as an object with named fields; "null" or an array is valid
+      // JSON that would break every turn after it.
+      let parsed: unknown;
       if (typeof value === "string") {
         try {
-          JSON.parse(value);
+          parsed = JSON.parse(value);
         } catch {
           throw bad(where, `${col.name} must be valid JSON`);
         }
-        return value;
+      } else {
+        parsed = value;
       }
-      if (typeof value === "object") return JSON.stringify(value);
-      throw bad(where, `${col.name} must be JSON`);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw bad(where, `${col.name} must be a JSON object`);
+      return typeof value === "string" ? value : JSON.stringify(value);
     }
     case "int": {
       if (typeof value === "boolean") return value ? 1 : 0;
@@ -293,6 +303,16 @@ function prepareRows(spec: TableSpec, raw: unknown, at: string): PreparedRow[] {
     out.push({ values, get: (name) => values[spec.cols.findIndex((c) => c.name === name)] ?? null });
   });
   return out;
+}
+
+// The payload's asset rows that the runtime itself could have written. Everything else
+// (masters, the legacy archive, blacklist rows) lives in the seed and is skipped here.
+function runtimeAssetRows(raw: unknown): unknown {
+  if (!Array.isArray(raw)) return raw;
+  return raw.filter((item) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return true;
+    return RUNTIME_ASSET_ROLES.includes(String((item as Record<string, unknown>).role));
+  });
 }
 
 function insertStmt(db: D1Database, spec: TableSpec, row: PreparedRow, orIgnore = false): D1PreparedStatement {
@@ -333,13 +353,18 @@ export async function importAll(
   const at = nowIso();
   const conversations = prepareRows(CONVERSATIONS, payload.conversations, at);
   const messages = prepareRows(MESSAGES, payload.messages, at);
-  const facts = prepareRows(FACTS, payload.facts, at);
+  const allFacts = prepareRows(FACTS, payload.facts, at);
   const history = prepareRows(HISTORY, payload.history, at);
   const unknowns = prepareRows(UNKNOWNS, payload.unknowns, at);
   const stateVersions = prepareRows(STATE_VERSIONS, payload.stateVersions, at);
   const proposals = prepareRows(PROPOSALS, payload.proposals, at);
-  const visualAssets = prepareRows(VISUAL_ASSETS, payload.visualAssets, at);
+  const visualAssets = prepareRows(VISUAL_ASSETS, runtimeAssetRows(payload.visualAssets), at);
   const settings = settingsPatch(payload.settings);
+
+  // Fixed canon is never imported: it changes through migrations only (403 fixed_canon
+  // everywhere else). Rows with that scope are dropped from the payload and counted.
+  const facts = allFacts.filter((r) => r.get("scope") !== "fixed");
+  const fixedIgnored = allFacts.length - facts.length;
 
   // A state entity present in the payload is replaced; one absent keeps its current versions.
   const entities = new Set<string>();
@@ -348,12 +373,26 @@ export async function importAll(
     const versions = stateVersions.filter((r) => r.get("entity") === entity).map((r) => Number(r.get("version")));
     if (new Set(versions).size !== versions.length) throw bad("stateVersions", `duplicate version for ${entity}`);
   }
-  // Fixed canon is replaced only when the payload carries fixed canon of its own.
-  const payloadHasFixed = facts.some((r) => r.get("scope") === "fixed");
+  // One seq per conversation (the unique index would otherwise fail the whole batch).
+  const seqSeen = new Set<string>();
+  for (const r of messages) {
+    const k = String(r.get("conversation_id")) + "#" + String(r.get("seq"));
+    if (seqSeen.has(k)) throw bad("messages", `duplicate seq ${String(r.get("seq"))} in conversation ${String(r.get("conversation_id"))}`);
+    seqSeen.add(k);
+  }
+  for (const r of visualAssets) {
+    if (!String(r.get("file")).startsWith(CANDIDATE_PREFIX)) throw bad("visualAssets", "file must be under " + CANDIDATE_PREFIX);
+  }
 
-  // Snapshot first, outside the batch, so a failed import still leaves the old world on file.
+  // Snapshot first, outside the batch, so a failed import still leaves the old world on
+  // file. Only what an import replaces is kept (the log tables are not restored and would
+  // push the one JSON value past D1's per-value limit over time).
   const snapshotId = newId("snap");
-  const snapshot = await collectRows(db);
+  const full = await collectRows(db);
+  const snapshot: Record<string, unknown> = { ...full };
+  delete snapshot.audit;
+  delete snapshot.modelRuns;
+  delete snapshot.usage;
   await db
     .prepare("INSERT INTO snapshots (id, reason, json, created_at) VALUES (?1, ?2, ?3, ?4)")
     .bind(snapshotId, "pre-import", JSON.stringify(snapshot), at)
@@ -363,6 +402,7 @@ export async function importAll(
     conversations: conversations.length,
     messages: messages.length,
     facts: facts.length,
+    fixedIgnored,
     history: history.length,
     unknowns: unknowns.length,
     stateVersions: stateVersions.length,
@@ -377,13 +417,13 @@ export async function importAll(
     db.prepare("DELETE FROM proposals"),
     db.prepare("DELETE FROM history"),
     db.prepare("DELETE FROM unknowns"),
-    db.prepare(payloadHasFixed ? "DELETE FROM facts" : "DELETE FROM facts WHERE scope != 'fixed'"),
+    db.prepare("DELETE FROM facts WHERE scope != 'fixed'"),
   ];
   for (const entity of entities) stmts.push(db.prepare("DELETE FROM state_versions WHERE entity = ?1").bind(entity));
 
   for (const r of conversations) stmts.push(insertStmt(db, CONVERSATIONS, r));
   for (const r of messages) stmts.push(insertStmt(db, MESSAGES, r));
-  for (const r of facts) stmts.push(insertStmt(db, FACTS, r, !payloadHasFixed && r.get("scope") === "fixed"));
+  for (const r of facts) stmts.push(insertStmt(db, FACTS, r));
   for (const r of history) stmts.push(insertStmt(db, HISTORY, r));
   for (const r of unknowns) stmts.push(insertStmt(db, UNKNOWNS, r));
   for (const r of stateVersions) stmts.push(insertStmt(db, STATE_VERSIONS, r));
@@ -392,7 +432,7 @@ export async function importAll(
   stmts.push(auditStmt(db, actor, "import", "snapshot", snapshotId, null, {
     counts,
     entities: Array.from(entities),
-    fixedReplaced: payloadHasFixed,
+    fixedReplaced: false,
     exportedAt: typeof payload.exportedAt === "string" ? payload.exportedAt : null,
     constitutionVersion: typeof payload.constitutionVersion === "string" ? payload.constitutionVersion : null,
   }));

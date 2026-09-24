@@ -11,10 +11,28 @@ test("marker on the final line: description returned, marker removed, whitespace
   assert.equal(r.clean, "ok fine, one. do not judge the lighting");
 });
 
-test("marker mid-text is stripped and ignored", () => {
+test("marker on its own line mid-text: stripped, the line goes, the description counts", () => {
   const r = parsePhotoMarker("first line\n[photo: something]\nsecond line");
-  assert.equal(r.description, null);
+  assert.equal(r.description, "something");
   assert.equal(r.clean, "first line\nsecond line");
+});
+
+test("marker inline after prose: the prose stays, the marker goes", () => {
+  const r = parsePhotoMarker("fine. [photo: me on the couch, hoodie, no makeup]");
+  assert.equal(r.description, "me on the couch, hoodie, no makeup");
+  assert.equal(r.clean, "fine.");
+});
+
+test("marker first, prose after: the prose stays", () => {
+  const r = parsePhotoMarker("[photo: mirror selfie, black hoodie]\nok dont judge the lighting");
+  assert.equal(r.description, "mirror selfie, black hoodie");
+  assert.equal(r.clean, "ok dont judge the lighting");
+});
+
+test("marker with a trailing period is still a marker", () => {
+  const r = parsePhotoMarker("ok sent\n[photo: couch, hoodie].");
+  assert.equal(r.description, "couch, hoodie");
+  assert.equal(r.clean, "ok sent");
 });
 
 test("no marker: text unchanged, description null", () => {

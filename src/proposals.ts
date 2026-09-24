@@ -161,9 +161,21 @@ export async function extractProposals(
   }
 
   const candidates = parseProposalJson(text);
-  const [pending, approvedFacts] = await Promise.all([listProposals(db, "pending"), listFacts(db)]);
+  // The same exchange is read for several turns, so anything already proposed, decided
+  // or approved (including the original text of an edited proposal) is not proposed again.
+  const [pending, rejected, edited, approved, approvedFacts] = await Promise.all([
+    listProposals(db, "pending"), listProposals(db, "rejected"), listProposals(db, "edited"), listProposals(db, "approved"), listFacts(db),
+  ]);
   const seen = new Set<string>();
-  for (const p of pending) seen.add(normText(p.proposal));
+  for (const p of [...pending, ...rejected, ...edited, ...approved]) {
+    seen.add(normText(p.proposal));
+    if (p.status === "edited" && p.payload_json) {
+      try {
+        const original = (JSON.parse(p.payload_json) as { original_proposal?: unknown }).original_proposal;
+        if (typeof original === "string") seen.add(normText(original));
+      } catch { /* an unreadable payload hides nothing that matters */ }
+    }
+  }
   for (const f of approvedFacts) seen.add(normText(f.fact));
 
   const t = nowIso();
@@ -309,7 +321,6 @@ export async function decideProposal(
   }
   if (!isKind(kind)) throw new ApiHttpError(400, "validation", "proposal kind is not promotable");
 
-  const promotedId = await promote(db, p, kind, text, actor);
   const status: ProposalRow["status"] = decision === "edit" ? "edited" : "approved";
   let payload: Record<string, unknown> = {};
   if (p.payload_json) {
@@ -317,12 +328,31 @@ export async function decideProposal(
   }
   if (decision === "edit") payload = { ...payload, original_proposal: p.proposal, original_kind: p.kind };
   const payloadJson = JSON.stringify(payload);
+
+  // Take the proposal first (compare-and-set on pending), so a second approve from
+  // another tab finds nothing to promote. Promotion failing hands the proposal back.
+  const taken = await db
+    .prepare("UPDATE proposals SET status = ?2, kind = ?3, proposal = ?4, payload_json = ?5, decision_note = ?6, decided_at = ?7 WHERE id = ?1 AND status = 'pending'")
+    .bind(p.id, status, kind, text, payloadJson, cleanNote, decidedAt)
+    .run();
+  if (!taken.meta.changes) throw new ApiHttpError(409, "already_decided", "proposal was decided by another request");
+
+  let promotedId: string;
+  try {
+    promotedId = await promote(db, p, kind, text, actor);
+  } catch (e) {
+    try {
+      await db.prepare("UPDATE proposals SET status = 'pending', kind = ?2, proposal = ?3, payload_json = ?4, decision_note = NULL, decided_at = NULL WHERE id = ?1 AND status = ?5")
+        .bind(p.id, p.kind, p.proposal, p.payload_json, status).run();
+    } catch { /* the proposal stays decided without a promoted id; the audit shows the gap */ }
+    throw e;
+  }
+
   const after: ProposalRow = {
     ...p, kind, proposal: text, payload_json: payloadJson, status, decision_note: cleanNote, promoted_id: promotedId, decided_at: decidedAt,
   };
   await db.batch([
-    db.prepare("UPDATE proposals SET status = ?2, kind = ?3, proposal = ?4, payload_json = ?5, decision_note = ?6, promoted_id = ?7, decided_at = ?8 WHERE id = ?1")
-      .bind(p.id, status, kind, text, payloadJson, cleanNote, promotedId, decidedAt),
+    db.prepare("UPDATE proposals SET promoted_id = ?2 WHERE id = ?1").bind(p.id, promotedId),
     auditStmt(db, actor, decision === "edit" ? "proposal.edit" : "proposal.approve", "proposal", p.id, p, after),
   ]);
   return { proposal: after, promotedId };

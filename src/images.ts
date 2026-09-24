@@ -19,7 +19,10 @@ import { safeErrorMessage } from "./providers/types";
 import { ProviderError } from "./types";
 import type { Env, ModelRunRow, Settings, VisualAssetRow } from "./types";
 
-const MARKER_LINE = /^\[photo:\s*(.+)\]\s*$/i;
+// "[photo: ...]" anywhere in the text, on one line.
+const MARKER_RE = /\[photo:\s*([^\]\n]*)\]/gi;
+// What a line may be left with once its marker is gone and still count as empty.
+const MARKER_LEFTOVER_RE = /^[\s.,;:!?)]*$/;
 const CANDIDATE_PREFIX = "candidates/";
 const ASSETS_ORIGIN = "https://assets.local/";
 const MICRO = 1_000_000;
@@ -32,28 +35,37 @@ const CLAIM_NOTE = "generating since ";
 type RequestStatus = "pending" | "generating" | "failed";
 const REQUEST_STATUSES: ReadonlySet<string> = new Set<RequestStatus>(["pending", "generating", "failed"]);
 
+// Verified master bytes, kept for the life of the isolate: hashing ~5 MB on every photo
+// is CPU the request does not have to spend twice. Keyed by file and stored hash, so a
+// changed registry row re-verifies.
+const masterCache = new Map<string, ArrayBuffer>();
+
 // ------------------------------------------------------------------ marker
 
-// The photo marker is the final non-blank line, "[photo: ...]". It is removed from the
-// text. Any other marker line is dropped and ignored: one photo per message at most.
+// The photo marker may sit anywhere in the text (models drift from "last line"). Every
+// marker is removed; the last one's description is the request. A line that held only a
+// marker (plus stray punctuation) disappears; one that also carried prose keeps the prose.
 export function parsePhotoMarker(text: string): { clean: string; description: string | null } {
-  const lines = text.split(/\r?\n/);
   let description: string | null = null;
+  const kept: string[] = [];
 
-  let last = lines.length - 1;
-  while (last >= 0 && (lines[last] ?? "").trim() === "") last--;
-  if (last >= 0) {
-    const m = MARKER_LINE.exec((lines[last] ?? "").trim());
-    if (m) {
-      const d = (m[1] ?? "").trim();
-      description = d.length ? d : null;
-      lines.splice(last, 1);
+  for (const line of text.split(/\r?\n/)) {
+    let had = false;
+    const stripped = line.replace(MARKER_RE, (_m, d: string) => {
+      had = true;
+      const t = d.trim();
+      if (t) description = t;
+      return "";
+    });
+    if (!had) {
+      kept.push(line);
+      continue;
     }
+    if (MARKER_LEFTOVER_RE.test(stripped)) continue;
+    kept.push(stripped.replace(/[ \t]{2,}/g, " ").trimEnd());
   }
 
-  const kept = lines.filter((l) => !MARKER_LINE.test(l.trim()));
-  const clean = kept.join("\n").trimEnd();
-  return { clean, description };
+  return { clean: kept.join("\n").trimEnd(), description };
 }
 
 // ------------------------------------------------------------------ helpers
@@ -83,6 +95,15 @@ function toApiError(e: unknown): ApiHttpError {
     return new ApiHttpError(502, "provider_failed", message, e.retryable, e.kind);
   }
   return new ApiHttpError(500, "image_failed", safeErrorMessage(e), false);
+}
+
+// Thrown when another request took the claim over while this one was still working. The
+// row and the message belong to that other request now, so nothing is recorded as failed.
+class ClaimLostError extends ApiHttpError {
+  constructor() {
+    super(409, "in_progress", "another request took over this photo", true);
+    this.name = "ClaimLostError";
+  }
 }
 
 function notFound(): Response {
@@ -132,10 +153,10 @@ export function photoRequestRow(
   };
 }
 
-// Finds or opens the request and claims it. With a description: a new request (the owner
-// asked, or the owner overrides the message's request). Without one: the message's own
-// request is resumed. A live claim by another request answers 409 in_progress; a finished
-// photo answers 409 already_generated.
+// Finds or opens the request and claims it. A message that already carries a request is
+// always resumed (a description from the owner replaces its prompt); a live claim by
+// another request answers 409 in_progress and a finished photo 409 already_generated,
+// whatever else the call carried. Without a message, a description opens a new request.
 async function claimRequest(
   db: D1Database,
   conversationId: string,
@@ -152,10 +173,11 @@ async function claimRequest(
     if (!m || m.conversation_id !== conversationId) {
       throw new ApiHttpError(404, "not_found", "message not found in this conversation");
     }
-    if (!text) {
-      if (!m.image_id) throw new ApiHttpError(404, "not_found", "no photo request on this message");
+    if (m.image_id) {
       row = await getAsset(db, m.image_id);
-      if (!row) throw new ApiHttpError(404, "not_found", "photo request not found");
+      if (!row && !text) throw new ApiHttpError(404, "not_found", "photo request not found");
+    } else if (!text) {
+      throw new ApiHttpError(404, "not_found", "no photo request on this message");
     }
   }
   if (!text && !row) throw new ApiHttpError(400, "validation", "description is required");
@@ -173,16 +195,17 @@ async function claimRequest(
     if (row.approval_status === "generating" && !claimExpired(row.notes, Date.now())) {
       throw new ApiHttpError(409, "in_progress", "the photo is being generated");
     }
+    const prompt = text || row.prompt;
     // Compare-and-set on the status and the claim note so two requests never both win.
     const res = await db
-      .prepare("UPDATE visual_assets SET approval_status = 'generating', notes = ?2 WHERE id = ?1 AND approval_status = ?3 AND notes IS ?4")
-      .bind(row.id, note, row.approval_status, row.notes)
+      .prepare("UPDATE visual_assets SET approval_status = 'generating', notes = ?2, prompt = ?5 WHERE id = ?1 AND approval_status = ?3 AND notes IS ?4")
+      .bind(row.id, note, row.approval_status, row.notes, prompt)
       .run();
     if (!res.meta.changes) throw new ApiHttpError(409, "in_progress", "the photo is being generated");
     if (row.message_id) {
-      await db.prepare("UPDATE messages SET image_status = 'pending' WHERE id = ?1").bind(row.message_id).run();
+      await db.prepare("UPDATE messages SET image_status = 'pending' WHERE id = ?1 AND image_id = ?2").bind(row.message_id, row.id).run();
     }
-    return { ...row, approval_status: "generating", notes: note };
+    return { ...row, approval_status: "generating", notes: note, prompt };
   }
 
   const fresh = photoRequestRow(conversationId, messageId, text, provider, model, "generating");
@@ -203,6 +226,11 @@ export async function loadMasterBytes(env: Env, db: D1Database): Promise<Array<{
   if (!rows.length) throw new ProviderError("assets", "config", "no master images in the registry", 503, false);
 
   return Promise.all(rows.map(async (r) => {
+    const cacheKey = r.sha256 ? r.file + "|" + r.sha256 : null;
+    const cached = cacheKey ? masterCache.get(cacheKey) : undefined;
+    // A copy, so nothing downstream can detach or alter the cached buffer.
+    if (cached) return { name: basename(r.file), bytes: cached.slice(0) };
+
     const res = await env.ASSETS.fetch(new Request(assetUrl(r.file)));
     if (!res.ok) throw new ProviderError("assets", "config", "master image missing: " + r.file, 503, false);
     const bytes = await res.arrayBuffer();
@@ -211,6 +239,7 @@ export async function loadMasterBytes(env: Env, db: D1Database): Promise<Array<{
       const actual = await sha256Hex(bytes);
       if (actual !== r.sha256) throw new ProviderError("assets", "config", "master image hash mismatch: " + r.file, 503, false);
     }
+    if (cacheKey) masterCache.set(cacheKey, bytes.slice(0));
     return { name: basename(r.file), bytes };
   }));
 }
@@ -240,6 +269,7 @@ interface FailureRecord {
   conversationId: string;
   messageId: string | null;
   assetId: string;
+  claimNote: string;
   provider: string;
   model: string;
   latencyMs: number;
@@ -248,6 +278,8 @@ interface FailureRecord {
 }
 
 // The request row stays (status failed, the reason in notes) so the owner can retry it.
+// Both updates are guarded: only this request's own claim, and only a message that still
+// waits on this very row, are touched.
 async function recordFailure(db: D1Database, f: FailureRecord): Promise<void> {
   const reason = f.kind + (f.message ? ": " + f.message : "");
   const run: ModelRunRow = {
@@ -268,10 +300,13 @@ async function recordFailure(db: D1Database, f: FailureRecord): Promise<void> {
   };
   const stmts: D1PreparedStatement[] = [
     insertModelRunStmt(db, run),
-    db.prepare("UPDATE visual_assets SET approval_status = 'failed', notes = ?2 WHERE id = ?1 AND approval_status = 'generating'")
-      .bind(f.assetId, reason.slice(0, 300)),
+    db.prepare("UPDATE visual_assets SET approval_status = 'failed', notes = ?2 WHERE id = ?1 AND approval_status = 'generating' AND notes = ?3")
+      .bind(f.assetId, reason.slice(0, 300), f.claimNote),
   ];
-  if (f.messageId) stmts.push(db.prepare("UPDATE messages SET image_status = 'failed' WHERE id = ?1").bind(f.messageId));
+  if (f.messageId) {
+    stmts.push(db.prepare("UPDATE messages SET image_status = 'failed' WHERE id = ?1 AND image_id = ?2 AND image_status = 'pending'")
+      .bind(f.messageId, f.assetId));
+  }
   try {
     await db.batch(stmts);
   } catch (e) {
@@ -294,6 +329,7 @@ export async function generateCandidate(
   const request = await claimRequest(db, conversationId, messageId, args.description, providerName, model);
   const description = (request.prompt ?? "").trim();
   const requestMessageId = request.message_id;
+  const claimNote = request.notes ?? "";
 
   try {
     if (!description) throw new ApiHttpError(400, "validation", "description is required");
@@ -315,18 +351,24 @@ export async function generateCandidate(
     });
     const latencyMs = Date.now() - started;
 
-    // 3. blacklist
+    // 3. blacklist. A rejected hash stays refused; a real provider can still be asked again.
     const sha = await sha256Hex(result.png);
     const hit = await db
       .prepare("SELECT id FROM visual_assets WHERE approval_status = 'rejected' AND sha256 = ?1 LIMIT 1")
       .bind(sha)
       .first<{ id: string }>();
-    if (hit) throw new ApiHttpError(422, "blacklisted", "candidate matches a rejected image", false, hit.id);
+    if (hit) throw new ApiHttpError(422, "blacklisted", "candidate matches a rejected image", true, hit.id);
 
-    // 4. store: bytes to R2, then the row becomes a candidate in one batch
+    // 4. store: the claim must still be ours before the bytes go to R2, then the row
+    // becomes a candidate in one batch whose first statement is the same guard.
     const id = request.id;
     const key = CANDIDATE_PREFIX + id + ".png";
     const t = nowIso();
+    const live = await db
+      .prepare("SELECT 1 AS ok FROM visual_assets WHERE id = ?1 AND approval_status = 'generating' AND notes = ?2")
+      .bind(id, claimNote)
+      .first<{ ok: number }>();
+    if (!live) throw new ClaimLostError();
     await env.MEDIA.put(key, result.png, { httpMetadata: { contentType: "image/png" } });
 
     const row: VisualAssetRow = {
@@ -358,8 +400,8 @@ export async function generateCandidate(
     };
 
     const stmts: D1PreparedStatement[] = [
-      db.prepare("UPDATE visual_assets SET file = ?2, sha256 = ?3, bytes = ?4, approval_status = 'candidate', provider = ?5, model = ?6, notes = NULL WHERE id = ?1")
-        .bind(id, key, sha, row.bytes, providerName, row.model),
+      db.prepare("UPDATE visual_assets SET file = ?2, sha256 = ?3, bytes = ?4, approval_status = 'candidate', provider = ?5, model = ?6, notes = NULL WHERE id = ?1 AND approval_status = 'generating' AND notes = ?7")
+        .bind(id, key, sha, row.bytes, providerName, row.model, claimNote),
       insertModelRunStmt(db, run),
       usageStmt(db, dayKey(), providerName, model, 0, 0, costMicro),
       auditStmt(db, actor, "image.generate", "visual_asset", id, null, {
@@ -367,16 +409,22 @@ export async function generateCandidate(
       }),
     ];
     if (requestMessageId) {
-      stmts.push(db.prepare("UPDATE messages SET image_id = ?1, image_status = 'ready' WHERE id = ?2").bind(id, requestMessageId));
+      stmts.push(db.prepare("UPDATE messages SET image_id = ?1, image_status = 'ready' WHERE id = ?2 AND image_id = ?1 AND image_status = 'pending'")
+        .bind(id, requestMessageId));
     }
-    await db.batch(stmts);
+    const results = await db.batch(stmts);
+    if (!results[0]?.meta.changes) {
+      console.warn("image claim lost before commit", id);
+      throw new ClaimLostError();
+    }
     return row;
   } catch (e) {
+    if (e instanceof ClaimLostError) throw e;
     const kind = errorKind(e);
     const message = safeErrorMessage(e, 200);
     console.warn("image generation failed", kind, message);
     await recordFailure(db, {
-      conversationId, messageId: requestMessageId, assetId: request.id, provider: providerName, model,
+      conversationId, messageId: requestMessageId, assetId: request.id, claimNote, provider: providerName, model,
       latencyMs: Date.now() - started, kind, message,
     });
     throw toApiError(e);

@@ -70,8 +70,18 @@ async function readJson<T>(res: Response): Promise<T> {
   }
 }
 
+type Base64Static = { fromBase64?: (s: string) => Uint8Array };
+
+// A multi-megabyte image comes back base64. The native decoder is used where the
+// runtime has it (it costs no CPU to speak of); the byte loop is the fallback.
 function base64ToArrayBuffer(b64: string): ArrayBuffer {
-  const bin = atob(b64.replace(/\s+/g, ""));
+  const clean = b64.replace(/\s+/g, "");
+  const native = (Uint8Array as unknown as Base64Static).fromBase64;
+  if (typeof native === "function") {
+    const view = native.call(Uint8Array, clean);
+    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer;
+  }
+  const bin = atob(clean);
   const buf = new ArrayBuffer(bin.length);
   const view = new Uint8Array(buf);
   for (let i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);

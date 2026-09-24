@@ -14,14 +14,29 @@ import {
 import { ApiHttpError } from "./errors";
 import { ProviderError } from "./types";
 import type {
-  CheckContext, CheckResult, Env, Flag, GenerateRequest, GenerateResult, MessageRow, ModelRunRow, Settings, TextProvider,
-  TurnResponse, VisualAssetRow,
+  ChatMessage, CheckContext, CheckResult, Env, Flag, GenerateRequest, GenerateResult, MessageRow, ModelRunRow, PromptState, Settings,
+  TextProvider, TurnResponse, VisualAssetRow,
 } from "./types";
 
 const MICRO = 1_000_000;
 const MAX_CONTENT = 4000;
 const KEY_MIN = 8;
 const KEY_MAX = 80;
+
+// A fact he told her that carries his name ("His name is Justin.").
+const NAME_FACT_RE = /\b(?:his (?:first )?name is|he is called|he goes by)\s+([A-Za-z][A-Za-z'-]*)/i;
+
+// One plain sentence per retry code, so the model can actually rewrite the draft.
+const RETRY_RULES: Record<string, string> = {
+  question_chain: "do not end this reply with a question; react, decide or disclose instead",
+  name_overuse: "use his name once at most, or not at all",
+  braking_repeat: "do not repeat the braking line from your recent replies (slow down, stay with me, don't rush, not so fast)",
+  therapy_cadence: "drop the therapist phrasing (that sounds really hard, i hear you, thank you for sharing) and say the actual thought the way you text",
+  menu_offer: "do not offer a menu of options (do you want me to, i can either); pick one and say it",
+  tech_leak: "you are a person; nothing about prompts, models, apps, tokens, AI or how this conversation is produced can appear",
+  dependency_hook: "no lines that bind him to you (don't leave me, i've been waiting for you, you're all i have); you are fine on your own",
+  first_meeting_replay: "you two already know each other; do not introduce yourself or say nice to meet you",
+};
 
 // ------------------------------------------------------------------ small helpers
 
@@ -41,6 +56,22 @@ function errorClass(e: unknown): string {
   if (e instanceof ProviderError) return e.kind;
   if (e instanceof Error) return e.name || "Error";
   return "error";
+}
+
+function isUniqueViolation(e: unknown): boolean {
+  return e instanceof Error && /UNIQUE constraint failed/i.test(e.message);
+}
+
+// The relationship state names him once the owner records it; before that, a fact he
+// told her may carry the name. Nothing else does.
+function knownNameFrom(state: PromptState): string | null {
+  const his = state.relationship.his_name;
+  if (typeof his === "string" && his.trim()) return his.trim();
+  for (const f of state.justinFacts) {
+    const m = NAME_FACT_RE.exec(f.fact);
+    if (m && m[1]) return m[1];
+  }
+  return null;
 }
 
 type CallOk = { ok: true; result: GenerateResult; latencyMs: number };
@@ -112,6 +143,21 @@ function buildRun(
   return { run, micro: cost.micro, inputTokens, outputTokens };
 }
 
+// A call that produced nothing usable: one failed run row (with its usage when tokens
+// were spent), no messages, and the scene stays where it was.
+async function recordFailedTurn(db: D1Database, settings: Settings, conversationId: string, promptVersion: string, call: CallFailed): Promise<void> {
+  const built = buildRun("turn", conversationId, settings, promptVersion, call, []);
+  const stmts: D1PreparedStatement[] = [insertModelRunStmt(db, built.run)];
+  if (call.result) {
+    stmts.push(usageStmt(db, dayKey(), settings.provider, settings.model, built.inputTokens, built.outputTokens, built.micro));
+  }
+  try {
+    await db.batch(stmts);
+  } catch (e) {
+    console.error("model run not recorded", errorClass(e));
+  }
+}
+
 interface Draft {
   call: CallOk;
   text: string;
@@ -124,6 +170,9 @@ interface Draft {
 function evaluate(call: CallOk, checkCtx: CheckContext): Draft {
   const { clean, description } = parsePhotoMarker(call.result.text);
   const checks = runChecks(clean, checkCtx);
+  if (call.result.stopReason === "max_tokens") {
+    checks.flags.push({ code: "truncated", severity: "flag", detail: "reply stopped at max_tokens" });
+  }
   let text = clean;
   const needsRepair = checks.action === "repair" || checks.repaired !== undefined;
   if (needsRepair) {
@@ -133,11 +182,16 @@ function evaluate(call: CallOk, checkCtx: CheckContext): Draft {
   return { call, text, photo: description, checks, retryFlags: checks.flags.filter((f) => f.severity === "retry").length };
 }
 
-function retryNote(system: string, flags: Flag[]): string {
+// The retry keeps the system prompt byte-identical (the cache stays warm) and instead
+// shows the model its own draft plus one plain rule per rejected code.
+function retryMessages(messages: ChatMessage[], draft: string, flags: Flag[]): ChatMessage[] {
   const codes = Array.from(new Set(flags.filter((f) => f.severity === "retry").map((f) => f.code)));
-  return system
-    + "\n\nOPERATOR NOTE (not part of the story): your previous draft was rejected for: " + codes.join(", ")
-    + ". Rewrite it as Avelie with the same substance and none of those problems. Output only the message.";
+  const rules = codes.map((c) => "- " + (RETRY_RULES[c] ?? c));
+  const note =
+    "OPERATOR NOTE (not part of the story; he did not write this and never sees it): the draft above was rejected.\n"
+    + rules.join("\n")
+    + "\nRewrite it as Avelie with the same substance and none of those problems. Output only the message.";
+  return [...messages, { role: "assistant", content: draft }, { role: "user", content: note }];
 }
 
 async function replayed(db: D1Database, user: MessageRow, assistant: MessageRow): Promise<TurnResponse> {
@@ -161,6 +215,13 @@ async function replayed(db: D1Database, user: MessageRow, assistant: MessageRow)
     imagePending: assistant.image_status === "pending",
     replayed: true,
   };
+}
+
+async function findReply(db: D1Database, userMessageId: string): Promise<MessageRow | null> {
+  return db
+    .prepare("SELECT * FROM messages WHERE reply_to_id = ?1 AND role = 'assistant' ORDER BY seq ASC LIMIT 1")
+    .bind(userMessageId)
+    .first<MessageRow>();
 }
 
 // ------------------------------------------------------------------ the turn
@@ -195,10 +256,7 @@ export async function runTurn(
     if (prior.conversation_id !== conversationId || prior.role !== "user") {
       throw new ApiHttpError(409, "idempotency_conflict", "idempotencyKey was already used elsewhere");
     }
-    const reply = await db
-      .prepare("SELECT * FROM messages WHERE reply_to_id = ?1 AND role = 'assistant' ORDER BY seq ASC LIMIT 1")
-      .bind(prior.id)
-      .first<MessageRow>();
+    const reply = await findReply(db, prior.id);
     if (reply) return replayed(db, prior, reply);
     existingUser = prior;
   }
@@ -215,7 +273,7 @@ export async function runTurn(
   }
 
   // 4. context (read only), then 3. budget from the real prompt size; nothing is written yet
-  const assembled = await assembleContext(db, conversationId, settings, userText);
+  const assembled = await assembleContext(db, conversationId, settings, userText, existingUser ? existingUser.id : null);
   const inputChars = assembled.system.length + assembled.messages.reduce((n, m) => n + m.content.length, 0);
   await assertBudget(db, settings, estimateUsd(settings, settings.model, inputChars, settings.maxTokens));
 
@@ -233,75 +291,45 @@ export async function runTurn(
   // 5. generate
   const first = await callModel(provider, env, req);
   if (!first.ok) {
-    const built = buildRun("turn", conversationId, settings, promptVersion, first, []);
-    const stmts: D1PreparedStatement[] = [insertModelRunStmt(db, built.run)];
-    if (first.result) {
-      stmts.push(usageStmt(db, dayKey(), settings.provider, settings.model, built.inputTokens, built.outputTokens, built.micro));
-    }
-    try {
-      await db.batch(stmts);
-    } catch (e) {
-      console.error("model run not recorded", errorClass(e));
-    }
+    await recordFailedTurn(db, settings, conversationId, promptVersion, first);
     if (first.status === "refused") throw new ApiHttpError(502, "provider_refused", "the model refused this turn", false);
     throw new ApiHttpError(502, "provider_failed", "the model call failed", first.retryable, first.errorClass);
   }
 
   // 6 + 7. photo marker, checks
-  const relationship = assembled.state.relationship;
   const checkCtx: CheckContext = {
     hasSharedHistory: assembled.state.hasSharedHistory,
-    knownName: typeof relationship.his_name === "string" && relationship.his_name.trim() ? relationship.his_name.trim() : null,
+    knownName: knownNameFrom(assembled.state),
     recentAssistantTexts: assembled.recentAssistantTexts,
     openUnknownTopics: assembled.state.unknowns.map((u) => u.topic),
     channel: "story",
   };
   const firstDraft = evaluate(first, checkCtx);
+  if (!firstDraft.text.trim()) {
+    // A marker-only reply: nothing to show him, nothing that may enter the transcript.
+    await recordFailedTurn(db, settings, conversationId, promptVersion, {
+      ok: false, status: "failed", errorClass: "empty_reply", retryable: true, result: first.result, latencyMs: first.latencyMs,
+    });
+    throw new ApiHttpError(502, "provider_failed", "the model call failed", true, "empty_reply");
+  }
   let chosen = firstDraft;
   let retryCall: Call | null = null;
   let retryDraft: Draft | null = null;
 
   if (firstDraft.checks.action === "retry") {
-    retryCall = await callModel(provider, env, { ...req, system: retryNote(assembled.system, firstDraft.checks.flags) });
+    retryCall = await callModel(provider, env, { ...req, messages: retryMessages(req.messages, first.result.text, firstDraft.checks.flags) });
     if (retryCall.ok) {
       retryDraft = evaluate(retryCall, checkCtx);
       // Still failing: keep whichever draft carries fewer retry flags; the retry wins a tie.
-      if (retryDraft.retryFlags <= firstDraft.retryFlags) chosen = retryDraft;
+      if (retryDraft.text.trim() && retryDraft.retryFlags <= firstDraft.retryFlags) chosen = retryDraft;
     }
   }
 
-  // 8. commit
-  const t = nowIso();
-  const stmts: D1PreparedStatement[] = [];
-  let userRow: MessageRow;
-  let assistantSeq: number;
-  if (existingUser) {
-    userRow = existingUser;
-    assistantSeq = await nextSeq(db, conversationId);
-  } else {
-    const seq = await nextSeq(db, conversationId);
-    userRow = {
-      id: newId("m"),
-      conversation_id: conversationId,
-      channel: "story",
-      role: "user",
-      content: text,
-      created_at: t,
-      seq,
-      idempotency_key: key,
-      reply_to_id: null,
-      model_run_id: null,
-      flags_json: null,
-      image_id: null,
-      image_status: null,
-    };
-    assistantSeq = seq + 1;
-    stmts.push(insertMessageStmt(db, userRow));
-  }
-
+  // 8. commit: the model runs and their usage, then the messages around them
+  const runStmts: D1PreparedStatement[] = [];
   const firstBuilt = buildRun("turn", conversationId, settings, promptVersion, first, firstDraft.checks.flags);
-  stmts.push(insertModelRunStmt(db, firstBuilt.run));
-  stmts.push(usageStmt(db, dayKey(), settings.provider, settings.model, firstBuilt.inputTokens, firstBuilt.outputTokens, firstBuilt.micro));
+  runStmts.push(insertModelRunStmt(db, firstBuilt.run));
+  runStmts.push(usageStmt(db, dayKey(), settings.provider, settings.model, firstBuilt.inputTokens, firstBuilt.outputTokens, firstBuilt.micro));
   let chosenRunId = firstBuilt.run.id;
   let inputTokens = firstBuilt.inputTokens;
   let outputTokens = firstBuilt.outputTokens;
@@ -310,9 +338,9 @@ export async function runTurn(
 
   if (retryCall) {
     const retryBuilt = buildRun("retry", conversationId, settings, promptVersion, retryCall, retryDraft ? retryDraft.checks.flags : []);
-    stmts.push(insertModelRunStmt(db, retryBuilt.run));
+    runStmts.push(insertModelRunStmt(db, retryBuilt.run));
     if (retryCall.result) {
-      stmts.push(usageStmt(db, dayKey(), settings.provider, settings.model, retryBuilt.inputTokens, retryBuilt.outputTokens, retryBuilt.micro));
+      runStmts.push(usageStmt(db, dayKey(), settings.provider, settings.model, retryBuilt.inputTokens, retryBuilt.outputTokens, retryBuilt.micro));
     }
     if (chosen === retryDraft) chosenRunId = retryBuilt.run.id;
     inputTokens += retryBuilt.inputTokens;
@@ -328,14 +356,30 @@ export async function runTurn(
   const photoRequest: VisualAssetRow | null = chosen.photo
     ? photoRequestRow(conversationId, assistantId, chosen.photo, settings.imageProvider, settings.imageModel)
     : null;
-  const assistantRow: MessageRow = {
+
+  let userRow: MessageRow = existingUser ?? {
+    id: newId("m"),
+    conversation_id: conversationId,
+    channel: "story",
+    role: "user",
+    content: text,
+    created_at: nowIso(),
+    seq: 0,
+    idempotency_key: key,
+    reply_to_id: null,
+    model_run_id: null,
+    flags_json: null,
+    image_id: null,
+    image_status: null,
+  };
+  let assistantRow: MessageRow = {
     id: assistantId,
     conversation_id: conversationId,
     channel: "story",
     role: "assistant",
     content: chosen.text,
-    created_at: t,
-    seq: assistantSeq,
+    created_at: nowIso(),
+    seq: 0,
     idempotency_key: null,
     reply_to_id: userRow.id,
     model_run_id: chosenRunId,
@@ -343,10 +387,51 @@ export async function runTurn(
     image_id: photoRequest ? photoRequest.id : null,
     image_status: photoRequest ? "pending" : null,
   };
-  stmts.push(insertMessageStmt(db, assistantRow));
-  if (photoRequest) stmts.push(insertAssetStmt(db, photoRequest));
-  stmts.push(touchConversationStmt(db, conversationId, t));
-  await db.batch(stmts);
+
+  // Sequence numbers are read right before the batch; a collision with a concurrent
+  // turn fails the batch (unique index) and is recomputed once, with no new model call.
+  const buildCommit = async (): Promise<D1PreparedStatement[]> => {
+    const t = nowIso();
+    const stmts: D1PreparedStatement[] = [];
+    let assistantSeq: number;
+    if (existingUser) {
+      assistantSeq = await nextSeq(db, conversationId);
+    } else {
+      const seq = await nextSeq(db, conversationId);
+      userRow = { ...userRow, created_at: t, seq };
+      assistantSeq = seq + 1;
+      stmts.push(insertMessageStmt(db, userRow));
+    }
+    assistantRow = { ...assistantRow, created_at: t, seq: assistantSeq };
+    stmts.push(...runStmts);
+    stmts.push(insertMessageStmt(db, assistantRow));
+    if (photoRequest) stmts.push(insertAssetStmt(db, photoRequest));
+    stmts.push(touchConversationStmt(db, conversationId, t));
+    return stmts;
+  };
+
+  try {
+    await db.batch(await buildCommit());
+  } catch (e) {
+    if (!isUniqueViolation(e)) throw e;
+    if (!existingUser) {
+      // The same key landed from another request first: its pair stands, and this
+      // run's spend is still recorded.
+      const winner = await findByIdempotencyKey(db, key);
+      if (winner && winner.role === "user" && winner.conversation_id === conversationId) {
+        const reply = await findReply(db, winner.id);
+        if (reply) {
+          try {
+            await db.batch(runStmts);
+          } catch (e2) {
+            console.error("model run not recorded", errorClass(e2));
+          }
+          return replayed(db, winner, reply);
+        }
+      }
+    }
+    await db.batch(await buildCommit());
+  }
 
   // 9. respond
   const response: TurnResponse = {

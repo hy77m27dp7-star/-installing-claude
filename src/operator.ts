@@ -185,39 +185,54 @@ export async function operatorTurn(
     reply = JSON.stringify(info, null, 2);
   }
 
-  const stmts: D1PreparedStatement[] = [];
-  if (conversationId) {
-    const seq = await nextSeq(db, conversationId);
-    const t = nowIso();
-    const userRow: MessageRow = {
-      id: newId("m"),
-      conversation_id: conversationId,
-      channel: "operator",
-      role: "user",
-      content: text,
-      created_at: t,
-      seq,
-      idempotency_key: null,
-      reply_to_id: null,
-      model_run_id: null,
-      flags_json: null,
-      image_id: null,
-      image_status: null,
-    };
-    const assistantRow: MessageRow = {
-      ...userRow,
-      id: newId("m"),
-      role: "assistant",
-      content: reply,
-      seq: seq + 1,
-      reply_to_id: userRow.id,
-      model_run_id: run ? run.id : null,
-    };
-    stmts.push(insertMessageStmt(db, userRow), insertMessageStmt(db, assistantRow), touchConversationStmt(db, conversationId, t));
+  const userId = newId("m");
+  const assistantId = newId("m");
+  const build = async (): Promise<D1PreparedStatement[]> => {
+    const stmts: D1PreparedStatement[] = [];
+    if (conversationId) {
+      const seq = await nextSeq(db, conversationId);
+      const t = nowIso();
+      const userRow: MessageRow = {
+        id: userId,
+        conversation_id: conversationId,
+        channel: "operator",
+        role: "user",
+        content: text,
+        created_at: t,
+        seq,
+        idempotency_key: null,
+        reply_to_id: null,
+        model_run_id: null,
+        flags_json: null,
+        image_id: null,
+        image_status: null,
+      };
+      const assistantRow: MessageRow = {
+        ...userRow,
+        id: assistantId,
+        role: "assistant",
+        content: reply,
+        seq: seq + 1,
+        reply_to_id: userRow.id,
+        model_run_id: run ? run.id : null,
+      };
+      stmts.push(insertMessageStmt(db, userRow), insertMessageStmt(db, assistantRow), touchConversationStmt(db, conversationId, t));
+    }
+    if (run) stmts.push(insertModelRunStmt(db, run));
+    if (usage) stmts.push(usage);
+    return stmts;
+  };
+
+  const stmts = await build();
+  if (stmts.length) {
+    try {
+      await db.batch(stmts);
+    } catch (e) {
+      // A seq taken by a story turn landing at the same moment: recompute once.
+      if (!(e instanceof Error && /UNIQUE constraint failed/i.test(e.message))) throw e;
+      await db.batch(await build());
+    }
   }
-  if (run) stmts.push(insertModelRunStmt(db, run));
-  if (usage) stmts.push(usage);
-  if (stmts.length) await db.batch(stmts);
 
   return { reply, info };
 }

@@ -44,9 +44,14 @@ export function stateSections(s: PromptState): string {
 
   const told = s.avelieFacts.filter((f) => f.disclosed);
   const untold = s.avelieFacts.filter((f) => !f.disclosed);
+  const toldLine = told.length && untold.length
+    ? "Some you have said out loud to him, the rest you have not."
+    : told.length
+      ? "You have said these out loud to him."
+      : "You have said none of them out loud to him yet.";
   out.push(
     "THINGS TRUE ABOUT YOU\n" +
-    "You know these about yourself. Some you have said out loud to him, most you have not. Reveal an untold one only when a conversation earns it, one at a time, never as a list, never to fill silence.\n" +
+    "You know these about yourself. " + toldLine + " Reveal an untold one only when a conversation earns it, one at a time, never as a list, never to fill silence.\n" +
     (told.length ? "Already told him:\n" + told.map(factLine).join("\n") + "\n" : "") +
     (untold.length ? "Not told him (yet):\n" + untold.map(factLine).join("\n") : ""),
   );
@@ -109,10 +114,11 @@ export function proposalSystemPrompt(): string {
 }
 
 // Identity block for image generation. Fixed body canon; only outfit, setting, pose,
-// expression and lighting vary per scene.
+// expression and lighting vary per scene. The body lives in the references, not in
+// words a moderation filter could read as sexual.
 export function imageIdentityPrompt(): string {
   return [
-    "Generate a photo of the same young woman shown in the reference images. Keep her exact facial identity: brown eyes, light freckles across the nose and cheeks, full lips, long wavy dark brown hair (styling may vary), warm skin tone. She is a clearly adult 22-year-old with a feminine curvy build and full bust consistent with the references; do not slim, exaggerate, or age her.",
+    "Generate a photo of the same young woman shown in the reference images. Keep her exact facial identity: brown eyes, light freckles across the nose and cheeks, full lips, long wavy dark brown hair (styling may vary), warm skin tone. She is a clearly adult 22-year-old; keep her build and proportions consistent with the references; do not slim, exaggerate, or age her.",
     "Style: candid, realistic phone photo or casual snapshot, natural imperfections, no watermark, no text, no captions, no collage, single image.",
   ].join(" ");
 }
