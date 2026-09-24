@@ -721,9 +721,30 @@ route("GET", "/api/conversations/:id/messages", async (c) => {
   let channel: Channel | undefined;
   if (raw !== null && raw !== "") channel = oneOf(raw, ["story", "operator"] as const, "channel");
   const limit = intQuery(c.url, "limit", 500, 1, 2000);
-  if (flagQuery(c.url, "includePending")) return json(await listMessages(c.db, id, channel, limit));
-  return json(await listMessagesVisible(c.db, id, channel, new Date(), limit));
+  const rows = flagQuery(c.url, "includePending")
+    ? await listMessages(c.db, id, channel, limit)
+    : await listMessagesVisible(c.db, id, channel, new Date(), limit);
+  return json(await withMarks(c.db, rows));
 });
+
+// v3 (II): her story rows carry their Keep / Drop mark so the page shows it after a reload.
+// One read per 90 ids (D1's bound-parameter limit); a database behind 0005 answers no marks.
+async function withMarks(db: D1Database, rows: MessageRow[]): Promise<Array<MessageRow & { mark?: "keep" | "drop" | null }>> {
+  const ids = rows.filter((m) => m.role === "assistant" && m.channel === "story").map((m) => m.id);
+  const marks = new Map<string, "keep" | "drop">();
+  try {
+    for (let i = 0; i < ids.length; i += 90) {
+      const chunk = ids.slice(i, i + 90);
+      const placeholders = chunk.map((_, k) => "?" + (k + 1)).join(", ");
+      const r = await db.prepare(`SELECT message_id, mark FROM message_marks WHERE message_id IN (${placeholders})`).bind(...chunk).all<{ message_id: string; mark: "keep" | "drop" }>();
+      for (const row of r.results) marks.set(row.message_id, row.mark);
+    }
+  } catch {
+    return rows;
+  }
+  if (marks.size === 0) return rows;
+  return rows.map((m) => (marks.has(m.id) ? { ...m, mark: marks.get(m.id) ?? null } : m));
+}
 
 route("DELETE", "/api/conversations/:id", async (c) => {
   const id = idParam(c, "id");
@@ -1198,6 +1219,9 @@ route("GET", "/api/assets", async (c) => {
     masters: rows.filter((a) => a.role === "master"),
     candidates: rows.filter((a) => a.approval_status === "candidate"),
     scenes: rows.filter((a) => a.role === "scene" && a.approval_status === "approved"),
+    // v3: approved clips (FF) and faces (DD); their candidates sit in `candidates` with the photos.
+    videos: rows.filter((a) => a.role === "video" && a.approval_status === "approved"),
+    portraits: rows.filter((a) => a.role === "portrait" && a.approval_status === "approved"),
     rejected: rows.filter((a) => a.approval_status === "rejected"),
     archive: rows.filter((a) => a.role === "legacy_archive" || a.approval_status === "archive"),
   });

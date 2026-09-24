@@ -95,7 +95,10 @@ t("stablePrefix: TEXTURE exactly once, no Justin, no 24, no dash character; the 
   }
   if (committed) {
     const m = /CONSTITUTION_VERSION\s*=\s*"([^"]+)"/.exec(committed);
-    if (m && !committed.includes("\nTEXTURE\n")) assert.notEqual(CONSTITUTION_VERSION, m[1], "the version must differ from the recorded v2 value");
+    // The generated file stores the prompt as a string literal, so the paragraph sits in it
+    // with escaped newlines; a committed file without TEXTURE in either form is the v2 one.
+    const committedHasTexture = committed.includes("\nTEXTURE\n") || committed.includes("\\nTEXTURE\\n");
+    if (m && !committedHasTexture) assert.notEqual(CONSTITUTION_VERSION, m[1], "the version must differ from the recorded v2 value");
   }
 });
 

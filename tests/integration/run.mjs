@@ -1461,10 +1461,12 @@ async function scenariosV3(report) {
     const ctx = await contextOf(t.json.assistantMessage.id);
     assert.ok((ctx.exemplarIds ?? []).includes(mine.json.id), "the line was offered: " + JSON.stringify(ctx.exemplarIds));
     // The first draft ("x, basically. anyway") reused the line verbatim: a retry. The stub
-    // answers a retry by echoing the operator note (its last user turn), so the retry draft
-    // carries tech_leak and wins the tie; exemplar_verbatim sits on the first run row.
+    // answers a retry with the previous real message, triggers stripped, so the stored reply
+    // is the clean retry; exemplar_verbatim sits on the first run row.
     assert.equal(ctx.retried, true, "the verbatim line forced a retry: " + JSON.stringify(ctx.flags));
     assert.equal(ctx.runIds.length, 2, "two runs");
+    assert.ok(!JSON.stringify(ctx.flags ?? []).includes("exemplar_verbatim"), "the stored reply is the clean retry: " + JSON.stringify(ctx.flags));
+    assert.ok(!JSON.stringify(ctx.flags ?? []).includes("tech_leak"), "no leak on the retry: " + JSON.stringify(ctx.flags));
     assert.ok(!t.json.assistantMessage.content.includes("depends what you mean by fine, honestly"), "the stored reply is not the line: " + t.json.assistantMessage.content);
     const control = await turn(conversationId, "are you doing ok today or not?", key("v3-verbatim-control"));
     assert.equal((await contextOf(control.json.assistantMessage.id)).retried, false, "the same message without the verbatim line is not retried");
@@ -1559,12 +1561,12 @@ async function scenariosV3(report) {
     assert.equal(unknown.status, 400, unknown.text);
   });
 
-  await report.check("Remind her (lastTouched now) and the detail coming up -> the fact is back in firmFactIds", async () => {
+  await report.check("Remind her (lastTouched now) -> the fact is back in firmFactIds", async () => {
     const put = await api("PUT", `/api/memory/fact/${cousinFactId}`, { lastTouched: new Date().toISOString() });
     assert.equal(put.status, 200, put.text);
-    // A 0.2-weight fact scores 0.2 x (0.35 + 0.65 x recency) + 0.3 x relevance: freshly touched
-    // and unmentioned it sits a hair under the 0.20 line, so the message names the detail.
-    const t = await turn(conversationId, "anything new with your cousin and the band", key("v3-mem-remind"));
+    // A 0.2-weight fact scores 0.2 x (0.35 + 0.65 x recency): freshly touched it sits a hair
+    // under the 0.20 line, which memory.FIRM_EPSILON covers, so the message need not name it.
+    const t = await turn(conversationId, "long day, nothing much to report", key("v3-mem-remind"));
     const ctx = await contextOf(t.json.assistantMessage.id);
     assert.ok(ctx.recall && Array.isArray(ctx.recall.firmFactIds) && ctx.recall.firmFactIds.includes(cousinFactId), JSON.stringify(ctx.recall));
     assert.ok(ctx.factIds.justin.includes(cousinFactId));
@@ -1666,11 +1668,12 @@ async function scenariosV3(report) {
     assert.equal(row1.brought_up, 1, "brought up once");
     const second = await turn(conversationId, "[[NAG:song you meant]] ok", key("v3-nag2"));
     assert.equal(second.status, 200, second.text);
-    // The second mention is ask_nag on the first draft, a retry; the stub answers a retry by
-    // echoing the operator note, which wins the tie, so the evidence is the retry itself.
+    // The second mention is ask_nag on the first draft, a retry; the stub answers a retry
+    // with the previous real message, triggers stripped, so the stored reply is clean.
     const ctx = await contextOf(second.json.assistantMessage.id);
     assert.equal(ctx.retried, true, "the nag was retried: " + JSON.stringify(second.json.flags));
     assert.equal(ctx.runIds.length, 2);
+    assert.ok(!JSON.stringify(ctx.flags ?? []).includes("ask_nag"), "the stored reply is the clean retry: " + JSON.stringify(ctx.flags));
     assert.ok(!/song you meant/.test(second.json.assistantMessage.content), "the stored reply does not nag");
     const row2 = (await api("GET", "/api/wants")).json.asks.find((a) => a.id === askId);
     assert.equal(row2.brought_up, 1, "still once");

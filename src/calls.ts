@@ -312,7 +312,8 @@ export async function listCallMessages(db: D1Database, callId: string): Promise<
 // maintenance through the same statement).
 export function expireStaleCallsStmt(db: D1Database, now: Date): D1PreparedStatement {
   const cutoff = new Date(now.getTime() - LIVE_STALE_MS).toISOString();
-  return db.prepare("UPDATE calls SET status = 'expired', end_reason = COALESCE(end_reason, 'stale') WHERE status IN ('starting', 'live') AND COALESCE(last_tick_at, started_at) < ?1").bind(cutoff);
+  return db.prepare("UPDATE calls SET status = 'expired', ended_at = ?2, end_reason = COALESCE(end_reason, 'expired') WHERE status IN ('starting', 'live') AND COALESCE(last_tick_at, started_at) < ?1")
+    .bind(cutoff, now.toISOString());
 }
 
 function parseUsageJson(json: string | null): CallUsage | null {

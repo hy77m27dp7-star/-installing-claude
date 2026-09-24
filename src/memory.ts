@@ -74,6 +74,10 @@ export const MEMORY_DEFAULTS: ResolvedMemorySettings = {
 
 // Score bands (section BB).
 export const FIRM_THRESHOLD = 0.2;
+// The firm test allows this much under the threshold: a Low (0.2) fact touched a moment ago
+// scores 0.2 x (0.35 + 0.65 x recency) with recency a hair under 1, which is a hair under
+// 0.20; "Remind her" must make it firm, and a few hours later the low half-life takes over.
+export const FIRM_EPSILON = 0.001;
 export const HISTORY_OLDER_THRESHOLD = 0.25;
 export const THREAD_THRESHOLD = 0.15;
 export const LOW_WEIGHT_MAX = 0.34;
@@ -227,7 +231,7 @@ export function scoreDetail(
   }
   const recency = Math.pow(2, -age / half);
   const score = weight * (0.35 + 0.65 * recency) + 0.3 * relevance;
-  return { score, recency, relevance, ageDays: age, halfLifeDays: half, weight, firm: weight >= HIGH_WEIGHT_MIN || score >= FIRM_THRESHOLD };
+  return { score, recency, relevance, ageDays: age, halfLifeDays: half, weight, firm: weight >= HIGH_WEIGHT_MIN || score >= FIRM_THRESHOLD - FIRM_EPSILON };
 }
 
 export function score(

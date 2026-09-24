@@ -14,6 +14,26 @@ import { imagesOf } from "../vision";
 const EM_DASH = String.fromCharCode(0x2014);
 
 const PROPOSAL_PREFIX = "You read one exchange";
+// chat.ts retryMessages: the note appended as the last user turn on a retry.
+const RETRY_NOTE_PREFIX = "OPERATOR NOTE (not part of the story";
+const STUB_MARKER_RE = /\[\[[A-Z_]+(?::[^\]]*)?\]\]/g;
+
+function stripStubMarkers(text: string): string {
+  const out = text.replace(STUB_MARKER_RE, " ").replace(/\s+/g, " ").trim();
+  return out || "ok";
+}
+
+// The user turn before the last one (the real message under a retry's operator note).
+function previousUserContent(messages: GenerateRequest["messages"]): string {
+  let seen = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.role !== "user") continue;
+    seen += 1;
+    if (seen === 2) return m.content;
+  }
+  return "";
+}
 const OPERATOR_PREFIX = "You are the operator console";
 // The tasting performer's model id (SPEC_V3 HH): its replies carry the "b: " prefix so
 // the two candidates differ, and [[BFAIL]] throws only on this side.
@@ -201,7 +221,12 @@ export const stubProvider: TextProvider = {
       text = "operator: " + last.slice(0, 200);
     } else {
       const lastMessage = [...req.messages].reverse().find((m) => m.role === "user");
-      const r = storyReply(last, lastMessage ? imagesOf(lastMessage).length > 0 : false, req.model);
+      // A retry's last user turn is chat.ts's operator note. The stub answers the previous
+      // real message with its triggers stripped, so a retried draft comes back clean (the
+      // note's own words would read as a tech leak and hide what the first draft raised).
+      const retry = last.startsWith(RETRY_NOTE_PREFIX);
+      const subject = retry ? stripStubMarkers(previousUserContent(req.messages)) : last;
+      const r = storyReply(subject, lastMessage ? imagesOf(lastMessage).length > 0 : false, req.model);
       text = r.text;
       stopReason = r.stopReason;
       // v3 (HH): the tasting performer's replies are told apart by a prefix.

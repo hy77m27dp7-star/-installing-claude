@@ -9,11 +9,14 @@ import { purgeCacheStmt } from "./weather";
 import { letGoStaleStmts, wantsSettings } from "./wants";
 import type { WantsSettings } from "./wants";
 import type { Env } from "./types";
+import { TASTING_EXPIRY_MS, expireStaleStmts as expireStaleTastingsStmts } from "./tastings";
+import { LIVE_STALE_MS, expireStaleCallsStmt } from "./calls";
 
 export const ACTOR = "maintenance";
 export const WEATHER_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-export const TASTING_STALE_MS = 30 * 60 * 1000;
-export const CALL_STALE_MS = 2 * 60 * 1000;
+// The same clocks the modules use (tastings.ts and calls.ts own the statements).
+export const TASTING_STALE_MS = TASTING_EXPIRY_MS;
+export const CALL_STALE_MS = LIVE_STALE_MS;
 
 export interface NightlyResult {
   at: string;
@@ -30,15 +33,14 @@ function changes(r: D1Result | D1Result[] | undefined): number {
   return r.meta?.changes ?? 0;
 }
 
+// One statement each, the modules' own (tastings.expireStaleStmts, calls.expireStaleCallsStmt),
+// so the nightly and the lazy expiry in the gate and in startCall agree to the letter.
 export function expireTastingsStmt(db: D1Database, now: Date): D1PreparedStatement {
-  const cutoff = new Date(now.getTime() - TASTING_STALE_MS).toISOString();
-  return db.prepare("UPDATE tastings SET status = 'expired', decided_at = ?2 WHERE status = 'pending' AND created_at < ?1").bind(cutoff, now.toISOString());
+  return expireStaleTastingsStmts(db, now)[0]!;
 }
 
 export function expireCallsStmt(db: D1Database, now: Date): D1PreparedStatement {
-  const cutoff = new Date(now.getTime() - CALL_STALE_MS).toISOString();
-  return db.prepare("UPDATE calls SET status = 'expired', ended_at = ?2, end_reason = COALESCE(end_reason, 'expired') WHERE status IN ('starting', 'live') AND COALESCE(last_tick_at, started_at) < ?1")
-    .bind(cutoff, now.toISOString());
+  return expireStaleCallsStmt(db, now);
 }
 
 async function step(result: NightlyResult, name: string, fn: () => Promise<void>): Promise<void> {

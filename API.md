@@ -15,7 +15,7 @@ All routes require the owner (Cloudflare Access JWT, or the local dev actor). Re
 |---|---|---|---|
 | GET | /api/conversations | | `ConversationRow[]` |
 | POST | /api/conversations | `{ title? }` | `ConversationRow` (201) |
-| GET | /api/conversations/:id/messages | `?channel=story|operator` | `MessageRow[]` (asc) |
+| GET | /api/conversations/:id/messages | `?channel=story|operator` | `MessageRow[]` (asc; v3: her story rows carry `mark` (`keep` or `drop`) when one is set) |
 | DELETE | /api/conversations/:id | | `{ ok }` (status deleted; messages kept; audit) |
 | POST | /api/conversations/:id/turn | `{ content, idempotencyKey }` | `TurnResponse` (see types.ts) |
 | GET | /api/messages/:id | | `MessageRow` (`image_status`: pending, ready, failed or rejected; `image_id` names the photo request / candidate row) |
@@ -68,7 +68,7 @@ Fixed-scope facts are read-only through the API (403 `fixed_canon`).
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | /api/assets | | `{ masters, candidates, scenes, rejected, archive }` (VisualAssetRow lists) |
+| GET | /api/assets | | `{ masters, candidates, scenes, videos, portraits, rejected, archive }` (VisualAssetRow lists; `videos` and `portraits` are the approved clips and faces of v3, their candidates sit in `candidates`) |
 | POST | /api/assets/verify | | `{ results: [{ id, file, expected, actual, ok }], allOk }` (masters only, hashed from ASSETS) |
 | POST | /api/images/generate | `{ conversationId, messageId?, description? }` | `{ asset: VisualAssetRow }`. With `description`: owner-triggered, same pipeline as the marker (attached to `messageId` when given). With `messageId` alone: resumes the photo request her message recorded; the page holds this request open for the whole image call (Workers cut background work off 30 s after a response, so the photo is never made in the background). 409 `in_progress` while another request holds it, 409 `already_generated` once the picture exists, 422 `blacklisted`, 402 / 502 / 503 as for turns; any failure leaves the message `image_status` failed and the request retryable. |
 | POST | /api/images/:id/decide | `{ decision: "approve"|"reject", note? }` | `{ asset }` |

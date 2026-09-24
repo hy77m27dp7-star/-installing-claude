@@ -36,7 +36,10 @@ async function allOrEmpty<T>(db: D1Database, sql: string, ...binds: unknown[]): 
   }
 }
 
-// The v2 and v3 tables (every one except weather_cache), keyed by the export name.
+// The v2 and v3 tables, keyed by the export name. Two are left out on purpose:
+// weather_cache (a cache) and push_subscriptions (its keys_json holds the browser's
+// subscription secrets, which never leave through the export; a subscription is per
+// browser and is made again from the Model page).
 const EXTRA_TABLES: ReadonlyArray<{ key: string; sql: string }> = [
   // v2
   { key: "lifeThreads", sql: "SELECT * FROM life_threads ORDER BY created_at, id" },
@@ -44,7 +47,6 @@ const EXTRA_TABLES: ReadonlyArray<{ key: string; sql: string }> = [
   { key: "messageContext", sql: "SELECT * FROM message_context ORDER BY created_at, message_id" },
   { key: "driftReports", sql: "SELECT * FROM drift_reports ORDER BY ran_at, id" },
   { key: "firstTextsDaily", sql: "SELECT * FROM first_texts_daily ORDER BY day" },
-  { key: "pushSubscriptions", sql: "SELECT * FROM push_subscriptions ORDER BY created_at, id" },
   { key: "mediaLibrary", sql: "SELECT * FROM media_library ORDER BY created_at, id" },
   { key: "voiceprints", sql: "SELECT * FROM voiceprints ORDER BY created_at, id" },
   // v3

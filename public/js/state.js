@@ -1289,7 +1289,8 @@ function memoryRow(r) {
   const entity = String(r.entity || memoryEntity);
   const text = r.text || r.fact || r.title || r.note || id;
   const score = Number(r.score);
-  const faded = r.shown === false || r.faded === true || (Number.isFinite(score) && score < FADED_BELOW);
+  // The server says whether the row is in the prompt (shown); the score line is the fallback.
+  const faded = typeof r.shown === "boolean" ? !r.shown : (r.faded === true || (Number.isFinite(score) && score < FADED_BELOW));
   const slot = h("span", { class: "chips" });
   const lastTouched = r.lastTouched || r.last_touched || null;
   const remind = h("button", {

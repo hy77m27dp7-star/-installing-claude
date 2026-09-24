@@ -15,7 +15,6 @@ import { GenerateFailure, afterReply, commitReply, draftFromStored, generateDraf
 import type { Generated, Performer as ChatPerformer, Prepared } from "./chat";
 import { assertBudget, assertTastingBudget, hasPrice } from "./budget";
 import { providerConfigured } from "./providers/index";
-import { readContext, writeContext } from "./provenance";
 import { seededUnit } from "./life";
 import { auditStmt, getMessage, insertMessageStmt, newId, nextSeq, nowIso, putSettings, touchConversationStmt } from "./db";
 import { ApiHttpError } from "./errors";
@@ -526,14 +525,9 @@ export async function pickTasting(
     throw e;
   }
 
-  // The provenance names both performers (never blind after a pick), then the audit and
-  // the proposal pass over the stored exchange.
-  try {
-    const existing = (await readContext(db, response.assistantMessage.id)) ?? {};
-    await writeContext(db, response.assistantMessage.id, { ...existing, tasting: { id, winner: winnerPerformer, loser: loserPerformer } });
-  } catch (e) {
-    console.warn("tasting provenance not written", errorClass(e));
-  }
+  // The provenance names both performers (never blind after a pick): commitReply wrote the
+  // tasting block from CommitExtra.tasting in the turn's batch. Then the audit and the
+  // proposal pass over the stored exchange.
   await auditStmt(db, actor, "tasting.pick", "tasting", id, { status: "pending" }, { status: "picked", pick, winnerSide, winner: winnerPerformer, loser: loserPerformer, assistantMessageId: response.assistantMessage.id }).run();
   afterReply(env, ctx, db, settings, response, false, actor);
   return { tasting: reveal({ ...row, status: "picked", pick, winner_side: winnerSide, decided_at: t }), assistantMessage: response.assistantMessage };
