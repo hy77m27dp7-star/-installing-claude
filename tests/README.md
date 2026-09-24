@@ -59,9 +59,14 @@ Notes on the environment:
 
 ## Behavior (`npm run behavior`)
 
-    node tests/behavior/run.mjs --base http://127.0.0.1:8787 [--provider anthropic] [--model claude-opus-5] [--only A01,P03] [--strict]
+    node tests/behavior/run.mjs --base http://127.0.0.1:8787 [--provider anthropic] [--model claude-opus-5] [--only A01,P03] [--daily-cap 20] [--strict]
 
 Needs a running server (`npm run dev`, or the integration runner's server while it is up).
+The full list is about a hundred turns and every turn is charged against the spend caps
+(the stub too, at the configured model's price), so the default $3 daily cap runs out
+halfway; `--daily-cap` sets `dailyCapUsd` for the run (and lifts `monthlyCapUsd` to at
+least that) and restores both afterwards. A turn refused with 402 is recorded as an error
+and the summary prints the hint.
 `tests/behavior/scenarios.json` holds 37 scenarios: 12 acceptance tests from the handoff test
 plan adapted to a fresh start (A01 to A12), the 10 V5 pending tests adapted the same way
 (V01 to V10) and the 15 pressure tests (P01 to P15). Each scenario is a fresh conversation;

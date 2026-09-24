@@ -335,20 +335,41 @@ async function main() {
     console.log("note: the server is not on a fresh start (shared history or facts about him exist); first-meeting scenarios read differently");
   }
 
-  const runs = [];
-  for (const scenario of scenarios) {
-    const t0 = Date.now();
-    try {
-      const run = await runScenario(args.base, scenario, stamp);
-      runs.push(run);
-      const flags = run.exchanges.flatMap((e) => e.flags);
-      console.log(`${run.errors ? "ERROR" : run.failed.length ? "FAIL " : "PASS "} ${scenario.id}  ${scenario.title}  (${run.exchanges.length} turns, ${flags.length} flag${flags.length === 1 ? "" : "s"}, ${Date.now() - t0} ms)`);
-      for (const f of run.failed) console.log(`        ${f.name}: ${f.reason}`);
-      for (const e of run.exchanges.filter((x) => x.error)) console.log(`        turn ${e.index + 1}: ${e.error}`);
-    } catch (e) {
-      console.log(`ERROR ${scenario.id}  ${scenario.title}: ${e instanceof Error ? e.message : String(e)}`);
-      runs.push({ scenario, conversationId: "(none)", exchanges: [], results: [], failed: [], errors: 1, auto: "ERROR (could not run)" });
+  // Optional cap for the run, restored afterwards whatever happens.
+  let restoreCaps = null;
+  if (args.dailyCap !== null && settings) {
+    const original = { dailyCapUsd: settings.dailyCapUsd, monthlyCapUsd: settings.monthlyCapUsd };
+    const patch = { dailyCapUsd: args.dailyCap, monthlyCapUsd: Math.max(settings.monthlyCapUsd, args.dailyCap) };
+    const r = await api(args.base, "PUT", "/api/settings", patch);
+    if (r.status !== 200) {
+      console.error(`cap update failed: ${r.status} ${r.text.slice(0, 200)}`);
+      process.exit(2);
     }
+    console.log(`caps for this run: daily $${patch.dailyCapUsd}, monthly $${patch.monthlyCapUsd} (restored to $${original.dailyCapUsd} / $${original.monthlyCapUsd} afterwards)`);
+    restoreCaps = async () => {
+      const back = await api(args.base, "PUT", "/api/settings", original);
+      if (back.status !== 200) console.error(`cap restore failed: ${back.status} ${back.text.slice(0, 200)}; put dailyCapUsd ${original.dailyCapUsd} and monthlyCapUsd ${original.monthlyCapUsd} back by hand`);
+    };
+  }
+
+  const runs = [];
+  try {
+    for (const scenario of scenarios) {
+      const t0 = Date.now();
+      try {
+        const run = await runScenario(args.base, scenario, stamp);
+        runs.push(run);
+        const flags = run.exchanges.flatMap((e) => e.flags);
+        console.log(`${run.errors ? "ERROR" : run.failed.length ? "FAIL " : "PASS "} ${scenario.id}  ${scenario.title}  (${run.exchanges.length} turns, ${flags.length} flag${flags.length === 1 ? "" : "s"}, ${Date.now() - t0} ms)`);
+        for (const f of run.failed) console.log(`        ${f.name}: ${f.reason}`);
+        for (const e of run.exchanges.filter((x) => x.error)) console.log(`        turn ${e.index + 1}: ${e.error}`);
+      } catch (e) {
+        console.log(`ERROR ${scenario.id}  ${scenario.title}: ${e instanceof Error ? e.message : String(e)}`);
+        runs.push({ scenario, conversationId: "(none)", exchanges: [], results: [], failed: [], errors: 1, auto: "ERROR (could not run)" });
+      }
+    }
+  } finally {
+    if (restoreCaps) await restoreCaps();
   }
 
   mkdirSync(REPORTS_DIR, { recursive: true });
@@ -358,8 +379,10 @@ async function main() {
   const mechanicalFail = runs.filter((r) => !r.errors && r.failed.length).length;
   const errors = runs.filter((r) => r.errors).length;
   const pass = runs.length - mechanicalFail - errors;
+  const budgetHits = runs.reduce((n, r) => n + r.exchanges.filter((e) => e.error && e.error.includes("budget_exceeded")).length, 0);
   console.log("");
   console.log(`scenarios: ${runs.length}  mechanical pass: ${pass}  mechanical fail: ${mechanicalFail}  errors: ${errors}`);
+  if (budgetHits) console.log(`hint: ${budgetHits} turn(s) hit the spend cap (402 budget_exceeded); rerun with --daily-cap <usd>, which is restored after the run`);
   console.log(`every scenario needs the owner's read of its rubric; report: ${reportPath}`);
   process.exit(errors ? 1 : args.strict && mechanicalFail ? 1 : 0);
 }
