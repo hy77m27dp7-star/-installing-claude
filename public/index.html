@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#070b14">
+<title>Avelie</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="page-chat">
+<header class="top">
+  <a class="wordmark" href="/">AVELIE</a>
+  <nav class="nav" aria-label="Sections">
+    <a href="/">Chat</a>
+    <a href="/state">State</a>
+    <a href="/model">Model</a>
+    <a href="/images">Images</a>
+  </nav>
+</header>
+
+<main class="chat">
+  <aside class="sidebar" id="sidebar" aria-label="Conversations">
+    <div class="sidebar-head">
+      <button type="button" class="btn primary grow" id="newChat">New chat</button>
+      <button type="button" class="btn ghost phone-only" id="closeDrawer">Close</button>
+    </div>
+    <ul class="conv-list" id="convList"></ul>
+  </aside>
+
+  <section class="thread-wrap">
+    <div class="thread-bar">
+      <button type="button" class="btn ghost phone-only" id="openDrawer" aria-controls="sidebar">Chats</button>
+      <span class="conv-title" id="convTitle"></span>
+    </div>
+
+    <div class="thread" id="thread" aria-live="polite"></div>
+
+    <div class="typing hidden" id="typing" aria-label="Typing"><span></span><span></span><span></span></div>
+
+    <form class="composer" id="composer" autocomplete="off">
+      <div class="error-row hidden" id="errorRow">
+        <span class="chip danger" id="errorChip"></span>
+        <button type="button" class="btn small hidden" id="retryBtn">Retry</button>
+      </div>
+      <div class="composer-box">
+        <textarea id="input" rows="1" placeholder="Message" maxlength="4000" aria-label="Message"></textarea>
+        <div class="composer-actions">
+          <label class="switch" for="operatorToggle">
+            <input type="checkbox" id="operatorToggle">
+            <span class="track"></span>
+            <span class="switch-label">Operator</span>
+          </label>
+          <button type="submit" class="btn primary" id="sendBtn">Send</button>
+        </div>
+      </div>
+    </form>
+  </section>
+</main>
+
+<div class="scrim hidden" id="scrim"></div>
+
+<script type="module" src="/js/nav.js"></script>
+<script type="module" src="/js/chat.js"></script>
+</body>
+</html>

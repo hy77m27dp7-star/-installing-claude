@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#070b14">
+<title>Avelie State</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="page-state">
+<header class="top">
+  <a class="wordmark" href="/">AVELIE</a>
+  <nav class="nav" aria-label="Sections">
+    <a href="/">Chat</a>
+    <a href="/state">State</a>
+    <a href="/model">Model</a>
+    <a href="/images">Images</a>
+  </nav>
+</header>
+
+<main class="page">
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" data-tab="now">Now</button>
+    <button type="button" role="tab" data-tab="timeline">Timeline</button>
+    <button type="button" role="tab" data-tab="facts">Facts</button>
+    <button type="button" role="tab" data-tab="unknowns">Unknowns</button>
+    <button type="button" role="tab" data-tab="inbox">Inbox</button>
+    <button type="button" role="tab" data-tab="rulebook">Rulebook</button>
+    <button type="button" role="tab" data-tab="export">Export</button>
+  </div>
+
+  <section id="tab-now" class="stack hidden" role="tabpanel">
+    <div class="chips" id="now-status"></div>
+    <div class="cols-2">
+      <div class="card stack">
+        <div class="row between">
+          <h2 class="section-title">Relationship</h2>
+          <span class="chip accent" id="relVersion"></span>
+        </div>
+        <textarea id="relJson" class="code" spellcheck="false" aria-label="Relationship JSON"></textarea>
+        <div class="row">
+          <input type="text" id="relNote" class="grow" placeholder="Note">
+          <button type="button" class="btn primary" id="relSave">Save</button>
+          <span class="chips" id="relStatus"></span>
+        </div>
+        <h3 class="section-title">Versions</h3>
+        <div class="stack tight" id="relVersions"></div>
+      </div>
+      <div class="card stack">
+        <div class="row between">
+          <h2 class="section-title">Scene</h2>
+          <span class="chip accent" id="sceneVersion"></span>
+        </div>
+        <textarea id="sceneJson" class="code" spellcheck="false" aria-label="Scene JSON"></textarea>
+        <div class="row">
+          <input type="text" id="sceneNote" class="grow" placeholder="Note">
+          <button type="button" class="btn primary" id="sceneSave">Save</button>
+          <span class="chips" id="sceneStatus"></span>
+        </div>
+        <h3 class="section-title">Versions</h3>
+        <div class="stack tight" id="sceneVersions"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-timeline" class="stack hidden" role="tabpanel">
+    <div class="chips" id="timeline-status"></div>
+    <div class="stack" id="timelineList"></div>
+  </section>
+
+  <section id="tab-facts" class="stack hidden" role="tabpanel">
+    <div class="chips" id="facts-status"></div>
+    <div class="cols-3">
+      <div class="stack">
+        <h2 class="section-title">Fixed</h2>
+        <div class="stack tight" id="factsFixed"></div>
+      </div>
+      <div class="stack">
+        <h2 class="section-title">Avelie</h2>
+        <div class="stack tight" id="factsAvelie"></div>
+      </div>
+      <div class="stack">
+        <h2 class="section-title">Him</h2>
+        <div class="stack tight" id="factsJustin"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-unknowns" class="stack hidden" role="tabpanel">
+    <div class="chips" id="unknowns-status"></div>
+    <div class="stack" id="unknownsList"></div>
+    <div class="card stack">
+      <h2 class="section-title">Add</h2>
+      <input type="text" id="unknownTopic" placeholder="Topic" maxlength="200">
+      <input type="text" id="unknownNote" placeholder="Note" maxlength="500">
+      <div class="row"><button type="button" class="btn primary" id="unknownAdd">Add</button></div>
+    </div>
+  </section>
+
+  <section id="tab-inbox" class="stack hidden" role="tabpanel">
+    <div class="chips" id="inbox-status"></div>
+    <div class="stack" id="inboxList"></div>
+  </section>
+
+  <section id="tab-rulebook" class="stack hidden" role="tabpanel">
+    <div class="chips" id="rulebook-status"></div>
+    <div class="card">
+      <div class="kv">
+        <span class="k">Constitution</span><span class="v mono" id="constitutionVersion"></span>
+        <span class="k">Prompt</span><span class="v mono" id="promptVersion"></span>
+      </div>
+    </div>
+    <div class="card stack hidden" id="rulebookExtra"></div>
+  </section>
+
+  <section id="tab-export" class="stack hidden" role="tabpanel">
+    <div class="chips" id="export-status"></div>
+    <div class="card stack">
+      <h2 class="section-title">Export</h2>
+      <div class="row"><button type="button" class="btn primary" id="exportJson">Export JSON</button></div>
+    </div>
+    <div class="card stack">
+      <h2 class="section-title">Transcripts</h2>
+      <div class="stack tight" id="transcriptList"></div>
+    </div>
+    <div class="card stack">
+      <h2 class="section-title">Import</h2>
+      <input type="file" id="importFile" accept=".json,application/json" aria-label="Import file">
+      <div class="row">
+        <button type="button" class="btn danger" id="importBtn">Import</button>
+        <span class="chips" id="importResult"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="/js/nav.js"></script>
+<script type="module" src="/js/state.js"></script>
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#070b14">
+<title>Avelie Model</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="page-model">
+<header class="top">
+  <a class="wordmark" href="/">AVELIE</a>
+  <nav class="nav" aria-label="Sections">
+    <a href="/">Chat</a>
+    <a href="/state">State</a>
+    <a href="/model">Model</a>
+    <a href="/images">Images</a>
+  </nav>
+</header>
+
+<main class="page stack">
+  <form class="card stack" id="settingsForm" autocomplete="off">
+    <h2 class="section-title">Text</h2>
+    <div class="grid-form">
+      <label class="field">Provider
+        <select name="provider">
+          <option value="anthropic">anthropic</option>
+          <option value="openai">openai</option>
+          <option value="workersai">workersai</option>
+          <option value="stub">stub</option>
+        </select>
+      </label>
+      <label class="field">Model
+        <input type="text" name="model" placeholder="Model" maxlength="120">
+      </label>
+      <label class="field">Effort
+        <select name="effort">
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+        </select>
+      </label>
+      <label class="field">Temperature
+        <input type="number" name="temperature" min="0" max="2" step="0.05" inputmode="decimal">
+      </label>
+      <label class="field">Max tokens
+        <input type="number" name="maxTokens" min="64" max="4000" step="1" inputmode="numeric">
+      </label>
+    </div>
+
+    <h2 class="section-title">Proposals</h2>
+    <div class="grid-form">
+      <label class="check"><input type="checkbox" name="proposalsEnabled"> Proposals</label>
+      <label class="field">Proposal provider
+        <select name="proposalProvider">
+          <option value="anthropic">anthropic</option>
+          <option value="openai">openai</option>
+          <option value="workersai">workersai</option>
+          <option value="stub">stub</option>
+        </select>
+      </label>
+      <label class="field">Proposal model
+        <input type="text" name="proposalModel" placeholder="Model" maxlength="120">
+      </label>
+    </div>
+
+    <h2 class="section-title">Images</h2>
+    <div class="grid-form">
+      <label class="field">Image provider
+        <select name="imageProvider">
+          <option value="openai">openai</option>
+          <option value="stub">stub</option>
+        </select>
+      </label>
+      <label class="field">Image model
+        <input type="text" name="imageModel" placeholder="Model" maxlength="120">
+      </label>
+      <label class="field">Quality
+        <select name="imageQuality">
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+        </select>
+      </label>
+      <label class="field">Size
+        <input type="text" name="imageSize" placeholder="1024x1536" maxlength="20">
+      </label>
+      <label class="field">Cost USD
+        <input type="number" name="imageCostUsd" min="0" step="0.01" inputmode="decimal">
+      </label>
+    </div>
+
+    <h2 class="section-title">Caps</h2>
+    <div class="grid-form">
+      <label class="field">Daily cap USD
+        <input type="number" name="dailyCapUsd" min="0" step="0.5" inputmode="decimal">
+      </label>
+      <label class="field">Monthly cap USD
+        <input type="number" name="monthlyCapUsd" min="0" step="1" inputmode="decimal">
+      </label>
+    </div>
+
+    <div class="row">
+      <button type="submit" class="btn primary" id="saveBtn">Save</button>
+      <span class="chips" id="settings-status"></span>
+    </div>
+  </form>
+
+  <section class="card stack">
+    <div class="row between">
+      <h2 class="section-title">Usage</h2>
+      <span class="chips" id="usage-status"></span>
+    </div>
+    <div class="stats">
+      <div class="stat">
+        <div class="k">Today</div>
+        <div class="v" id="usageToday"></div>
+        <div class="sub" id="usageTodayCap"></div>
+      </div>
+      <div class="stat">
+        <div class="k">Month</div>
+        <div class="v" id="usageMonth"></div>
+        <div class="sub" id="usageMonthCap"></div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Day</th>
+            <th>Provider</th>
+            <th>Model</th>
+            <th class="num">Requests</th>
+            <th class="num">In</th>
+            <th class="num">Out</th>
+            <th class="num">Cost</th>
+          </tr>
+        </thead>
+        <tbody id="usageRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card stack">
+    <div class="row between">
+      <h2 class="section-title">System</h2>
+      <span class="chips" id="system-status"></span>
+    </div>
+    <div class="kv">
+      <span class="k">Constitution</span><span class="v mono" id="sysConstitution"></span>
+      <span class="k">Prompt</span><span class="v mono" id="sysPrompt"></span>
+      <span class="k">Anthropic key</span><span class="v"><span class="dot" id="keyAnthropic"></span></span>
+      <span class="k">OpenAI key</span><span class="v"><span class="dot" id="keyOpenai"></span></span>
+    </div>
+    <h3 class="section-title">Counts</h3>
+    <div class="kv" id="sysCounts"></div>
+  </section>
+</main>
+
+<script type="module" src="/js/nav.js"></script>
+<script type="module" src="/js/model.js"></script>
+</body>
+</html>

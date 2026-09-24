@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#070b14">
+<title>Avelie Images</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="page-images">
+<header class="top">
+  <a class="wordmark" href="/">AVELIE</a>
+  <nav class="nav" aria-label="Sections">
+    <a href="/">Chat</a>
+    <a href="/state">State</a>
+    <a href="/model">Model</a>
+    <a href="/images">Images</a>
+  </nav>
+</header>
+
+<main class="page stack">
+  <div class="chips" id="images-status"></div>
+
+  <section class="section">
+    <div class="row between">
+      <h2 class="section-title">Masters</h2>
+      <div class="row">
+        <span class="chips" id="verifyAll"></span>
+        <button type="button" class="btn" id="verifyBtn">Verify</button>
+      </div>
+    </div>
+    <div class="grid-imgs" id="masters"></div>
+  </section>
+
+  <section class="section">
+    <h2 class="section-title">Candidates</h2>
+    <div class="grid-imgs" id="candidates"></div>
+  </section>
+
+  <section class="section">
+    <h2 class="section-title">Approved</h2>
+    <div class="grid-imgs" id="scenes"></div>
+  </section>
+
+  <section class="section">
+    <h2 class="section-title">Rejected</h2>
+    <div class="card" id="rejected"></div>
+  </section>
+</main>
+
+<script type="module" src="/js/nav.js"></script>
+<script type="module" src="/js/images.js"></script>
+</body>
+</html>
