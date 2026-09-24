@@ -57,6 +57,9 @@
           </div>
         </div>
         <button type="button" class="btn small pill quiet hidden" id="letHerStart">Let her start</button>
+        <button type="button" class="icon-btn hidden" id="callBtn" aria-label="Call" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6.2 6.2l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 1.9z"/></svg>
+        </button>
         <button type="button" class="icon-btn" id="photosBtn" aria-label="Photos" aria-controls="photosDrawer" aria-expanded="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M4 16l5-5 4 4 3-3 4 4"/><path d="M15.5 9.5h.01"/></svg>
         </button>
@@ -89,6 +92,9 @@
         <span class="chip danger" id="errorChip"></span>
         <button type="button" class="btn small hidden" id="retryBtn">Retry</button>
       </div>
+      <div class="error-row hidden" id="lockRow">
+        <span class="chip amber">Pick one first</span>
+      </div>
       <div class="attach-strip hidden" id="attachStrip"></div>
       <div class="composer-box">
         <button type="button" class="icon-btn" id="attachBtn" aria-label="Attach photo">
@@ -99,6 +105,9 @@
         <div class="composer-tools">
           <button type="button" class="icon-btn" id="micBtn" aria-label="Hold to record" aria-pressed="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 11v1a7 7 0 0 1-14 0v-1"/><path d="M12 19v3"/><path d="M8 22h8"/></svg>
+          </button>
+          <button type="button" class="icon-btn hidden" id="tasteBtn" aria-label="Taste">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-3 7a3 3 0 0 0 6 0z"/><path d="M19 7l-3 7a3 3 0 0 0 6 0z"/></svg>
           </button>
           <button type="submit" class="icon-btn primary" id="sendBtn" aria-label="Send">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
@@ -118,6 +127,24 @@
   </div>
   <div class="drawer-body" id="photosList"></div>
 </aside>
+
+<section class="call-sheet hidden" id="callSheet" aria-label="Call" aria-hidden="true">
+  <div class="call-head">
+    <span class="status" id="callStatus">Connecting</span>
+    <span class="chips" id="callReason"></span>
+    <span class="timer" id="callTimer">0:00</span>
+  </div>
+  <div class="call-captions" id="callCaptions" aria-live="polite"></div>
+  <div class="call-actions">
+    <button type="button" class="icon-btn" id="callMute" aria-label="Mute" aria-pressed="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 11v1a7 7 0 0 1-14 0v-1"/><path d="M12 19v3"/><path d="M8 22h8"/></svg>
+    </button>
+    <button type="button" class="icon-btn end" id="callEnd" aria-label="End">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <audio id="callAudio" autoplay playsinline></audio>
+</section>
 
 <aside class="drawer" id="whyDrawer" aria-label="Why" aria-hidden="true">
   <div class="drawer-head">

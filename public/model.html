@@ -36,7 +36,7 @@
         </select>
       </label>
       <label class="field">Model
-        <input type="text" name="model" placeholder="Model" maxlength="120">
+        <input type="text" name="model" placeholder="Model" maxlength="200">
       </label>
       <label class="field">Effort
         <select name="effort">
@@ -51,7 +51,87 @@
       <label class="field">Max tokens
         <input type="number" name="maxTokens" min="64" max="4000" step="1" inputmode="numeric">
       </label>
+      <label class="check"><input type="checkbox" name="textureCuesEnabled"> Texture cues</label>
+      <label class="field">Typo cue share (0 = off)
+        <input type="number" name="typoCueShare" min="0" max="0.3" step="0.01" inputmode="decimal">
+      </label>
     </div>
+
+    <h2 class="section-title">Voice bank</h2>
+    <div class="grid-form">
+      <label class="field">Exemplars per turn
+        <input type="number" name="exemplarsPerTurn" min="0" max="12" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Exemplar cooldown turns
+        <input type="number" name="exemplarCooldownTurns" min="0" max="500" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Notes shown
+        <input type="number" name="correctionsShown" min="0" max="100" step="1" inputmode="numeric">
+      </label>
+      <label class="check"><input type="checkbox" name="correctionRewriteToBank"> Rewrites join the bank</label>
+    </div>
+
+    <h2 class="section-title">Memory</h2>
+    <div class="grid-form">
+      <label class="check"><input type="checkbox" name="memoryDecayEnabled"> Decay</label>
+      <label class="field">Facts max
+        <input type="number" name="memoryFactsMax" min="5" max="200" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Half-life low (days)
+        <input type="number" name="memoryHalfLifeLowDays" min="1" max="365" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Half-life mid (days)
+        <input type="number" name="memoryHalfLifeMidDays" min="1" max="3650" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Half-life high (days)
+        <input type="number" name="memoryHalfLifeHighDays" min="1" max="36500" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Half-remember every N turns (0 = off)
+        <input type="number" name="provisionalRecallEvery" min="0" max="50" step="1" inputmode="numeric">
+      </label>
+    </div>
+
+    <h2 class="section-title">Wants</h2>
+    <div class="grid-form">
+      <label class="field">Wants shown
+        <input type="number" name="wantsShown" min="0" max="20" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Ask let-go days
+        <input type="number" name="askLetGoDays" min="1" max="90" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Mood days default
+        <input type="number" name="moodDaysDefault" min="1" max="14" step="1" inputmode="numeric">
+      </label>
+    </div>
+
+    <h2 class="section-title">Grounding</h2>
+    <div class="grid-form">
+      <label class="field">City
+        <input type="text" name="herCity" placeholder="City" maxlength="80">
+      </label>
+      <div class="row">
+        <button type="button" class="btn" id="geoFind">Find</button>
+        <span class="chips" id="geo-status"></span>
+      </div>
+      <label class="field">Units
+        <select name="weatherUnits">
+          <option value="fahrenheit">fahrenheit</option>
+          <option value="celsius">celsius</option>
+        </select>
+      </label>
+      <label class="field">Weather provider
+        <select name="weatherProvider">
+          <option value="openmeteo">openmeteo</option>
+          <option value="stub">stub</option>
+          <option value="off">off</option>
+        </select>
+      </label>
+      <label class="field">Timezone
+        <input type="text" name="timezone" placeholder="America/New_York" maxlength="80">
+      </label>
+    </div>
+    <div class="geo-results" id="geoResults"></div>
+    <div class="now-line" id="groundingNow"></div>
 
     <h2 class="section-title">Timing</h2>
     <div class="grid-form">
@@ -63,9 +143,6 @@
       </label>
       <label class="field">Real delay max minutes
         <input type="number" name="realDelayMaxMinutes" min="1" max="120" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Timezone
-        <input type="text" name="timezone" placeholder="America/New_York" maxlength="80">
       </label>
     </div>
 
@@ -110,6 +187,57 @@
       </label>
     </div>
 
+    <h2 class="section-title">Calls</h2>
+    <div class="grid-form">
+      <label class="field">Call provider
+        <select name="callProvider">
+          <option value="openai">openai</option>
+          <option value="elevenlabs">elevenlabs (reserved)</option>
+          <option value="stub">stub</option>
+          <option value="off">off</option>
+        </select>
+      </label>
+      <label class="field">Call model
+        <input type="text" name="callModel" placeholder="gpt-realtime" maxlength="120">
+      </label>
+      <label class="field">Voice
+        <input type="text" name="callVoice" placeholder="marin" maxlength="40">
+      </label>
+      <label class="field">Transcribe model
+        <input type="text" name="callTranscribeModel" placeholder="gpt-4o-mini-transcribe" maxlength="120">
+      </label>
+      <label class="field">Instructions
+        <select name="callSystemMode">
+          <option value="compact">compact</option>
+          <option value="full">full</option>
+        </select>
+      </label>
+      <label class="field">Max minutes
+        <input type="number" name="callMaxMinutes" min="1" max="60" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Price per minute USD (floor)
+        <input type="number" name="callPricePerMinute" min="0" max="100" step="any" inputmode="decimal">
+      </label>
+      <label class="field">Audio in per 1M
+        <input type="number" name="callPrices.audioInPerMTok" min="0" step="any" inputmode="decimal">
+      </label>
+      <label class="field">Audio out per 1M
+        <input type="number" name="callPrices.audioOutPerMTok" min="0" step="any" inputmode="decimal">
+      </label>
+      <label class="field">Text in per 1M
+        <input type="number" name="callPrices.textInPerMTok" min="0" step="any" inputmode="decimal">
+      </label>
+      <label class="field">Text out per 1M
+        <input type="number" name="callPrices.textOutPerMTok" min="0" step="any" inputmode="decimal">
+      </label>
+      <label class="field">ElevenLabs agent id (Reserved)
+        <input type="text" name="elevenLabsAgentId" placeholder="Reserved" maxlength="120" disabled data-reserved="1">
+      </label>
+      <label class="field">ElevenLabs price per minute (Reserved)
+        <input type="number" name="elevenLabsCallPricePerMinute" min="0" max="100" step="any" inputmode="decimal" disabled data-reserved="1">
+      </label>
+    </div>
+
     <h2 class="section-title">Proposals</h2>
     <div class="grid-form">
       <label class="check"><input type="checkbox" name="proposalsEnabled"> Proposals</label>
@@ -122,7 +250,39 @@
         </select>
       </label>
       <label class="field">Proposal model
-        <input type="text" name="proposalModel" placeholder="Model" maxlength="120">
+        <input type="text" name="proposalModel" placeholder="Model" maxlength="200">
+      </label>
+    </div>
+
+    <h2 class="section-title">Tastings</h2>
+    <div class="grid-form">
+      <label class="check"><input type="checkbox" name="tastingEnabled"> Tastings</label>
+      <label class="field">Tasting provider
+        <select name="tastingProvider">
+          <option value="anthropic">anthropic</option>
+          <option value="openai">openai</option>
+          <option value="workersai">workersai</option>
+          <option value="stub">stub</option>
+        </select>
+      </label>
+      <label class="field">Tasting model
+        <input type="text" name="tastingModel" placeholder="gpt-4.1" maxlength="200">
+      </label>
+      <label class="field">Tasting daily cap USD
+        <input type="number" name="tastingDailyCapUsd" min="0" max="1000" step="any" inputmode="decimal">
+      </label>
+    </div>
+
+    <h2 class="section-title">Texter</h2>
+    <div class="grid-form">
+      <label class="field">Minimum examples
+        <input type="number" name="finetuneMinExamples" min="10" max="5000" step="1" inputmode="numeric">
+      </label>
+      <label class="field">System mode
+        <select name="finetuneSystemMode">
+          <option value="compact">compact</option>
+          <option value="full">full</option>
+        </select>
       </label>
     </div>
 
@@ -169,6 +329,34 @@
       <label class="field">Cost USD
         <input type="number" name="imageCostUsd" min="0" step="any" inputmode="decimal">
       </label>
+      <label class="field">Portrait size
+        <input type="text" name="portraitSize" placeholder="1024x1024" maxlength="20">
+      </label>
+      <label class="field">Portrait cost USD
+        <input type="number" name="portraitCostUsd" min="0" max="100" step="any" inputmode="decimal">
+      </label>
+      <label class="field">Video provider
+        <select name="videoProvider">
+          <option value="runway">runway</option>
+          <option value="stub">stub</option>
+          <option value="off">off</option>
+        </select>
+      </label>
+      <label class="field">Video model
+        <input type="text" name="videoModel" placeholder="gen4_turbo" maxlength="60">
+      </label>
+      <label class="field">Video seconds
+        <select name="videoSeconds">
+          <option value="5">5</option>
+          <option value="10">10</option>
+        </select>
+      </label>
+      <label class="field">Video ratio
+        <input type="text" name="videoRatio" placeholder="720:1280" maxlength="9">
+      </label>
+      <label class="field">Video cost USD per 5 s
+        <input type="number" name="videoCostUsd" min="0" max="100" step="any" inputmode="decimal">
+      </label>
     </div>
 
     <h2 class="section-title">Caps</h2>
@@ -187,6 +375,67 @@
       <span class="chips" id="settings-status"></span>
     </div>
   </form>
+
+  <section class="card stack" id="texterBox">
+    <div class="row between">
+      <h2 class="section-title">Texter</h2>
+      <span class="chips" id="texter-status"></span>
+    </div>
+    <div class="meter-head">
+      <span class="big" id="texterCount">0 <span>of 0</span></span>
+      <span class="chips" id="texterChips"></span>
+    </div>
+    <div class="progress meter" id="texterMeter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+    <div class="row">
+      <label class="check"><input type="checkbox" id="stripHim" checked> Leave him out of the state</label>
+    </div>
+    <div class="row">
+      <button type="button" class="btn" id="exportTrain">Export training set</button>
+      <button type="button" class="btn" id="exportRecord">Export record</button>
+      <span class="chips" id="export-status"></span>
+    </div>
+    <div class="grid-form">
+      <label class="field">Model id
+        <input type="text" id="texterModel" placeholder="ft:gpt-4.1-mini-2025-04-14:..." maxlength="200">
+      </label>
+      <label class="field">Input price per 1M
+        <input type="number" id="texterIn" min="0" step="any" inputmode="decimal">
+      </label>
+      <label class="field">Output price per 1M
+        <input type="number" id="texterOut" min="0" step="any" inputmode="decimal">
+      </label>
+    </div>
+    <div class="row">
+      <button type="button" class="btn primary" id="texterUse">Use</button>
+      <button type="button" class="btn" id="texterRevert">Back to Claude</button>
+      <span class="chips" id="texterLive"></span>
+    </div>
+  </section>
+
+  <section class="card stack" id="tastingsBox">
+    <div class="row between">
+      <h2 class="section-title">Tastings</h2>
+      <span class="chips" id="tastings-status"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Performer</th>
+            <th class="num">Wins</th>
+            <th class="num">Losses</th>
+            <th class="num">Draws</th>
+            <th class="num">Rate</th>
+            <th>Last</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="ledgerRows"></tbody>
+      </table>
+    </div>
+    <h3 class="section-title">Recent</h3>
+    <div id="tastingsRecent"></div>
+  </section>
 
   <section class="card stack" id="pushBox">
     <div class="row between">
@@ -230,6 +479,8 @@
             <th class="num">Median</th>
             <th class="num">Questions</th>
             <th class="num">Bubbles</th>
+            <th class="num">One word</th>
+            <th class="num">Lowercase</th>
             <th class="num">First texts</th>
             <th class="num">Flags</th>
           </tr>
@@ -282,9 +533,9 @@
     <div class="kv">
       <span class="k">Constitution</span><span class="v mono" id="sysConstitution"></span>
       <span class="k">Prompt</span><span class="v mono" id="sysPrompt"></span>
-      <span class="k">Anthropic key</span><span class="v"><span class="dot" id="keyAnthropic"></span></span>
-      <span class="k">OpenAI key</span><span class="v"><span class="dot" id="keyOpenai"></span></span>
     </div>
+    <h3 class="section-title">Keys</h3>
+    <div class="kv" id="sysKeys"></div>
     <h3 class="section-title">Counts</h3>
     <div class="kv" id="sysCounts"></div>
   </section>

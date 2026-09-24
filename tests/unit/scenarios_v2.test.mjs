@@ -8,8 +8,9 @@ import { BAD_TYPOGRAPHY } from "./helpers.mjs";
 const text = readFileSync(new URL("../../tests/behavior/scenarios.json", import.meta.url), "utf8");
 const all = JSON.parse(text);
 
-test("41 scenarios, unique ids, every field the runner reads", () => {
-  assert.equal(all.length, 41);
+test("41 v1 and v2 scenarios (plus the v3 block), unique ids, every field the runner reads", () => {
+  assert.equal(all.filter((s) => s.v3 !== true).length, 41);
+  assert.equal(all.length, 50);
   assert.equal(new Set(all.map((s) => s.id)).size, all.length);
   for (const s of all) {
     assert.equal(typeof s.id, "string");
@@ -19,6 +20,8 @@ test("41 scenarios, unique ids, every field the runner reads", () => {
     assert.ok(Array.isArray(s.autoChecks) && s.autoChecks.every((c) => typeof c === "string"), s.id + " autoChecks");
     assert.equal(typeof s.rubric, "string", s.id + " rubric");
     if ("drift" in s) assert.equal(s.drift, true, s.id + " drift may only be true");
+    if ("v3" in s) assert.equal(s.v3, true, s.id + " v3 may only be true");
+    if ("settings" in s) assert.ok(typeof s.settings === "object" && s.settings !== null && !Array.isArray(s.settings), s.id + " settings");
     if ("notes" in s) assert.equal(typeof s.notes, "string");
   }
 });
@@ -44,7 +47,7 @@ test("the four life scenarios of SPEC_V2 are present with setup notes", () => {
 });
 
 test("the v1 scenarios are untouched apart from the drift tag", () => {
-  const v1 = all.filter((s) => s.group !== "life");
+  const v1 = all.filter((s) => s.group !== "life" && s.group !== "v3");
   assert.equal(v1.length, 37);
   assert.equal(v1[0].id, "A01");
   assert.deepEqual(v1[0].turns, ["hey"]);

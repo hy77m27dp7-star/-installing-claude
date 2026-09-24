@@ -1,5 +1,15 @@
 // Shared types for the Avelie runtime. Every module codes against these.
 import type { LifeLog, LifeThread } from "./life";
+// v3: type-only imports of the section renderers, used in `typeof` positions to name the
+// row shapes their modules own (SPEC_V3 sections BB, CC, DD).
+import type { halfRememberSection } from "./memory";
+import type { wantsSection } from "./wants";
+import type { groundingSection } from "./grounding";
+import type { WeatherNow } from "./weather";
+import type { GroundingRow } from "./grounding";
+import type { VoiceLine } from "./voicebank";
+import type { Correction } from "./corrections";
+import type { ShapeCue } from "./imperfection";
 
 export interface Env {
   DB: D1Database;
@@ -21,6 +31,8 @@ export interface Env {
   OPENAI_API_KEY?: string;
   // Optional (SPEC_V2 section S): her voice through ElevenLabs. Absent = that provider is off.
   ELEVENLABS_API_KEY?: string;
+  // Optional (SPEC_V3 section FF): clips through Runway. Absent = video is off.
+  RUNWAY_API_KEY?: string;
 }
 
 export type Channel = "story" | "operator";
@@ -36,6 +48,20 @@ export type ReplyDelayMode = "instant" | "real";
 export type VoiceProviderName = "elevenlabs" | "workersai" | "stub" | "off";
 export type VoiceMode = "off" | "some" | "all";
 export type TranscribeProviderName = "workersai" | "openai" | "stub";
+// v3 (SPEC_V3). Weather (DD), calls (EE; elevenlabs is reserved and answers 503), clips (FF).
+export type WeatherProviderName = "openmeteo" | "stub" | "off";
+export type WeatherUnits = "fahrenheit" | "celsius";
+export type CallProviderName = "openai" | "elevenlabs" | "stub" | "off";
+export type VideoProviderName = "runway" | "stub" | "off";
+// compact: ALWAYS_ON + OVERLAY as the prefix (calls, the fine-tune export); full: the whole stable prefix.
+export type SystemMode = "compact" | "full";
+// What a realtime session bills, priced per million tokens (EE).
+export interface CallPrices {
+  audioInPerMTok: number;
+  audioOutPerMTok: number;
+  textInPerMTok: number;
+  textOutPerMTok: number;
+}
 
 export interface Settings {
   provider: ProviderName;
@@ -71,6 +97,60 @@ export interface Settings {
   voiceMode: VoiceMode;
   elevenLabsVoiceId: string;
   transcribeProvider: TranscribeProviderName;
+  // v3, SPEC_V3 section AA: the voice bank and the corrections ledger.
+  exemplarsPerTurn: number;
+  exemplarCooldownTurns: number;
+  correctionsShown: number;
+  correctionRewriteToBank: boolean;
+  // v3, section BB: human memory (weights, decay, the half-remember switch; 0 = off).
+  memoryDecayEnabled: boolean;
+  memoryFactsMax: number;
+  memoryHalfLifeLowDays: number;
+  memoryHalfLifeMidDays: number;
+  memoryHalfLifeHighDays: number;
+  provisionalRecallEvery: number;
+  // v3, section CC: wants, asks and the mood clock.
+  wantsShown: number;
+  askLetGoDays: number;
+  moodDaysDefault: number;
+  // v3, section DD: her city, the weather and portraits.
+  herCity: string;
+  herLat: number | null;
+  herLon: number | null;
+  weatherProvider: WeatherProviderName;
+  weatherUnits: WeatherUnits;
+  portraitCostUsd: number;
+  portraitSize: string;
+  // v3, section EE: phone calls (the two ElevenLabs fields are reserved for v3.1).
+  callProvider: CallProviderName;
+  callModel: string;
+  callVoice: string;
+  callTranscribeModel: string;
+  callSystemMode: SystemMode;
+  callMaxMinutes: number;
+  callPricePerMinute: number;
+  callPrices: CallPrices;
+  elevenLabsAgentId: string;
+  elevenLabsCallPricePerMinute: number;
+  // v3, section FF: clips.
+  videoProvider: VideoProviderName;
+  videoModel: string;
+  videoSeconds: number;
+  videoRatio: string;
+  videoCostUsd: number;
+  // v3, section GG: the imperfection engine (the typo cue ships at 0; his switch).
+  textureCuesEnabled: boolean;
+  typoCueShare: number;
+  // v3, section HH: blind tastings.
+  tastingEnabled: boolean;
+  tastingProvider: ProviderName;
+  tastingModel: string;
+  tastingDailyCapUsd: number;
+  // v3, section II: the fine-tune pipeline and the texter.
+  finetuneMinExamples: number;
+  finetuneSystemMode: SystemMode;
+  texterModel: string;
+  texterPrevious: { provider: ProviderName; model: string } | null;
 }
 
 export interface ConversationRow {
@@ -107,12 +187,16 @@ export interface MessageRow {
   audio_key?: string | null;
   images_json?: string | null;
   media_id?: string | null;
+  // v3 (migration 0005): the call a transcript row belongs to (SPEC_V3 section EE).
+  call_id?: string | null;
 }
 
 export interface ModelRunRow {
   id: string;
   conversation_id: string | null;
-  kind: "turn" | "retry" | "proposal" | "operator" | "image" | "drift" | "voice" | "transcribe";
+  kind: "turn" | "retry" | "proposal" | "operator" | "image" | "drift" | "voice" | "transcribe"
+    // v3: a phone call (EE), a clip (FF), a tasting draft (HH), a portrait (DD).
+    | "call" | "video" | "tasting" | "portrait";
   provider: string;
   model: string;
   prompt_version: string | null;
@@ -185,6 +269,10 @@ export interface RelationshipState {
   // the owner clears it, or she thaws in conversation and the extractor proposes it.
   mood?: string;
   cooling_off_until?: string | null;
+  // v3 (SPEC_V3 section CC): when the mood was set and how many days it lasts (1..14).
+  // The prompt renders the mood by its phase (fresh, fading, faint) and nothing once it is gone.
+  mood_set_at?: string;
+  mood_days?: number;
   [k: string]: unknown;
 }
 
@@ -218,7 +306,15 @@ export type ProposalKind =
   | "opinion_change"
   | "unknown"
   // v2: a statement by her about her own days (a routine, an event, a person, a place, an arc).
-  | "life";
+  | "life"
+  // v3 (SPEC_V3 sections CC and DD): a goal of hers, a step on one, a small thing she asks
+  // him for, his answer to it; what she ate, wore or ran out to do; news about a thread.
+  | "want"
+  | "want_update"
+  | "ask"
+  | "ask_update"
+  | "grounding"
+  | "life_update";
 
 export interface ProposalRow {
   id: string;
@@ -240,7 +336,9 @@ export interface ProposalRow {
 export interface VisualAssetRow {
   id: string;
   file: string;
-  role: "master" | "scene" | "candidate" | "legacy_archive" | "blacklisted" | "missing";
+  role: "master" | "scene" | "candidate" | "legacy_archive" | "blacklisted" | "missing"
+    // v3: a person's face (DD) and a clip of her (FF); both walk the photo's approval states.
+    | "portrait" | "video";
   sha256: string | null;
   bytes: number | null;
   // pending / generating / failed: a requested photo before any bytes exist (role candidate).
@@ -290,6 +388,11 @@ export interface GenerateRequest {
   effort: Effort;
   // Stable prefix hint for providers that support prompt caching.
   cacheable: boolean;
+  // v3: the same system text in two parts, so an adapter that supports prompt caching can
+  // put the breakpoint after the byte-stable prefix and leave the per-turn state out of
+  // the cache. `system` stays the joined string for every other adapter; when both are
+  // present, prefix + SYSTEM_SEPARATOR + state equals system.
+  systemParts?: { prefix: string; state: string };
 }
 
 export interface GenerateResult {
@@ -359,6 +462,12 @@ export interface CheckContext {
   recentAssistantTexts: string[];
   openUnknownTopics: string[];
   channel: Channel;
+  // v3 (SPEC_V3). The bank lines offered this turn (exemplar_verbatim, AA); the open asks
+  // with how often she has raised each (ask_nag, CC); the shape signatures of her last two
+  // replies (shape_uniform, GG).
+  exemplars?: string[];
+  openAsks?: Array<{ text: string; broughtUp: number }>;
+  recentSignatures?: string[];
 }
 
 export interface CheckResult {
@@ -390,10 +499,37 @@ export interface PromptCallback {
   sourceId: string;
 }
 
+// v3 (SPEC_V3). The rows the per-turn sections are built from, typed off the modules that
+// own them so the names never drift: a bank line (AA), a standing note (AA), the picked
+// half-remembered detail (BB), a want, its log rows and an ask (CC), the weather and the
+// grounding log (DD), the shape cue (GG).
+export type { VoiceLine } from "./voicebank";
+export type { Correction } from "./corrections";
+export type { ShapeCue } from "./imperfection";
+export type { WeatherNow } from "./weather";
+export type { GroundingRow } from "./grounding";
+export type RecallPick = NonNullable<Parameters<typeof halfRememberSection>[0]>;
+export type WantRow = Parameters<typeof wantsSection>[0][number];
+export type WantLogRow = Parameters<typeof wantsSection>[1][number];
+export type AskRow = Parameters<typeof wantsSection>[2][number];
+export type OutfitNow = Parameters<typeof groundingSection>[0]["outfit"];
+export type MoodPhase = "fresh" | "fading" | "faint" | "gone";
+
+// What she knows about right now (SPEC_V3 section DD): her city, the weather when it came
+// back in time, what she is wearing today, today's grounding rows. Any of it may be empty.
+export interface PromptGrounding {
+  city: string;
+  weather: WeatherNow | null;
+  outfit: OutfitNow;
+  today: GroundingRow[];
+}
+
 export interface PromptState {
   hasSharedHistory: boolean;
   fixedFacts: FactRow[];
   avelieFacts: FactRow[];
+  // v3: the facts about him that are firm this turn (ranked by weight, decay and relevance,
+  // SPEC_V3 section BB); the faded ones are counted in fadedFactCount and not shown.
   justinFacts: FactRow[];
   history: HistoryRow[];
   unknowns: UnknownRow[];
@@ -405,14 +541,49 @@ export interface PromptState {
   callbacks: PromptCallback[];
   // The library titles she may send (SPEC_V2 section V); absent or empty = no section.
   media?: MediaRow[];
+  // v3. Every field is optional so a v1 or v2 state (the unit fixtures, the drift runner)
+  // still renders; a missing field means "no section".
+  // AA: the bank lines offered this turn, the standing notes, the tags the turn matched.
+  exemplars?: VoiceLine[];
+  corrections?: Correction[];
+  turnTags?: string[];
+  // BB: the one half-remembered detail (null or absent = no section) and the count of facts
+  // about him that faded out of the prompt this turn.
+  recall?: RecallPick | null;
+  fadedFactCount?: number;
+  // CC: her wants with their last log rows and the open asks.
+  wants?: WantRow[];
+  wantLog?: WantLogRow[];
+  asks?: AskRow[];
+  // DD: the RIGHT NOW section's inputs.
+  grounding?: PromptGrounding;
+  // GG: the shape cue for this message (null = no THIS MESSAGE section) and the signatures
+  // of her last two replies it was rolled against.
+  shapeCue?: ShapeCue | null;
+  recentSignatures?: string[];
+  // The turn's own key and shape (the header's Seeds paragraph); an opener has no message of his.
+  turnKey?: string;
+  opener?: boolean;
+  // The state version's created_at: the mood clock's fallback when mood_set_at is absent.
+  relationshipSince?: string;
+  // The numbers the sections render with (settings; the defaults when absent).
+  moodDaysDefault?: number;
+  wantsShown?: number;
+  correctionsShown?: number;
 }
 
 export interface AssembledContext {
   state: PromptState;
   system: string;
+  // v3: the same text in two parts (prefix + SYSTEM_SEPARATOR + state === system).
+  systemParts: { prefix: string; state: string };
   promptVersion: string;
   messages: ChatMessage[];
   recentAssistantTexts: string[];
+  // v3: the pending user row id on a resume, else "s" + the next seq; every per-turn seeded
+  // choice (exemplars, the shape cue) keys on it, so a retry rolls the same.
+  turnKey: string;
+  opener: boolean;
 }
 
 // ------------------------------------------------------------------ API shapes

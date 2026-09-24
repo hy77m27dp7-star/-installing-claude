@@ -17,7 +17,7 @@ Each check adds a flag with a code. The codes and what happens:
 | braking_repeat | retry | a braking phrase ("slow down", "stay with me", "don't rush", "not so fast") here and in two of her last three replies |
 | therapy_cadence | retry | "that sounds really hard", "thank you for sharing", "i hear you", "it's valid to", "your feelings are valid", "i'm here for you" |
 | menu_offer | retry | "do you want me to", "i can either", "would you like me to", "option 1" |
-| tech_leak | retry | story channel only: prompt, system prompt, language model, "as an ai", "as an assistant", chatgpt, openai, anthropic, claude, gpt, "the app", "file 07", token, "image generation", "generated image" |
+| tech_leak | retry | story channel only: prompt, system prompt, language model, "as an ai", "as an assistant", chatgpt, openai, anthropic, claude, gpt, "the app", "file 07", token, "image generation", "generated image", and in v3 "bot" and "ai" as whole words with an optional plural ("sounded like a bot", "i'm not an ai" fire; "robot", "aim", "said" never do) |
 | dependency_hook | retry | "only i understand", "nobody else understands you", "don't leave me", "promise you won't leave", "i've been waiting for you", "i was so lonely without you", "you're all i have" |
 | first_meeting_replay | retry | shared history exists and she says "nice to meet you", "i'm avelie" or "my name is avelie" |
 | unknown_resolved | flag | an open unknown's topic word in the same sentence as "because", "actually" or "it was" |
@@ -27,10 +27,23 @@ Each check adds a flag with a code. The codes and what happens:
 | song_marker_dup | flag | v2: she sent a song with `[song: ...]` and also named the title in the prose, so he reads it twice |
 | callback_forced | flag | v2: both of the things she was offered to bring up landed in one reply (each counts as landed when at least two of its keywords appear) |
 | media_unknown | flag | v2: a `[media: title]` line named something that is not in the library; the line is stripped, nothing is sent |
+| written_joke | flag | a built punchline: thirteen templates ("that's not a witch, that's a guy at a bar..."), added after his first talk |
+| exemplar_verbatim | retry | v3: the reply contains, normalised, the whole text of a voice-bank line she was shown (12 or more characters); the bank is tone, never a line to send |
+| ask_nag | retry | v3: an ask she already brought up once has two or more of its keywords in this reply; once more at most, then let it go |
+| shape_uniform | flag | v3: the reply's shape signature (bubbles, length band, case, question) equals both of her last two |
+| over_polish | flag | v3: three or more sentences, every one capitalised and closed, plus a semicolon, a "not X, but Y", three comma-separated items, a caption tail or a built punchline |
+| retry_skipped | flag | the checks asked for a retry and the caps refused the second call; the first draft stands |
+| tasting_void | flag | v3: one side of a tasting failed or refused; the other was stored as an ordinary reply |
 
-The live v1 branch also carries `written_joke` (flag only: a built punchline, thirteen templates), added after his first talk. It arrives on this tree with the integrator's merge.
+The action is the worst thing found: any retry code means retry; otherwise any repair code means repair; otherwise accept. The v2 codes are all flag only; they never cause a retry. In v3 two codes retry (`exemplar_verbatim`, `ask_nag`) and two are flags (`shape_uniform`, `over_polish`): polish is judgment, and judgment stays his; a pattern in the flags is what changes a rule, never a rewrite of her line. `written_joke` keeps being emitted as its own code beside `over_polish`, because folding it in would hide how often the specific thing he hates still happens. Flags are stored on the message and on the run whatever the action, the Chat page shows them as small muted chips under her message, and the why panel lists them with the ids the turn was built from. The chips are for you; she never sees them.
 
-The action is the worst thing found: any retry code means retry; otherwise any repair code means repair; otherwise accept. The v2 codes are all flag only; they never cause a retry. Flags are stored on the message and on the run whatever the action, the Chat page shows them as small muted chips under her message, and the why panel lists them with the ids the turn was built from. The chips are for you; she never sees them.
+## What a call transcript's flags mean (v3)
+
+Her lines on a call are speech, stored after the fact from the transcript. Nothing can be retried on speech, so the call rows carry the flag-only run of the same checks: every code is stored for the record, retry-severity ones included, and none of them changed what she said. A `tech_leak` on a call row means she said it on the phone; read the transcript and, if it repeats, the fix is the call note or a rule, never the row. `question_chain` and `name_overuse` read across the transcript rows the way they read across texts. The `over_polish` and `shape_uniform` codes rarely mean anything on speech and are not worth counting there.
+
+## The voice bank and the notes (v3)
+
+Nothing in the bank is a check. An approved line is shown to her as tone; sending one verbatim is `exemplar_verbatim` and a retry with the rule "say your own thing in your own words". A note you give her (Note under her message: what sounded off, your version) is read by her every turn under a header that forbids mentioning it. When a note keeps being needed for the same thing, that is the pattern the standing rule below is about: change one phrase in the overlay, not twenty notes.
 
 ## What caption_tail means
 
@@ -87,6 +100,10 @@ To run it:
 Against the stub the suite only proves the plumbing. Against a real provider every scenario spends money at the rate in docs/COSTS.md and the caps apply, so a full run may need the daily cap raised for the day (`--daily-cap`).
 
 How to read a report: read the transcripts first, as a person, and only then look at the counts. A retry code that appears in one scenario is one bad line. The same code in three scenarios, or in three runs of the same scenario, is a pattern. The flag-only codes (caption_tail, length_pattern, lol_lmao, truncated, song_marker_dup, callback_forced, media_unknown) are hints, not verdicts; a caption tail that is actually a plain thought is fine.
+
+## The two switches that ship off (v3)
+
+`provisionalRecallEvery` (0) and `typoCueShare` (0) are his. The half-remembered detail is a real thing people do and a bit when a performer does it; the behavior scenario H03 ("she half-remembers a low-weight detail and takes his correction in one line") is the gate, and the runner sets the switch to 8 for that scenario alone and puts it back. The scheduled typo is the same question: the TEXTURE paragraph already lets typos happen when she is quick; H05 shows whether they do at 0, and if none ever appear across a few runs, 0.05 in the Model panel is the next step, not a rule.
 
 ## The standing rule
 

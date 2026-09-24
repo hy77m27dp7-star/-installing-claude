@@ -1,9 +1,13 @@
 // Chat: the thread as a phone conversation. Her words stand alone by default; the
 // backstage (flags, the operator channel) shows only while the Operator switch is on.
+// v3: a Note sheet and a Keep / Drop mark under her messages, the "his version" line,
+// blind tastings (two panels, one pick), and phone calls (the Call button, the sheet, the
+// call card in the thread).
 import {
-  api, apiForm, h, chip, clear, fmtDate, fmtTime, flagCodes, parseJson, registerServiceWorker, storeGet, storeSet, svgIcon,
+  api, apiForm, h, chip, clear, fmtDate, fmtTime, fmtDuration, flagCodes, parseJson, registerServiceWorker, storeGet, storeSet, svgIcon,
 } from "./api.js";
 import { splitBubbles, bubbleDelayMs, pauseForId, PAUSE_MS } from "./bubbles.js";
+import { createCall } from "./call.js";
 
 const POLL_MS = 3000;
 // Longer than the server's claim lease (4 min), so a request another tab holds either
@@ -11,6 +15,7 @@ const POLL_MS = 3000;
 const POLL_MAX = 90;
 const STORE_KEY = "avelie.conversation";
 const TIMING_KEY = "bubbleTiming";
+const TASTING_KEY = "avelie.tasting.";
 const MAX_IMAGES = 3;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -18,6 +23,13 @@ const MAX_VOICE_MS = 60000;
 const MAX_VOICE_BYTES = 4 * 1024 * 1024;
 const MIN_VOICE_MS = 600;
 const DESC_CHARS = 60;
+// The Note sheet's kinds: label on screen, kind on the wire (the first maps to `ai`).
+const NOTE_KINDS = [
+  ["ai", "Not her voice"], ["clever", "Too clever"], ["not_her", "Not her"], ["too_long", "Too long"],
+  ["too_nice", "Too nice"], ["too_polished", "Too polished"], ["other", "Other"],
+];
+const MARK_CYCLE = { none: "keep", keep: "drop", drop: "none" };
+const MARK_LABEL = { none: "keep", keep: "kept", drop: "dropped" };
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -36,6 +48,7 @@ const els = {
   placeSet: $("placeSet"),
   placeCancel: $("placeCancel"),
   letHerStart: $("letHerStart"),
+  callBtn: $("callBtn"),
   photosBtn: $("photosBtn"),
   moreBtn: $("moreBtn"),
   moreMenu: $("moreMenu"),
@@ -46,6 +59,7 @@ const els = {
   composer: $("composer"),
   input: $("input"),
   sendBtn: $("sendBtn"),
+  tasteBtn: $("tasteBtn"),
   attachBtn: $("attachBtn"),
   fileInput: $("fileInput"),
   attachStrip: $("attachStrip"),
@@ -53,12 +67,21 @@ const els = {
   errorRow: $("errorRow"),
   errorChip: $("errorChip"),
   retryBtn: $("retryBtn"),
+  lockRow: $("lockRow"),
   photosDrawer: $("photosDrawer"),
   photosList: $("photosList"),
   photosClose: $("photosClose"),
   whyDrawer: $("whyDrawer"),
   whyBody: $("whyBody"),
   whyClose: $("whyClose"),
+  callSheet: $("callSheet"),
+  callStatus: $("callStatus"),
+  callTimer: $("callTimer"),
+  callCaptions: $("callCaptions"),
+  callReason: $("callReason"),
+  callMute: $("callMute"),
+  callEnd: $("callEnd"),
+  callAudio: $("callAudio"),
 };
 
 const state = {
@@ -85,6 +108,14 @@ const state = {
   lastStoryRole: null,
   cache: { state: null, life: null },
   rec: null,
+  // v3
+  settings: null,
+  corrections: new Map(),
+  marks: new Map(),
+  calls: new Map(),
+  chipsFor: new Map(),
+  tasting: null,
+  call: null,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -185,6 +216,7 @@ async function loadThread() {
   clear(els.thread);
   els.thread.append(els.typing);
   state.lastStoryRole = null;
+  setTasting(null);
   refreshTyping();
   updateStartButton();
   if (!id) return;
@@ -195,6 +227,8 @@ async function loadThread() {
       api("GET", "/api/conversations/" + encodeURIComponent(id) + "/messages" + query),
       api("GET", "/api/assets").catch(() => null),
       loadMedia(),
+      loadCorrections(),
+      loadCalls(id),
     ]);
     if (!alive(seq)) return;
     rows = Array.isArray(messages) ? messages : [];
@@ -206,16 +240,30 @@ async function loadThread() {
     if (alive(seq)) showError(e.code, false);
     return;
   }
+  // Call rows sit in the thread as one card per call, never as bubbles.
+  let group = null;
+  const flush = () => {
+    if (group) appendMessage(renderCallCard(group.callId, group.rows));
+    group = null;
+  };
   for (const m of rows) {
     if (m.channel === "story") state.lastStoryRole = m.role;
+    if (m.call_id && m.channel === "story") {
+      if (group && group.callId === m.call_id) group.rows.push(m);
+      else { flush(); group = { callId: m.call_id, rows: [m] }; }
+      continue;
+    }
+    flush();
     if (m.role === "assistant" && m.channel === "story" && futureIso(m.deliver_at)) {
       scheduleDelivery(m, seq);
     } else {
       appendMessage(renderMessage(m));
     }
   }
+  flush();
   updateStartButton();
   scrollBottom();
+  restoreTasting(id, seq);
 }
 
 // The library rows her media cards resolve against. Optional: a missing route hides nothing else.
@@ -226,6 +274,34 @@ async function loadMedia() {
     state.media = new Map(list.filter((x) => x && x.id).map((x) => [x.id, x]));
   } catch {
     /* library not available */
+  }
+}
+
+// The active corrections, by message: the "his version" line under her text.
+async function loadCorrections() {
+  try {
+    const r = await api("GET", "/api/corrections?status=active");
+    const list = Array.isArray(r) ? r : (r && (r.rows || r.corrections)) || [];
+    state.corrections = new Map();
+    for (const c of list) {
+      const mid = c && (c.message_id || c.messageId);
+      if (!mid) continue;
+      const prev = state.corrections.get(mid);
+      if (!prev || String(c.created_at || "") > String(prev.created_at || "")) state.corrections.set(mid, c);
+    }
+  } catch {
+    /* the ledger is optional for rendering */
+  }
+}
+
+// The calls of this conversation: their length for the card line.
+async function loadCalls(conversationId) {
+  try {
+    const r = await api("GET", "/api/calls?conversationId=" + encodeURIComponent(conversationId) + "&limit=200");
+    const list = Array.isArray(r) ? r : (r && (r.rows || r.calls)) || [];
+    state.calls = new Map(list.filter((c) => c && c.id).map((c) => [c.id, c]));
+  } catch {
+    /* no calls route: the card measures from its rows */
   }
 }
 
@@ -250,7 +326,7 @@ function noteRole(m) {
 }
 
 function updateStartButton() {
-  const show = !state.operator && state.lastStoryRole !== "user";
+  const show = !state.operator && state.lastStoryRole !== "user" && !state.tasting;
   els.letHerStart.classList.toggle("hidden", !show);
 }
 
@@ -288,6 +364,8 @@ function renderMessage(m, errorCode, error) {
     if (song) extras.append(song);
     const media = mediaCard(m);
     if (media) extras.append(media);
+    const version = hisVersion(m);
+    if (version) extras.append(version);
   }
   if (extras.childElementCount) el.append(extras);
   el.append(metaRow(m));
@@ -298,6 +376,10 @@ function metaRow(m) {
   const row = h("div", { class: "meta" }, h("span", { text: fmtTime(m.created_at) }));
   if (m.role === "assistant" && m.channel !== "operator" && m.id) {
     row.append(h("button", { type: "button", class: "why", text: "why", onclick: () => openWhy(m) }));
+    row.append(h("button", { type: "button", class: "note-btn", text: "note", onclick: () => toggleNoteSheet(m) }));
+    row.append(markButton(m));
+    const extra = state.chipsFor.get(m.id);
+    if (extra && extra.length) row.append(h("span", { class: "chips" }, extra));
     if (state.operator) {
       const codes = flagCodes(m.flags_json);
       if (codes.length) row.append(h("span", { class: "chips" }, codes.map((c) => chip(c, "flag"))));
@@ -359,6 +441,126 @@ function scrollBottom() {
   els.thread.scrollTop = els.thread.scrollHeight;
 }
 
+// ------------------------------------------------------------ notes, marks (v3 AA, II)
+
+// The "his version" line: the active correction's rewrite, muted, under her text.
+function hisVersion(m) {
+  const c = m.id ? state.corrections.get(m.id) : null;
+  const rewrite = c && typeof c.rewrite === "string" ? c.rewrite.trim() : "";
+  if (!rewrite) return null;
+  return h("div", { class: "his-version" }, h("span", { class: "who", text: "his version" }), rewrite);
+}
+
+function refreshHisVersion(m) {
+  const el = findMessageEl(m.id);
+  if (!el) return;
+  let extras = el.querySelector(".extras");
+  const old = extras ? extras.querySelector(".his-version") : null;
+  const fresh = hisVersion(m);
+  if (old) {
+    if (fresh) old.replaceWith(fresh);
+    else old.remove();
+  } else if (fresh) {
+    if (!extras) {
+      extras = h("div", { class: "extras" });
+      el.insertBefore(extras, el.querySelector(".meta"));
+    }
+    extras.append(fresh);
+  }
+  if (extras && !extras.childElementCount) extras.remove();
+}
+
+function toggleNoteSheet(m) {
+  const el = findMessageEl(m.id);
+  if (!el) return;
+  const open = el.querySelector(".note-sheet");
+  if (open) { open.remove(); return; }
+  el.append(noteSheet(m));
+  el.querySelector(".note-sheet textarea").focus();
+  el.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+}
+
+function noteSheet(m) {
+  let kind = null;
+  const slot = h("span", { class: "chips" });
+  const kinds = h("div", { class: "kinds", role: "group", "aria-label": "Kind" });
+  const kindButtons = NOTE_KINDS.map(([value, label]) => {
+    const b = h("button", { type: "button", text: label, "aria-pressed": "false" });
+    b.addEventListener("click", () => {
+      kind = value;
+      for (const k of kindButtons) k.setAttribute("aria-pressed", String(k === b));
+    });
+    return b;
+  });
+  kinds.append(...kindButtons);
+  const note = h("textarea", { placeholder: "Note", maxlength: "500", "aria-label": "Note" });
+  const rewrite = h("textarea", { placeholder: "How you would have said it", maxlength: "1000", "aria-label": "Rewrite" });
+  const toBankDefault = !(state.settings && state.settings.correctionRewriteToBank === false);
+  const toBank = h("input", { type: "checkbox", checked: toBankDefault });
+  const save = h("button", { type: "button", class: "btn small primary", text: "Save" });
+  const cancel = h("button", { type: "button", class: "btn small ghost", text: "Cancel", onclick: () => sheet.remove() });
+  save.addEventListener("click", async () => {
+    if (!kind) { clear(slot); slot.append(chip("kind", "danger")); return; }
+    const body = { messageId: m.id, kind };
+    const n = note.value.trim();
+    const r = rewrite.value.trim();
+    if (n) body.note = n;
+    if (r) { body.rewrite = r; body.toBank = toBank.checked; }
+    save.disabled = true;
+    try {
+      const row = await api("POST", "/api/corrections", body);
+      if (row && typeof row === "object") state.corrections.set(m.id, row);
+      sheet.remove();
+      refreshHisVersion(m);
+    } catch (e) {
+      save.disabled = false;
+      clear(slot);
+      slot.append(chip(e.code || "error", "danger"));
+    }
+  });
+  const sheet = h("div", { class: "note-sheet" },
+    kinds,
+    note,
+    rewrite,
+    h("div", { class: "row between" },
+      h("label", { class: "check" }, toBank, "Add to voice bank"),
+      h("span", { class: "row" }, slot, cancel, save)));
+  return sheet;
+}
+
+// Keep / Drop: one control cycling none, keep, drop. The row's own `mark` (when the API
+// carries it) seeds the state; otherwise this page remembers what it set.
+function markOf(m) {
+  if (state.marks.has(m.id)) return state.marks.get(m.id);
+  const raw = m.mark && typeof m.mark === "object" ? m.mark.mark : m.mark;
+  return raw === "keep" || raw === "drop" ? raw : "none";
+}
+
+function markButton(m) {
+  const btn = h("button", { type: "button", class: "mark" });
+  const paint = (mark) => {
+    btn.textContent = MARK_LABEL[mark];
+    btn.className = "mark" + (mark === "none" ? "" : " " + mark);
+    btn.setAttribute("aria-label", mark === "none" ? "Keep" : mark === "keep" ? "Kept" : "Dropped");
+  };
+  paint(markOf(m));
+  btn.addEventListener("click", async () => {
+    const next = MARK_CYCLE[markOf(m)];
+    btn.disabled = true;
+    try {
+      if (next === "none") await api("DELETE", "/api/messages/" + encodeURIComponent(m.id) + "/mark");
+      else await api("POST", "/api/messages/" + encodeURIComponent(m.id) + "/mark", { mark: next });
+      state.marks.set(m.id, next);
+      paint(next);
+    } catch (e) {
+      showError(e.code || "error", false);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  return btn;
+}
+
 // ------------------------------------------------------------ timing
 
 function refreshTyping() {
@@ -385,7 +587,7 @@ async function quiet(ms, seq) {
 async function arrive(m, seq) {
   if (!m || !m.id || findMessageEl(m.id)) return;
   const el = renderMessage(m);
-  const instant = state.timing === "instant" || m.role === "user" || m.channel === "operator";
+  const instant = state.timing === "instant" || m.role === "user" || m.channel === "operator" || !!m.call_id;
   if (instant) {
     appendMessage(el);
     scrollBottom();
@@ -460,11 +662,240 @@ function handleTurnResponse(r, id) {
   }
   const a = r.assistantMessage;
   if (a) {
+    // A tasting that voided itself came back as a plain reply; say so on the message.
+    if (a.id && flagCodes(r.flags).includes("tasting_void")) state.chipsFor.set(a.id, [chip("tasting void", "amber")]);
     const deliverAt = a.deliver_at || a.deliverAt || r.deliverAt || null;
     if (futureIso(deliverAt)) scheduleDelivery({ ...a, deliver_at: deliverAt }, seq);
     else arrive(a, seq);
   }
   scrollBottom();
+}
+
+// ------------------------------------------------------------ tastings (v3 HH)
+
+function isTastingResponse(r) {
+  return !!(r && typeof r === "object" && r.tastingId && Array.isArray(r.candidates));
+}
+
+function tastingStoreKey(conversationId) {
+  return TASTING_KEY + conversationId;
+}
+
+function setTasting(t) {
+  state.tasting = t;
+  els.composer.classList.toggle("locked", !!t);
+  els.lockRow.classList.toggle("hidden", !t);
+  els.input.disabled = !!t;
+  updateSendState();
+  updateStartButton();
+}
+
+function candidateList(t) {
+  const list = Array.isArray(t.candidates) ? t.candidates : [];
+  const order = { left: 0, right: 1 };
+  return list.slice().sort((a, b) => (order[a.side] ?? 2) - (order[b.side] ?? 2));
+}
+
+// Two panels, Left and Right, blind. The bubbles land with human timing in both at once.
+function renderTasting(t, userMessage) {
+  const seq = state.loadSeq;
+  const conversationId = state.currentId;
+  if (userMessage) {
+    appendMessage(renderMessage(userMessage));
+    noteRole(userMessage);
+  }
+  const wrap = h("div", { class: "msg hers tasting", "data-id": "tasting:" + t.tastingId });
+  const panels = h("div", { class: "tasting-panels" });
+  const buttons = [];
+  const slot = h("span", { class: "chips" });
+  const lock = (on) => { for (const b of buttons) b.disabled = on; };
+  const panelFor = (c) => {
+    const bubbles = h("div", { class: "bubbles" });
+    const parts = splitBubbles(c.text);
+    for (const p of parts.length ? parts : [String(c.text || "")]) bubbles.append(bubbleEl(p));
+    const choose = h("button", { type: "button", class: "btn small primary", text: "This one", disabled: true, onclick: () => pick(c.side) });
+    buttons.push(choose);
+    const extras = [];
+    if (c.photo) extras.push(chip("photo"));
+    if (c.song && typeof c.song === "object" && c.song.title) extras.push(chip("song: " + String(c.song.title).slice(0, 40)));
+    if (state.operator) for (const code of flagCodes(c.flags)) extras.push(chip(code, "flag"));
+    return h("div", { class: "tasting-panel", "data-side": c.side },
+      h("span", { class: "side", text: c.side === "left" ? "Left" : "Right" }),
+      bubbles,
+      extras.length ? h("div", { class: "chips" }, extras) : null,
+      h("div", { class: "row" }, choose));
+  };
+  for (const c of candidateList(t)) panels.append(panelFor(c));
+  const neither = h("button", { type: "button", class: "btn small ghost", text: "Neither", disabled: true, onclick: () => pick("neither") });
+  buttons.push(neither);
+  wrap.append(panels, h("div", { class: "tasting-foot" }, neither, t.expiresAt ? chip("until " + fmtTime(t.expiresAt)) : null, slot));
+  appendMessage(wrap);
+  scrollBottom();
+  revealPanels(wrap, seq).then(() => { if (alive(seq)) lock(false); });
+
+  async function pick(choice) {
+    lock(true);
+    clear(slot);
+    let r;
+    try {
+      r = await api("POST", "/api/tastings/" + encodeURIComponent(t.tastingId) + "/pick", { pick: choice });
+    } catch (e) {
+      slot.append(chip(e.code || "error", "danger"));
+      if (e.status === 409 || e.status === 404) finishTasting(conversationId, wrap, null);
+      else lock(false);
+      return;
+    }
+    if (choice === "neither") {
+      finishTasting(conversationId, wrap, null);
+      offerRetry(conversationId, t);
+      return;
+    }
+    const info = r && r.tasting && typeof r.tasting === "object" ? r.tasting : {};
+    const winner = info[choice] && typeof info[choice] === "object" ? info[choice] : null;
+    for (const p of wrap.querySelectorAll(".tasting-panel")) {
+      p.classList.toggle("chosen", p.dataset.side === choice);
+      p.classList.toggle("lost", p.dataset.side !== choice);
+    }
+    await sleep(reducedMotion() ? 0 : 450);
+    const a = r && r.assistantMessage && typeof r.assistantMessage === "object" ? r.assistantMessage : null;
+    if (a && a.id && winner) state.chipsFor.set(a.id, [chip(String(winner.provider || "") + " " + String(winner.model || ""), "accent")]);
+    finishTasting(conversationId, wrap, a);
+    touchConversation(conversationId);
+  }
+}
+
+// Both panels at once, each bubble after its own delay; instant timing shows them whole.
+async function revealPanels(wrap, seq) {
+  const instant = state.timing === "instant";
+  const jobs = [];
+  for (const panel of wrap.querySelectorAll(".tasting-panel")) {
+    const bubbles = [...panel.querySelectorAll(".bubble")];
+    if (instant) continue;
+    for (const b of bubbles) b.classList.add("hidden");
+    jobs.push((async () => {
+      for (const b of bubbles) {
+        await sleep(bubbleDelayMs(b.textContent));
+        if (!alive(seq)) return;
+        b.classList.remove("hidden");
+        b.classList.add("enter");
+        scrollBottom();
+      }
+    })());
+  }
+  await Promise.all(jobs);
+}
+
+function finishTasting(conversationId, wrap, assistantMessage) {
+  storeSet(tastingStoreKey(conversationId), null);
+  if (state.currentId === conversationId) setTasting(null);
+  wrap.remove();
+  if (assistantMessage && state.currentId === conversationId) {
+    appendMessage(renderMessage(assistantMessage));
+    noteRole(assistantMessage);
+    scrollBottom();
+  }
+}
+
+// After Neither the user message stays with no reply; Retry (the same key) runs a plain turn.
+function offerRetry(conversationId, t) {
+  if (state.currentId !== conversationId) return;
+  const text = typeof t.text === "string" ? t.text : "";
+  if (t.key && text) {
+    state.pending = { key: t.key, conversationId, text };
+    els.input.value = text;
+    grow();
+  }
+  showError("neither", !!(t.key && text));
+}
+
+// A pending tasting survives a reload: its id, key and text are kept per conversation.
+async function restoreTasting(conversationId, seq) {
+  const raw = storeGet(tastingStoreKey(conversationId));
+  if (!raw) return;
+  let saved = null;
+  try { saved = JSON.parse(raw); } catch { saved = null; }
+  if (!saved || !saved.id) { storeSet(tastingStoreKey(conversationId), null); return; }
+  let t = null;
+  try { t = await api("GET", "/api/tastings/" + encodeURIComponent(saved.id)); } catch { t = null; }
+  if (!alive(seq)) return;
+  const row = t && t.tasting && typeof t.tasting === "object" ? { ...t.tasting, candidates: t.candidates || t.tasting.candidates } : t;
+  if (!row || row.status !== "pending" || !Array.isArray(row.candidates)) {
+    storeSet(tastingStoreKey(conversationId), null);
+    return;
+  }
+  const shaped = { tastingId: saved.id, candidates: row.candidates, expiresAt: row.expiresAt || row.expires_at || null, key: saved.key, text: saved.text };
+  setTasting(shaped);
+  renderTasting(shaped, null);
+}
+
+// ------------------------------------------------------------ calls (v3 EE)
+
+function callVisible() {
+  const p = state.settings ? state.settings.callProvider : null;
+  return typeof p === "string" && p !== "off" && p !== "elevenlabs";
+}
+
+function renderCallCard(callId, rows) {
+  const first = rows[0] || {};
+  const last = rows[rows.length - 1] || first;
+  const call = state.calls.get(callId);
+  let seconds = call && Number.isFinite(Number(call.seconds)) ? Number(call.seconds) : NaN;
+  if (!Number.isFinite(seconds)) seconds = Math.max(0, (Date.parse(last.created_at || "") - Date.parse(first.created_at || "")) / 1000);
+  const label = "Call, " + fmtDuration(seconds) + ", " + fmtTime(call && call.started_at ? call.started_at : first.created_at);
+  const list = h("div", { class: "rows hidden" });
+  for (const m of rows) {
+    const who = m.role === "user" ? "him" : "her";
+    const cap = h("div", { class: "cap " + who });
+    const w = h("span", { class: "who", text: who === "him" ? "you" : "her" });
+    if (who === "him") cap.append(document.createTextNode(m.content || ""), w);
+    else cap.append(w, document.createTextNode(m.content || ""));
+    list.append(cap);
+  }
+  if (!rows.length) list.append(h("div", { class: "chips" }, chip("no words")));
+  const line = h("button", { type: "button", class: "call-line", "aria-expanded": "false" }, svgIcon("phone"), document.createTextNode(label));
+  line.addEventListener("click", () => {
+    const open = list.classList.contains("hidden");
+    list.classList.toggle("hidden", !open);
+    line.setAttribute("aria-expanded", String(open));
+  });
+  return h("div", { class: "call-card", "data-id": "call:" + callId }, line, list);
+}
+
+async function startCall() {
+  if (state.call && state.call.live) return;
+  if (state.inFlight || state.arriving) return;
+  let id;
+  try {
+    id = await ensureConversation();
+  } catch (e) {
+    showError(e.code || "error", false);
+    return;
+  }
+  hideError();
+  const call = createCall({
+    conversationId: id,
+    els: { sheet: els.callSheet, status: els.callStatus, timer: els.callTimer, captions: els.callCaptions, reason: els.callReason, mute: els.callMute, end: els.callEnd, audio: els.callAudio },
+    onEnd: () => {
+      state.call = null;
+      els.callBtn.classList.remove("calling");
+      els.callBtn.setAttribute("aria-pressed", "false");
+      updateSendState();
+      if (state.currentId === id) loadThread();
+    },
+  });
+  state.call = call;
+  els.callBtn.classList.add("calling");
+  els.callBtn.setAttribute("aria-pressed", "true");
+  updateSendState();
+  try {
+    await call.start();
+  } catch (e) {
+    state.call = null;
+    els.callBtn.classList.remove("calling");
+    els.callBtn.setAttribute("aria-pressed", "false");
+    updateSendState();
+    showError(e.code || "error", false);
+  }
 }
 
 // ------------------------------------------------------------ photos
@@ -657,12 +1088,17 @@ function grow() {
 }
 
 function updateSendState() {
-  const busy = state.inFlight || state.arriving > 0;
+  const busy = state.inFlight || state.arriving > 0 || !!state.tasting;
+  const onCall = !!(state.call && !state.call.ended);
   els.sendBtn.disabled = busy;
   els.retryBtn.disabled = busy;
-  els.letHerStart.disabled = busy;
+  els.letHerStart.disabled = busy || onCall;
   els.micBtn.disabled = busy || state.operator;
   els.attachBtn.disabled = busy || state.operator;
+  els.tasteBtn.disabled = busy || state.operator;
+  els.tasteBtn.classList.toggle("hidden", !(state.settings && state.settings.tastingEnabled === true) || state.operator);
+  els.callBtn.classList.toggle("hidden", !callVisible() || state.operator);
+  els.callBtn.disabled = onCall ? false : (state.inFlight || state.arriving > 0);
 }
 
 function setInFlight(on) {
@@ -690,9 +1126,10 @@ function pendingFor(conversationId, text) {
   return { key: crypto.randomUUID(), conversationId, text };
 }
 
-async function send() {
+async function send(opts) {
+  const tasting = !!(opts && opts.tasting);
   const text = els.input.value.trim();
-  if (!text || state.inFlight || state.arriving) return;
+  if (!text || state.inFlight || state.arriving || state.tasting) return;
   setInFlight(true);
   hideError();
   try {
@@ -715,26 +1152,38 @@ async function send() {
           const fd = new FormData();
           fd.append("content", text);
           fd.append("idempotencyKey", pending.key);
+          if (tasting) fd.append("tasting", "true");
           for (const f of state.attachments) fd.append("image", f, f.name || "image");
           r = await apiForm("POST", path, fd);
         } else {
-          r = await api("POST", path, { content: text, idempotencyKey: pending.key });
+          const body = { content: text, idempotencyKey: pending.key };
+          if (tasting) body.tasting = true;
+          r = await api("POST", path, body);
         }
       } catch (e) {
         // A key the server already tied to something else can never succeed again.
-        if (e.status === 409) state.pending = null;
+        if (e.status === 409 && e.code !== "tasting_pending") state.pending = null;
         throw e;
       }
       state.pending = null;
       state.attachments = [];
       renderAttachments();
-      handleTurnResponse(r, id);
+      if (isTastingResponse(r)) {
+        if (state.currentId === id) {
+          const shaped = { ...r, key: pending.key, text };
+          storeSet(tastingStoreKey(id), JSON.stringify({ id: r.tastingId, key: pending.key, text }));
+          setTasting(shaped);
+          renderTasting(shaped, r.userMessage || null);
+        }
+      } else {
+        handleTurnResponse(r, id);
+      }
     }
     touchConversation(id);
     els.input.value = "";
     grow();
   } catch (e) {
-    showError(e.code || "error", true);
+    showError(e.code || "error", e.code !== "tasting_pending");
   } finally {
     setInFlight(false);
     els.input.focus();
@@ -743,7 +1192,7 @@ async function send() {
 
 // She opens: a turn with no message from him.
 async function letHerStart() {
-  if (state.inFlight || state.arriving) return;
+  if (state.inFlight || state.arriving || state.tasting) return;
   setInFlight(true);
   hideError();
   try {
@@ -813,7 +1262,7 @@ function initMic() {
 }
 
 async function startRecording() {
-  if (state.rec || state.inFlight || state.operator) return;
+  if (state.rec || state.inFlight || state.operator || state.tasting) return;
   const rec = { stream: null, recorder: null, chunks: [], startedAt: Date.now(), released: false, timer: null };
   state.rec = rec;
   els.micBtn.classList.add("recording");
@@ -873,7 +1322,7 @@ function resetRecording(rec) {
 }
 
 async function sendVoice(blob, mime) {
-  if (state.inFlight) return;
+  if (state.inFlight || state.tasting) return;
   setInFlight(true);
   hideError();
   try {
@@ -892,7 +1341,7 @@ async function sendVoice(blob, mime) {
   }
 }
 
-// ------------------------------------------------------------ scene
+// ------------------------------------------------------------ scene, settings
 
 async function loadScene() {
   try {
@@ -926,6 +1375,18 @@ async function setScene(status, location) {
     els.sceneApart.disabled = false;
     renderScene();
   }
+}
+
+// What the page shows depends on a few settings: the Call button, the Taste button,
+// the Note sheet's bank checkbox.
+async function loadSettings() {
+  try {
+    const s = await api("GET", "/api/settings");
+    state.settings = s && typeof s === "object" ? s : null;
+  } catch {
+    state.settings = null;
+  }
+  updateSendState();
 }
 
 async function loadLife() {
@@ -1115,7 +1576,7 @@ async function openWhy(m) {
   const used = new Set();
   const take = (k) => { used.add(k); return ctx[k]; };
   const runRows = [];
-  for (const [label, key] of [["Prompt", "promptVersion"], ["Provider", "provider"], ["Model", "model"], ["Recent messages", "recentMessageCount"]]) {
+  for (const [label, key] of [["Prompt", "promptVersion"], ["Provider", "provider"], ["Model", "model"], ["Recent messages", "recentMessageCount"], ["Shape", "shapeCue"], ["Signature", "signature"]]) {
     const v = take(key);
     if (v !== undefined && v !== null && v !== "") runRows.push(h("span", { class: "k", text: label }), h("span", { class: "v", text: String(v) }));
   }
@@ -1151,6 +1612,16 @@ async function openWhy(m) {
 
   els.whyBody.append(whySection("Unknowns", asList(take("unknownIds")).map((x) => whyRow(labelOf(x, unknownById)))));
 
+  const tasting = take("tasting");
+  if (tasting && typeof tasting === "object") {
+    const rows = [];
+    for (const k of ["winner", "loser"]) {
+      const p = tasting[k];
+      if (p && typeof p === "object") rows.push(whyRow(k + ": " + String(p.provider || "") + " " + String(p.model || "")));
+    }
+    els.whyBody.append(whySection("Tasting", rows));
+  }
+
   const flags = flagCodes(take("flags"));
   if (flags.length) els.whyBody.append(h("div", { class: "why-section" }, h("h3", { text: "Flags" }), h("div", { class: "chips" }, flags.map((f) => chip(f, "flag")))));
 
@@ -1181,6 +1652,14 @@ els.input.addEventListener("input", () => {
   if (state.pending && els.input.value.trim() !== state.pending.text) state.pending = null;
 });
 els.retryBtn.addEventListener("click", () => send());
+els.tasteBtn.addEventListener("click", () => send({ tasting: true }));
+els.callBtn.addEventListener("click", startCall);
+els.callMute.addEventListener("click", () => {
+  if (!state.call) return;
+  const on = els.callMute.getAttribute("aria-pressed") !== "true";
+  state.call.mute(on);
+});
+els.callEnd.addEventListener("click", () => { if (state.call) state.call.end("hangup"); });
 els.newChat.addEventListener("click", newChat);
 els.openDrawer.addEventListener("click", openSidebar);
 els.closeDrawer.addEventListener("click", closeSidebar);
@@ -1230,7 +1709,7 @@ async function init() {
   } catch {
     /* the gate answers before this page loads; nothing to register */
   }
-  await Promise.all([loadConversations(), loadScene()]);
+  await Promise.all([loadConversations(), loadScene(), loadSettings()]);
   const stored = storeGet(STORE_KEY);
   const pick = state.conversations.find((c) => c.id === stored) || state.conversations[0];
   if (pick) await select(pick.id);

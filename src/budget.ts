@@ -4,6 +4,10 @@
 // A model with no price is never called: an unpriced model would meter at $0, so no cap
 // could ever trip. The estimate refuses it (402 price_unknown) before anything is spent,
 // and assertBudget refuses an estimate that is not a finite number for the same reason.
+//
+// v3: priceUsage prices a realtime call's cumulative usage (SPEC_V3 EE, the "priced" side
+// of max(metered, priced)), and assertTastingBudget bounds the day's tastings by their
+// own cap on top of the normal caps (SPEC_V3 HH).
 import { DEFAULT_SETTINGS, dayKey, monthKey, spendMicro, usageByDay } from "./db";
 import { ApiHttpError } from "./errors";
 import type { Settings } from "./types";
@@ -92,6 +96,18 @@ export async function assertBudget(db: D1Database, settings: Settings, estimateU
   if (monthMicro + estimateMicro > monthlyMicro) throw exceeded("monthly", monthMicro, estimateMicro, monthlyMicro);
 }
 
+// The day's and the month's spend against the caps, for callers that meter after the
+// fact (a call's tick): { todayMicro, monthMicro, dailyMicro, monthlyMicro }.
+export async function spendAgainstCaps(db: D1Database, settings: Settings): Promise<{ todayMicro: number; monthMicro: number; dailyMicro: number; monthlyMicro: number }> {
+  const [todayMicro, monthMicro] = await Promise.all([spendMicro(db, dayKey()), spendMicro(db, monthStart())]);
+  return {
+    todayMicro,
+    monthMicro,
+    dailyMicro: Math.max(0, Math.round(capUsd(settings, "dailyCapUsd") * MICRO)),
+    monthlyMicro: Math.max(0, Math.round(capUsd(settings, "monthlyCapUsd") * MICRO)),
+  };
+}
+
 export async function usageSummary(db: D1Database, settings: Settings): Promise<{
   todayUsd: number;
   monthUsd: number;
@@ -115,4 +131,81 @@ export async function usageSummary(db: D1Database, settings: Settings): Promise<
       costUsd: r.cost_usd_micro / MICRO,
     })),
   };
+}
+
+// ------------------------------------------------------------------ v3: calls (SPEC_V3 EE)
+
+// Token counts the page accumulates from the session's response.done events, cumulative
+// for the call so far. Cached text tokens count as textIn: the meter takes no discount.
+export interface CallUsage {
+  audioIn: number;
+  audioOut: number;
+  textIn: number;
+  textOut: number;
+}
+
+// USD per million tokens, one price per token class (settings.callPrices).
+export interface CallPrices {
+  audioInPerMTok: number;
+  audioOutPerMTok: number;
+  textInPerMTok: number;
+  textOutPerMTok: number;
+}
+
+export const DEFAULT_CALL_PRICES: CallPrices = { audioInPerMTok: 32, audioOutPerMTok: 64, textInPerMTok: 4, textOutPerMTok: 16 };
+
+function nonNegative(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+// The call prices as stored, each 0..100000 with the defaults for anything missing.
+export function callPricesOf(settings: Settings): CallPrices {
+  const raw = (settings as unknown as Record<string, unknown>).callPrices;
+  const o = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const pick = (k: keyof CallPrices): number => (typeof o[k] === "number" && Number.isFinite(o[k] as number) ? Math.min(100000, Math.max(0, o[k] as number)) : DEFAULT_CALL_PRICES[k]);
+  return { audioInPerMTok: pick("audioInPerMTok"), audioOutPerMTok: pick("audioOutPerMTok"), textInPerMTok: pick("textInPerMTok"), textOutPerMTok: pick("textOutPerMTok") };
+}
+
+// Cumulative usage priced at list, in micro-USD (tokens x USD per million is already
+// micro-USD), rounded up. Negative or missing counts read as 0.
+export function priceUsage(usage: CallUsage | null | undefined, prices: CallPrices): number {
+  if (!usage) return 0;
+  const micro =
+    nonNegative(usage.audioIn) * prices.audioInPerMTok +
+    nonNegative(usage.audioOut) * prices.audioOutPerMTok +
+    nonNegative(usage.textIn) * prices.textInPerMTok +
+    nonNegative(usage.textOut) * prices.textOutPerMTok;
+  return Math.ceil(micro);
+}
+
+// ------------------------------------------------------------------ v3: tastings (SPEC_V3 HH)
+
+const DEFAULT_TASTING_DAILY_CAP_USD = 1;
+
+// The tastings cap as stored (0..1000), the spec default when missing.
+export function tastingDailyCapUsd(settings: Settings): number {
+  const v = (settings as unknown as Record<string, unknown>).tastingDailyCapUsd;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : DEFAULT_TASTING_DAILY_CAP_USD;
+}
+
+// The UTC day's tastings so far (the sum of tastings.cost_usd_micro since midnight).
+export async function tastingSpendMicro(db: D1Database, day = dayKey()): Promise<number> {
+  const r = await db.prepare("SELECT COALESCE(SUM(cost_usd_micro), 0) AS s FROM tastings WHERE created_at >= ?1").bind(day).first<{ s: number }>();
+  return Number(r?.s ?? 0);
+}
+
+// The tasting cap bounds the day's tastings on top of the normal caps (which see the
+// double spend through usage_daily). 402 tasting_budget_exceeded; nothing is written.
+export async function assertTastingBudget(db: D1Database, settings: Settings, estimateUsdValue: number): Promise<void> {
+  if (typeof estimateUsdValue !== "number" || !Number.isFinite(estimateUsdValue) || estimateUsdValue < 0) {
+    throw new ApiHttpError(402, "price_unknown", "the tasting has no usable cost estimate; check both performers' prices on the Model page", false);
+  }
+  const cap = tastingDailyCapUsd(settings);
+  const capMicro = Math.max(0, Math.round(cap * MICRO));
+  const estimateMicro = Math.round(estimateUsdValue * MICRO);
+  const fail = (spent: number): ApiHttpError =>
+    new ApiHttpError(402, "tasting_budget_exceeded", "tasting budget exceeded", false, `today's tastings ${usd(spent)} + estimate ${usd(estimateMicro)} exceeds the tasting cap ${usd(capMicro)}`);
+  if (cap <= 0) throw fail(0);
+  const spent = await tastingSpendMicro(db);
+  if (spent + estimateMicro > capMicro) throw fail(spent);
 }

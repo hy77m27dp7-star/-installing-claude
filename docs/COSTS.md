@@ -14,6 +14,8 @@ Text is billed by token. The app multiplies the tokens each call reports by the 
 | claude-opus-4-8 | 5.00 | 25.00 |
 | claude-fable-5-1 | 10.00 | 50.00 |
 | @cf/meta/llama-3.3-70b-instruct-fp8-fast (Workers AI fallback, DEPLOY.md section 8) | 0.29 | 2.25 |
+| gpt-4.1 (the default tasting performer, v3) | 2.00 | 8.00 |
+| gpt-4.1-mini, gpt-4.1-mini-2025-04-14 (the texter base, v3) | 0.40 | 1.60 |
 
 The last row is Cloudflare's list price as of the build and is nominal until confirmed on the Workers AI pricing page; correct it in the Prices section of the Model page if it moved. The built-in table sits under the stored one: a price you set on the page wins, and a model priced in the built-in table stays priced on a database seeded before that entry existed.
 
@@ -60,3 +62,19 @@ Forty turns on claude-opus-5, each about 9,000 input tokens (the constitution pr
 That day fits under the 3 USD daily cap with a little room for one or two retries. Thirty such days reach the 30 USD monthly cap on about day 13, so if that is a normal month for you, raise the monthly cap on the Model page.
 
 Prompt caching on the stable prefix makes repeat turns cheaper than this: cache reads are billed at a fraction of the input price (about a tenth on the published rate card; confirm in the Anthropic console). The constitution prefix is byte-identical every turn and is sent with a cache breakpoint, so after the first turn most of those 9,000 tokens are cache reads as long as turns come within the cache lifetime (five minutes by default; a longer pause writes the cache again at a small premium). The meter does not apply that discount: it counts cached input at full price on purpose, so the number on the Model page is a ceiling and the Anthropic invoice is the floor. Check the invoice after the first real week and set the caps from what you see.
+
+## v3: the two-block cache and what it changes in the arithmetic
+
+The system prompt is about 12,000 tokens: roughly 10,000 of stable prefix and 2,000 of per-turn state. Before v3 the whole prompt went as one cached block with the breakpoint after the state, so any change in the state missed the whole prompt; at 5.00 per million that is about 0.06 USD a turn uncached, and the 3 USD daily cap is about 45 such turns. v3 changes the state every turn by design (the exemplars, the RIGHT NOW clock, the cue), so the Anthropic adapter now sends two blocks: the prefix with the cache breakpoint, the state without. The prefix is byte-identical every turn and on a retry; only the state (about 2,000 tokens) is read at full price. The meter still counts every input token at full price on purpose, so the number on the Model page stays a ceiling and the invoice the floor.
+
+## v3: calls, from the real usage with a per-minute floor
+
+A call is metered every 30 seconds. The page reports the session's cumulative token counts; the Worker prices them at `callPrices` (32 / 64 per million audio tokens in and out, 4 / 16 for text, list prices to confirm) and takes the larger of that and `secondsTotal / 60 x callPricePerMinute` (0.30 a minute, the floor). The difference from the previous tick is written to `usage_daily`, never negative, so the usual caps see the call grow tick by tick and stop it within one tick of a cap. To start, two minutes at the floor must fit under both caps. A 20-minute call is therefore at least 6.00 USD on the meter, more when the audio runs heavy: raise the daily cap for the day before a long call. Compact instructions (about 3,000 tokens of rules plus the state) are the default because the realtime session bills the whole instruction text on every response and a conversational call is several hundred responses; full mode roughly doubles the text part.
+
+## v3: portraits, clips, tastings and the texter
+
+- A portrait costs `portraitCostUsd` (0.04) per face, checked against both caps before the call, like a photo.
+- A clip costs `videoCostUsd` (0.25) per five seconds on his Runway account (gen4_turbo at five credits a second, one cent a credit, fetched at the build), charged at start because Runway charges when the task runs; a failed task stays charged, honestly. There is no key today, so this line is 0.
+- A tasting turn spends double: both drafts and their retries are metered under their own performer, and `tastingDailyCapUsd` (1.00 a day) bounds the sum of the tasting rows on top of the normal caps. A day of twenty tastings on Opus 5 against gpt-4.1 is about 20 x (0.06 + 0.02) uncached; the two-block cache brings the Opus side down.
+- The texter: exports and marks are free; training runs on his own OpenAI account from the Mac (the script estimates it: tokens x epochs x the training price per million, about 5.00 for gpt-4.1-mini, confirm) and never through the app; inference on the fine-tuned model is metered through `settings.prices` like any model (add its two prices in the panel when pressing Use; the fine-tuned mini is about 0.80 in and 3.20 out, confirm).
+- Weather, geocoding and the maintenance pass are free.

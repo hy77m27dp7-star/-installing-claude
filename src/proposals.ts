@@ -9,7 +9,13 @@ import {
   listRecentStoryMessages, newId, nowIso, usageStmt,
 } from "./db";
 import { createFact, createHistory, createUnknown, putState, updateFact } from "./state";
-import { createThread } from "./life";
+import { createThread, listThreads, logLife, updateThread } from "./life";
+// v3 (SPEC_V3): the weight a proposal carries (BB), wants and asks (CC), grounding rows (DD).
+import { putWeight } from "./memory";
+import { createAsk, createWant, findAsk, findWant, logWant, updateAsk } from "./wants";
+import { createGroundingRow } from "./grounding";
+import type { GroundingKind } from "./grounding";
+import type { WantLogKind } from "./wants";
 import { ApiHttpError } from "./errors";
 import { ProviderError } from "./types";
 import type {
@@ -19,7 +25,17 @@ import type { LifeThread } from "./life";
 
 export const PROPOSAL_KINDS: ProposalKind[] = [
   "avelie_fact", "justin_fact", "relationship", "scene", "history", "private_language", "opinion_change", "unknown", "life",
+  // v3
+  "want", "want_update", "ask", "ask_update", "grounding", "life_update",
 ];
+// v3 (BB): the weight an element may carry, "how much this mattered" (0.1 passing, 1 a loss,
+// a love, a fear). Absent = the entity's default, written by nobody.
+const WEIGHT_MIN = 0.1;
+const WEIGHT_MAX = 1;
+const WANT_LOG_KINDS = ["progress", "setback", "note"] as const;
+const GROUNDING_KINDS = ["meal", "outfit", "errand", "misc"] as const;
+const MOOD_DAYS_MIN = 1;
+const MOOD_DAYS_MAX = 14;
 const CONFIDENCES = ["low", "medium", "high"] as const;
 const MAX_PROPOSALS_PER_EXCHANGE = 12;
 const MAX_PROPOSAL_CHARS = 1000;
@@ -39,7 +55,13 @@ export interface ParsedProposal {
   confidence: "low" | "medium" | "high";
   scope: string;
   // v2: structured fields for life, relationship (mood, cooling_off_hours) and opinion_change (subject).
+  // v3: want { title, why?, stakes?, next_step?, horizon_days? }; want_update { want: title or id,
+  // kind: progress|setback|note, delta?, note }; ask { text, want?: title }; ask_update { ask: text
+  // or id, status: granted|declined }; grounding { kind, note, occurred? }; life_update { thread:
+  // title or id, detail?, note? }; relationship gains mood_days (1..14).
   payload?: Record<string, unknown>;
+  // v3 (BB): how much this mattered, 0.1 to 1; absent when the element carried none.
+  weight?: number;
 }
 
 function isKind(v: unknown): v is ProposalKind {
@@ -52,6 +74,14 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 function normText(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// The weight an element carried, clipped to 0.1..1; anything that is not a finite number
+// (or a numeric string) is no weight.
+export function parseWeight(v: unknown): number | undefined {
+  const n = typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v) : NaN;
+  if (!Number.isFinite(n)) return undefined;
+  return Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, n));
 }
 
 // The payload an element carried, when it is a plain object of reasonable size.
@@ -97,6 +127,8 @@ export function parseProposalJson(text: string): ParsedProposal[] {
     const parsed: ParsedProposal = { kind: o.kind, proposal, evidence, confidence, scope };
     const payload = parsePayload(o.payload);
     if (payload) parsed.payload = payload;
+    const weight = parseWeight(o.weight);
+    if (weight !== undefined) parsed.weight = weight;
     out.push(parsed);
     if (out.length >= MAX_PROPOSALS_PER_EXCHANGE) break;
   }
@@ -245,6 +277,7 @@ export async function extractProposals(
         user_message_id: userMessage ? userMessage.id : null,
         assistant_message_id: assistantMessage.id,
         payload: c.payload ?? null,
+        weight: c.weight ?? null,
         raw: c,
       }),
       status: "pending",
@@ -311,6 +344,37 @@ export function proposalPayload(p: ProposalRow): Record<string, unknown> {
   return {};
 }
 
+// The weight a proposal carried (payload_json.weight, or raw.weight), or undefined.
+export function proposalWeight(p: ProposalRow): number | undefined {
+  if (!p.payload_json) return undefined;
+  let outer: unknown;
+  try {
+    outer = JSON.parse(p.payload_json);
+  } catch {
+    return undefined;
+  }
+  if (!isPlainObject(outer)) return undefined;
+  const direct = parseWeight(outer.weight);
+  if (direct !== undefined) return direct;
+  if (isPlainObject(outer.raw)) return parseWeight((outer.raw as Record<string, unknown>).weight);
+  return undefined;
+}
+
+// The message ids the proposal was extracted from (payload_json.user_message_id and
+// assistant_message_id); null when the row predates the copy.
+function proposalMessageIds(p: ProposalRow): { userMessageId: string | null; assistantMessageId: string | null } {
+  if (!p.payload_json) return { userMessageId: null, assistantMessageId: p.message_id };
+  try {
+    const outer: unknown = JSON.parse(p.payload_json);
+    if (!isPlainObject(outer)) return { userMessageId: null, assistantMessageId: p.message_id };
+    const u = outer.user_message_id;
+    const a = outer.assistant_message_id;
+    return { userMessageId: typeof u === "string" ? u : null, assistantMessageId: typeof a === "string" ? a : p.message_id };
+  } catch {
+    return { userMessageId: null, assistantMessageId: p.message_id };
+  }
+}
+
 // "opinion: <topic>", normalised, so two proposals about the same thing meet the same subject.
 export function opinionSubject(payload: Record<string, unknown>, text: string): string {
   const raw = str(payload.subject, 200) ?? str(payload.topic, 200) ?? "";
@@ -343,12 +407,19 @@ function lifeInput(payload: Record<string, unknown>, text: string, source: strin
   return { kind, title, detail, schedule_json: scheduleJson, relation: str(payload.relation, 200), source };
 }
 
-// mood and cooling_off_hours from a relationship payload (SPEC_V2 section J). A missing
-// field leaves the current value alone; cooling_off_hours 0 ends a cooling-off.
-function relationshipMood(payload: Record<string, unknown>, now: Date): { mood?: string; cooling_off_until?: string | null } {
-  const out: { mood?: string; cooling_off_until?: string | null } = {};
+function num(v: unknown): number {
+  return typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v) : NaN;
+}
+
+// mood, mood_days (v3) and cooling_off_hours from a relationship payload (SPEC_V2 section
+// J, SPEC_V3 section CC). A missing field leaves the current value alone; cooling_off_hours
+// 0 ends a cooling-off; a new mood gets mood_set_at from putState.
+function relationshipMood(payload: Record<string, unknown>, now: Date): { mood?: string; mood_days?: number; cooling_off_until?: string | null } {
+  const out: { mood?: string; mood_days?: number; cooling_off_until?: string | null } = {};
   const mood = str(payload.mood, 200);
   if (mood) out.mood = mood;
+  const days = num(payload.mood_days);
+  if (Number.isFinite(days)) out.mood_days = Math.min(MOOD_DAYS_MAX, Math.max(MOOD_DAYS_MIN, Math.round(days)));
   const hoursRaw = payload.cooling_off_hours;
   const hours = typeof hoursRaw === "number" ? hoursRaw : typeof hoursRaw === "string" && hoursRaw.trim() ? Number(hoursRaw) : NaN;
   if (Number.isFinite(hours)) {
@@ -358,21 +429,127 @@ function relationshipMood(payload: Record<string, unknown>, now: Date): { mood?:
   return out;
 }
 
+// The weight the proposal carried, written to the promoted row (SPEC_V3 section BB).
+// Nothing is written when the element carried none: the entity's default applies by absence.
+async function weighRow(db: D1Database, p: ProposalRow, entity: "fact" | "history" | "thread" | "want", id: string, actor: string): Promise<void> {
+  const w = proposalWeight(p);
+  if (w === undefined) return;
+  try {
+    await putWeight(db, entity, id, { weight: w }, actor);
+  } catch (e) {
+    // The row is promoted; the weight is a nicety and its default stands.
+    console.warn("proposal weight not written", entity, errorClass(e));
+  }
+}
+
+function sameName(a: unknown, b: string): boolean {
+  return typeof a === "string" && normText(a) === normText(b);
+}
+
 async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text: string, actor: string): Promise<string> {
   const source = `proposal ${p.id}`;
+  const payload = proposalPayload(p);
   switch (kind) {
     case "avelie_fact": {
       const f = await createFact(db, { scope: "avelie", fact: text, source, disclosed: true }, actor);
+      await weighRow(db, p, "fact", f.id, actor);
       return f.id;
     }
     case "justin_fact": {
       const f = await createFact(db, { scope: "justin", fact: text, source, disclosed: true }, actor);
+      await weighRow(db, p, "fact", f.id, actor);
       return f.id;
+    }
+    // v3 (CC): a goal of hers; a step or setback on one; a small thing she asked him for;
+    // his answer to it. A want_update or ask_update that names no known want or ask is
+    // refused with 400 validation (the proposal stays pending with the error in decision_note).
+    case "want": {
+      const horizon = num(payload.horizon_days);
+      const w = await createWant(db, {
+        title: str(payload.title, 300) ?? titleFrom(text).slice(0, 300),
+        why: str(payload.why, 2000),
+        stakes: str(payload.stakes, 2000),
+        next_step: str(payload.next_step, 2000),
+        ...(Number.isFinite(horizon) ? { horizon_days: Math.max(1, Math.round(horizon)) } : {}),
+        source,
+      }, actor);
+      await weighRow(db, p, "want", w.id, actor);
+      return w.id;
+    }
+    case "want_update": {
+      const ref = str(payload.want, 300) ?? str(payload.title, 300);
+      const want = ref ? await findWant(db, ref) : null;
+      if (!want) throw new ApiHttpError(400, "validation", "want_update names no want the record knows");
+      const kindRaw = str(payload.kind, 20)?.toLowerCase();
+      const logKind: WantLogKind = kindRaw && (WANT_LOG_KINDS as readonly string[]).includes(kindRaw) ? (kindRaw as WantLogKind) : "note";
+      const delta = num(payload.delta);
+      const ids = proposalMessageIds(p);
+      const r = await logWant(db, want.id, {
+        kind: logKind,
+        delta: Number.isFinite(delta) ? Math.max(-100, Math.min(100, Math.round(delta))) : null,
+        note: str(payload.note, 2000) ?? text,
+        occurred: str(payload.occurred, 100),
+        source,
+        messageId: ids.assistantMessageId,
+      }, actor);
+      return r.log.id;
+    }
+    case "ask": {
+      const wantRef = str(payload.want, 300);
+      const want = wantRef ? await findWant(db, wantRef) : null;
+      const ids = proposalMessageIds(p);
+      const a = await createAsk(db, {
+        text: str(payload.text, 1000) ?? text,
+        wantId: want ? want.id : null,
+        askedMessageId: ids.assistantMessageId,
+        source,
+      }, actor);
+      return a.id;
+    }
+    case "ask_update": {
+      const ref = str(payload.ask, 1000) ?? str(payload.text, 1000);
+      const status = str(payload.status, 20)?.toLowerCase();
+      if (status !== "granted" && status !== "declined") throw new ApiHttpError(400, "validation", "ask_update status must be granted or declined");
+      const ask = ref ? await findAsk(db, ref) : null;
+      if (!ask || ask.status !== "open") throw new ApiHttpError(400, "validation", "ask_update names no open ask");
+      const row = await updateAsk(db, ask.id, { status, note: text }, actor);
+      return row.id;
+    }
+    // v3 (DD): what she ate, wore or ran out to do today.
+    case "grounding": {
+      const kindRaw = str(payload.kind, 20)?.toLowerCase();
+      const gKind: GroundingKind = kindRaw && (GROUNDING_KINDS as readonly string[]).includes(kindRaw) ? (kindRaw as GroundingKind) : "misc";
+      const ids = proposalMessageIds(p);
+      const row = await createGroundingRow(db, {
+        kind: gKind,
+        note: str(payload.note, 2000) ?? text,
+        occurred: str(payload.occurred, 100),
+        source,
+        messageId: ids.assistantMessageId,
+      }, actor);
+      return row.id;
+    }
+    // v3 (DD): news about a person, place or arc already in her life: the thread's detail
+    // moves and/or a life log note lands on it. The portrait is never touched.
+    case "life_update": {
+      const ref = str(payload.thread, 300) ?? str(payload.title, 300);
+      const active = await listThreads(db, "active");
+      const thread = ref ? active.find((t) => t.id === ref) ?? active.find((t) => sameName(t.title, ref)) : undefined;
+      if (!thread) throw new ApiHttpError(400, "validation", "life_update names no active thread");
+      const detail = str(payload.detail, 4000);
+      const note = str(payload.note, 4000) ?? (detail ? null : text);
+      let headId = thread.id;
+      if (detail) {
+        const updated = await updateThread(db, thread.id, { detail }, actor);
+        headId = updated.id;
+      }
+      if (note) await logLife(db, headId, nowIso(), note, source, actor);
+      return headId;
     }
     case "opinion_change": {
       // One opinion per subject: a changed mind supersedes the old row (a new version in
       // the same chain) instead of sitting beside it. No match: a new opinion.
-      const subject = opinionSubject(proposalPayload(p), text);
+      const subject = opinionSubject(payload, text);
       const existing: FactRow | undefined = (await listFacts(db, "avelie")).find((f) => sameSubject(f.subject, subject));
       if (existing) {
         // The chain keeps the subject it was opened with; only the opinion itself moves.
@@ -388,13 +565,14 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
         ...cur.state,
         summary: text,
         frontier: appendText(cur.state.frontier, text, " | "),
-        ...relationshipMood(proposalPayload(p), new Date()),
+        ...relationshipMood(payload, new Date()),
       };
       const r = await putState(db, "relationship", next, source, actor, "proposal");
       return `relationship:v${r.version}`;
     }
     case "life": {
-      const t = await createThread(db, lifeInput(proposalPayload(p), text, source), actor);
+      const t = await createThread(db, lifeInput(payload, text, source), actor);
+      await weighRow(db, p, "thread", t.id, actor);
       return t.id;
     }
     case "private_language": {
@@ -411,6 +589,7 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
     }
     case "history": {
       const h = await createHistory(db, { title: titleFrom(text), body: text, source }, actor);
+      await weighRow(db, p, "history", h.id, actor);
       return h.id;
     }
     case "unknown": {
@@ -483,9 +662,12 @@ export async function decideProposal(
   try {
     promotedId = await promote(db, p, kind, text, actor);
   } catch (e) {
+    // The proposal goes back to pending; a validation error (a want_update naming no want,
+    // a life_update naming no thread) is written into decision_note so the inbox shows why.
+    const why = e instanceof ApiHttpError ? e.message.slice(0, 1000) : null;
     try {
-      await db.prepare("UPDATE proposals SET status = 'pending', kind = ?2, proposal = ?3, payload_json = ?4, decision_note = NULL, decided_at = NULL WHERE id = ?1 AND status = ?5")
-        .bind(p.id, p.kind, p.proposal, p.payload_json, status).run();
+      await db.prepare("UPDATE proposals SET status = 'pending', kind = ?2, proposal = ?3, payload_json = ?4, decision_note = ?6, decided_at = NULL WHERE id = ?1 AND status = ?5")
+        .bind(p.id, p.kind, p.proposal, p.payload_json, status, why).run();
     } catch { /* the proposal stays decided without a promoted id; the audit shows the gap */ }
     throw e;
   }

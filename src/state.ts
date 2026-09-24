@@ -5,6 +5,9 @@ import {
   newId, nowIso,
 } from "./db";
 import { ApiHttpError } from "./errors";
+// v3 (SPEC_V3 section BB): the weight and last-touched of a fact or history entry follow the
+// head of its version chain.
+import { carryStmt } from "./memory";
 import type { FactRow, FactScope, HistoryRow, RelationshipState, SceneState, StateVersionRow, UnknownRow } from "./types";
 
 type Entity = "relationship" | "scene";
@@ -38,11 +41,14 @@ function assertFixed(scope: FactScope, verb: string): void {
 }
 
 // v2 (SPEC_V2 section J): the relationship state may carry `mood` (free text) and
-// `cooling_off_until` (ISO time or null). Both are checked and normalised here so a
-// malformed value can never reach the prompt; every other key passes through untouched.
+// `cooling_off_until` (ISO time or null). v3 (SPEC_V3 section CC) adds `mood_set_at` (ISO)
+// and `mood_days` (1..14). All four are checked and normalised here so a malformed value
+// can never reach the prompt; every other key passes through untouched.
 const MAX_MOOD = 200;
+export const MOOD_DAYS_MIN = 1;
+export const MOOD_DAYS_MAX = 14;
 
-function normalizeRelationshipFields(state: Record<string, unknown>): Record<string, unknown> {
+export function normalizeRelationshipFields(state: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...state };
   if ("mood" in out) {
     const mood = out.mood;
@@ -67,6 +73,45 @@ function normalizeRelationshipFields(state: Record<string, unknown>): Record<str
       out.cooling_off_until = new Date(t).toISOString();
     }
   }
+  if ("mood_set_at" in out) {
+    const at = out.mood_set_at;
+    if (at === null || at === undefined || (typeof at === "string" && !at.trim())) {
+      delete out.mood_set_at;
+    } else {
+      if (typeof at !== "string") throw new ApiHttpError(400, "validation", "mood_set_at must be an ISO 8601 time or null");
+      const t = Date.parse(at);
+      if (!Number.isFinite(t)) throw new ApiHttpError(400, "validation", "mood_set_at must be an ISO 8601 time or null");
+      out.mood_set_at = new Date(t).toISOString();
+    }
+  }
+  if ("mood_days" in out) {
+    const days = out.mood_days;
+    if (days === null || days === undefined || days === "") {
+      delete out.mood_days;
+    } else {
+      const n = typeof days === "number" ? days : typeof days === "string" ? Number(days) : NaN;
+      if (!Number.isInteger(n) || n < MOOD_DAYS_MIN || n > MOOD_DAYS_MAX) {
+        throw new ApiHttpError(400, "validation", `mood_days must be a whole number from ${MOOD_DAYS_MIN} to ${MOOD_DAYS_MAX}`);
+      }
+      out.mood_days = n;
+    }
+  }
+  // No mood, no clock.
+  if (!("mood" in out)) delete out.mood_set_at;
+  return out;
+}
+
+// The mood clock (SPEC_V3 section CC): a new or changed mood is stamped now unless the
+// caller stamped it; an unchanged mood keeps the stamp it had, even when the caller sent
+// the state without it (the Now tab round-trips the object; a proposal spreads it).
+function stampMood(next: Record<string, unknown>, current: Record<string, unknown>, now: Date): Record<string, unknown> {
+  const out = { ...next };
+  const mood = typeof out.mood === "string" ? out.mood : "";
+  if (!mood) return out;
+  if (typeof out.mood_set_at === "string" && out.mood_set_at) return out;
+  const curMood = typeof current.mood === "string" ? current.mood : "";
+  const curAt = typeof current.mood_set_at === "string" ? current.mood_set_at : "";
+  out.mood_set_at = mood === curMood && curAt ? curAt : now.toISOString();
   return out;
 }
 
@@ -144,10 +189,13 @@ export async function putState(
 ): Promise<{ version: number; state: Record<string, unknown> }> {
   if (entity !== "relationship" && entity !== "scene") throw new ApiHttpError(400, "validation", "entity must be relationship or scene");
   if (!isPlainObject(state)) throw new ApiHttpError(400, "validation", "state must be a plain JSON object");
-  const json = JSON.stringify(entity === "relationship" ? normalizeRelationshipFields(state) : state);
+  const current = await getCurrentState(db, entity);
+  const normalized = entity === "relationship"
+    ? stampMood(normalizeRelationshipFields(state), current.state as Record<string, unknown>, new Date())
+    : state;
+  const json = JSON.stringify(normalized);
   if (json.length > MAX_STATE_JSON) throw new ApiHttpError(400, "validation", "state is too large");
   const stored = JSON.parse(json) as Record<string, unknown>;
-  const current = await getCurrentState(db, entity);
   const version = current.version + 1;
   const cleanNote = optionalText(note, "note", 1000);
   await db.batch([
@@ -237,6 +285,7 @@ export async function updateFact(
   await db.batch([
     supersedeStmt(db, "facts", old.id, t),
     insertFactStmt(db, row),
+    carryStmt(db, "fact", old.id, row.id),
     auditStmt(db, actor, "fact.update", "fact", row.id, old, row),
   ]);
   return row;
@@ -267,6 +316,7 @@ export async function restoreFact(db: D1Database, id: string, actor: string): Pr
   const row: FactRow = { ...target, id: newId("f"), status: "approved", version: maxVersion + 1, supersedes_id: latest.id, updated_at: t };
   const stmts: D1PreparedStatement[] = chain.filter((r) => r.status === "approved").map((r) => supersedeStmt(db, "facts", r.id, t));
   stmts.push(insertFactStmt(db, row));
+  stmts.push(carryStmt(db, "fact", latest.id, row.id));
   stmts.push(auditStmt(db, actor, "fact.restore", "fact", row.id, { restoredFrom: target.id, latest: latest.id }, row));
   await db.batch(stmts);
   return row;
@@ -342,6 +392,7 @@ export async function updateHistory(
   await db.batch([
     supersedeStmt(db, "history", old.id, t),
     insertHistoryStmt(db, row),
+    carryStmt(db, "history", old.id, row.id),
     auditStmt(db, actor, "history.update", "history", row.id, old, row),
   ]);
   return row;
@@ -369,6 +420,7 @@ export async function restoreHistory(db: D1Database, id: string, actor: string):
   const row: HistoryRow = { ...target, id: newId("h"), status: "approved", version: maxVersion + 1, supersedes_id: latest.id, updated_at: t };
   const stmts: D1PreparedStatement[] = chain.filter((r) => r.status === "approved").map((r) => supersedeStmt(db, "history", r.id, t));
   stmts.push(insertHistoryStmt(db, row));
+  stmts.push(carryStmt(db, "history", latest.id, row.id));
   stmts.push(auditStmt(db, actor, "history.restore", "history", row.id, { restoredFrom: target.id, latest: latest.id }, row));
   await db.batch(stmts);
   return row;

@@ -244,3 +244,179 @@ The v1 `GET /api/export` still returns everything (it now includes the v2 tables
 | `0 14 * * 1` | weekly voiceprint |
 
 Locally: `npx wrangler dev --test-scheduled` then `curl "http://127.0.0.1:8787/__scheduled?cron=0+7+*+*+*"` runs one handler by its cron string.
+
+# v3
+
+Same rules as v1 and v2: owner only, JSON unless noted, the one error shape, UTC timestamps, every write audited. Routes are grouped by the SPEC_V3 section that defines them. The v3 lanes were written in parallel against SPEC_V3; the names below are the contract the router codes against.
+
+## Changes to v1 and v2 routes
+
+| Route | What changed |
+|---|---|
+| POST /api/conversations/:id/turn | `tasting: true` in the JSON body runs the same turn on two performers (HH) and answers the blind pair, or a normal `TurnResponse` whose `flags` carry `tasting_void` when one side failed. Every turn shape (plain, tasting, Retry, `/open`, a first text, a voice turn) answers 409 `tasting_pending` while a tasting is pending in that conversation; the same key with `tasting: true` replays it. |
+| GET /api/messages/:id/context | Carries the v3 provenance: `exemplarIds`, `correctionIds`, `recall: { provisional, firmFactIds, fadedCount }`, `wantIds`, `askIds`, `moodPhase`, `weather`, `outfitFrom`, `groundingRowIds`, `shapeCue`, `signature`, `tasting: { id, winner, loser }`, `callId`. |
+| POST /api/images/:id/decide | Also decides roles `portrait` and `video`. Approving a portrait sets `portrait_asset_id` on the person's current head (an earlier approved portrait is archived); rejecting a clip or a portrait deletes the bytes and keeps the hash on the blacklist. |
+| GET /media/:id | Serves a clip (role `video`) as `video/mp4` with Range support (a `Range` header answers 206 with `content-range` and `accept-ranges: bytes`, so `<video>` can seek) and a portrait as `image/png`. |
+| GET /api/system | `counts` gain `voiceLinesUnapproved`, `voiceLinesApproved`, `correctionsActive`, `wantsActive`, `asksOpen`, `callsToday`, `tastingsPending`, `finetuneApproved`. |
+| PUT /api/settings | Validates every v3 setting (table below). Three consistency rules join the v2 ones: `tastingModel` must be priced before `tastingEnabled` can be true; `videoCostUsd` must be above 0 while `videoProvider` is `runway`; `portraitCostUsd` must be above 0 unless the image provider is keyless. |
+| GET /api/export, POST /api/import | The export carries every v3 table except `weather_cache`; the import takes them back with the same one-of rules the schema states. |
+| GET /api/export/character | Gains `voiceLines` (approved), `corrections` (active), `wants`, `asks`. |
+| GET /api/timeline | Gains calls, want log rows, asks, corrections and portrait approvals. |
+
+## Voice bank and the notes (AA)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/voicebank | `?status=unapproved|approved|rejected|all&tag=<tag>&limit=500` | `{ lines, counts: { unapproved, approved, rejected }, tags }` (`tags` is the fixed vocabulary; absent status = all) |
+| POST | /api/voicebank | `{ text, tags }` (text 1 to 160 plain characters; 1 to 4 tags from the vocabulary) | line (201, status `approved`, origin `owner`) |
+| PUT | /api/voicebank/:id | `{ text?, tags? }` | line |
+| POST | /api/voicebank/:id/decide | `{ decision: "approve"|"reject" }` | line (409 `already_decided` on a decided line) |
+| POST | /api/voicebank/decide | `{ ids, decision }` (at most 500 ids; one statement per id in one batch) | `{ changed }` (a line already decided is not counted) |
+| GET | /api/corrections | `?status=active|retired|all&limit=200` | rows |
+| POST | /api/corrections | `{ messageId, kind, note?, rewrite?, toBank? }` (`kind`: ai, clever, not_her, too_long, too_nice, too_polished, other; her story messages only, 400 otherwise; a rewrite is 1 to 1000 characters and, with `toBank` or the `correctionRewriteToBank` setting, becomes an approved bank line with origin `correction`) | row (201) |
+| POST | /api/corrections/:id/retire | | row |
+| POST | /api/corrections/:id/restore | | row |
+
+The tag vocabulary: stranger, familiar, banter, dry, warm, flirt, annoyed, after_friction, repair, tired, sad, excited, morning, day, evening, late, apart, together, answering, decline, no, own_day, ask, photo_ask, photo_send, song_send, one_word, fragment, lowercase, typo_fix. A seed line is read by nobody until it is approved.
+
+## Memory (BB)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/memory | `?entity=fact|history|thread|log|want&limit=200` (absent entity = fact) | rows with `weight`, `lastTouched`, `touches`, `score`, `shown` |
+| PUT | /api/memory/:entity/:id | `{ weight?, lastTouched? }` (weight 0..1; lastTouched ISO 8601) | row |
+| GET | /api/memory/recalls | `?limit=50` | recalls resolved to text (`outcome` is always `unknown` in v3) |
+
+`provisionalRecallEvery` ships at 0: no half-remembered detail ever enters the prompt until the owner raises it in the Model panel.
+
+## Wants and asks (CC)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/wants | `?status=active|paused|done|dropped|all&askStatus=open|granted|declined|let_go|all` | `{ wants (each with lastLog), asks }` |
+| POST | /api/wants | `{ title, why?, stakes?, next_step?, progress?, horizon_days?, source? }` | want (201) |
+| PUT | /api/wants/:id | partial, including `status` | want |
+| POST | /api/wants/:id/log | `{ kind: progress|setback|note, delta?, note, occurred? }` (delta -100..100; 409 `not_active` on a done or dropped want) | log row (201) |
+| GET | /api/wants/:id/log | | rows |
+| POST | /api/asks | `{ text, wantId? }` | ask (201) |
+| PUT | /api/asks/:id | `{ status: granted|declined|let_go|open, note? }` | ask |
+
+Mood: the relationship state may carry `mood_set_at` (ISO) and `mood_days` (1..14). `PUT /api/state/relationship` validates both; a mood change without `mood_set_at` stamps it now. The prompt shows the mood as fresh, fading or faint and shows nothing once it is gone; the stored state is untouched.
+
+## Grounding (DD)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | /api/grounding/geocode | `{ name }` | `{ results }` (at most 5 `{ name, latitude, longitude, timezone, country, admin1 }`; `[]` when nothing matches). The one route that calls out for him; settings PUT never does. |
+| GET | /api/grounding | | `{ city, weather, timeOfDay, outfit, today }` (`weather` null when the provider is off or the call failed) |
+| POST | /api/grounding/log | `{ kind: meal|outfit|errand|misc, note, occurred? }` | row (201) |
+| DELETE | /api/grounding/log/:id | | `{ ok }` |
+| POST | /api/life/threads/:id/portrait | `{ description }` | `{ asset }` (role `portrait`, held open like a photo; 404 unknown thread, 409 `in_progress` / `already_generated`, 422 `blacklisted`, 402, 502, 503 as for photos) |
+
+## Calls (EE)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | /api/calls/start | `{ conversationId }` | 201 `{ call, provider, clientSecret, expiresAt, sdpUrl, model, voice, maxSeconds, tickSeconds }`. The only place the client secret ever appears: not stored, not audited, not logged, not in any later read. 503 `provider_not_configured` when `callProvider` is `off` or the reserved `elevenlabs` (detail `reserved_v3_1`), 409 `call_in_progress` while a call is live anywhere (a live call with no tick for 120 s is expired first), 402 when two minutes at the per-minute price do not fit under the caps. |
+| POST | /api/calls/:id/tick | `{ seconds, usage? }` (`usage` cumulative token counts `{ audioIn, audioOut, textIn, textOut }`, non-negative integers) | `{ ok, secondsTotal, costUsd, stop, reason? }` (`stop` with `max_minutes` or `budget`; the crossing tick is still recorded) |
+| POST | /api/calls/:id/end | `{ reason, segments: [{ who: him|her, text, at }], usage? }` (at most 2,000 raw segments, 4,000 characters each; consecutive same-speaker segments are merged, empties dropped, the transcript capped at 80 rows) | `{ call, messageIds }` (409 `call_over` once ended; the rows are story messages with `call_id`, her rows flagged by the flag-only checks, the proposal pass runs over them) |
+| GET | /api/calls | `?conversationId=&limit=50` | rows (no secret) |
+| GET | /api/calls/:id | | `{ call, messages }` (no secret) |
+
+The page talks to the realtime provider itself over WebRTC; the Worker mints the short-lived token, meters the call from what the session bills (`max(seconds x callPricePerMinute, usage x callPrices)`), and stores the transcript. The content security policy allows `connect-src https://api.openai.com` and `media-src blob:`, and the permissions policy grants the microphone to this origin only.
+
+## Clips (FF)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | /api/video/generate | `{ sourceAssetId, description }` (a master or an approved photo of her) | 202 `{ asset }` (role `video`, status `generating`; 400 `source_too_large` over 5 MB encoded, 402, 404, 409, 503 without a Runway key or with `videoProvider` off) |
+| POST | /api/video/:id/poll | | `{ asset, status: "running"|"candidate"|"failed" }` (422 `blacklisted` when the finished clip's hash was rejected before) |
+
+Decisions go through `POST /api/images/:id/decide`. The `[clip:]` marker is v3.1; clips are owner-triggered from the Images page only. With no `RUNWAY_API_KEY` the provider reports not configured and the controls stay hidden.
+
+## Tastings (HH)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | /api/conversations/:id/turn | `{ content, idempotencyKey, tasting: true }` | `{ tastingId, conversationId, userMessage, candidates: [{ side: left|right, text, flags, photo, song }], expiresAt }` (blind: no provider or model names), or a `TurnResponse` with `tasting_void` when one side failed. 400 `validation` while `tastingEnabled` is false, 402 `tasting_budget_exceeded` over `tastingDailyCapUsd`, 503 when the tasting performer is not configured. |
+| GET | /api/tastings/:id | | the tasting with its two candidates (blind while pending; `pick`, `winnerSide`, `left`, `right` with their performers once decided) |
+| POST | /api/tastings/:id/pick | `{ pick: left|right|neither }` | `{ tasting, assistantMessage }` (`left` or `right` stores that candidate as her message; `neither` voids the tasting and stores nothing, and the page's Retry with the same key runs a normal turn; 409 `already_decided` / `expired` after 30 minutes) |
+| GET | /api/tastings/ledger | | `{ performers: [{ performer, wins, losses, draws, rate, last }], recent }` |
+| POST | /api/tastings/promote | `{ provider, model }` | `Settings` (400 `price_unknown` for an unpriced model; writes `provider` and `model`, audited) |
+
+## Marks and the texter (II)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | /api/messages/:id/mark | `{ mark: keep|drop, note? }` (her story messages only, 400 otherwise; upsert) | `{ mark, note, messageId, createdAt }` |
+| DELETE | /api/messages/:id/mark | | `{ ok }` (404 when there is no mark) |
+| GET | /api/finetune/status | | `{ approved, minimum, ready, breakdown: { keeps, rewrites, picks }, texterModel, live: { provider, model }, previous }` (from the stored settings, never the local overlay) |
+| GET | /api/finetune/export.jsonl | `?stripHim=0|1&includeExplicit=0|1` | `text/plain`, `content-disposition: attachment; filename="avelie-train-<date>.jsonl"`, streamed line by line: `{"messages":[system, user, assistant]}`, the system being ALWAYS_ON + OVERLAY + the state she saw (compact) or the whole prefix + the state (full; 413 `too_large` over 1,000 examples). Absent `stripHim` = 0 (the panel's checkbox sends 1 and is on by default). Absent `includeExplicit` = 0: an exchange the explicit detector flags is left out, and a Drop mark leaves one out by hand either way. |
+| GET | /api/finetune/export.json | the same query | the export record: `{ exportedAt, promptVersion, constitutionVersion, systemMode, stripHim, count, skipped: { noState, flagged, dropped }, breakdown, sentFactIds, sentHisName, lineHashes, sha256 }` (`sha256` is the chain over `lineHashes`; `scripts/finetune_run.mjs --verify` recomputes it from the downloaded file) |
+| POST | /api/finetune/use | `{ model, inputPerMTok?, outputPerMTok? }` (`ft:...` or a plain OpenAI model id; both prices required when the price table has no row, 400 `price_unknown` otherwise; 503 without `OPENAI_API_KEY`) | `Settings` as stored (provider `openai`, `model`, `texterModel` set, `texterPrevious` remembered; `proposalProvider` and the rest untouched) |
+| POST | /api/finetune/revert | | `Settings` (back to `texterPrevious`, or anthropic / claude-opus-5 when there is none) |
+
+What the export carries, said plainly: his approved facts, his recorded name and nicknames, the private language, the shared history and every other state section exactly as she saw them on each turn, unless `stripHim=1`, which removes WHAT YOU KNOW ABOUT HIM and THINGS YOU HALF REMEMBER and the four keys of the Relationship line. His own messages and her replies go as written either way. Never secrets, ids, the operator channel, call rows or the audit.
+
+## Settings added in v3
+
+| Key | Default | Accepted |
+|---|---|---|
+| exemplarsPerTurn | 6 | 0 to 12 (0 = the section is never built) |
+| exemplarCooldownTurns | 30 | 0 to 500 |
+| correctionsShown | 25 | 0 to 100 |
+| correctionRewriteToBank | true | boolean |
+| memoryDecayEnabled | true | boolean |
+| memoryFactsMax | 40 | 5 to 200 |
+| memoryHalfLifeLowDays | 10 | 1 to 365 |
+| memoryHalfLifeMidDays | 45 | 1 to 3650 |
+| memoryHalfLifeHighDays | 400 | 1 to 36500 |
+| provisionalRecallEvery | 0 | 0 to 50 (0 = off; his switch) |
+| wantsShown | 5 | 0 to 20 |
+| askLetGoDays | 14 | 1 to 90 |
+| moodDaysDefault | 3 | 1 to 14 |
+| herCity | `"Portland, Maine"` | a string up to 80 characters (empty = no weather line) |
+| herLat, herLon | Portland's | numbers (-90..90, -180..180) or null |
+| weatherProvider | `"openmeteo"` | `openmeteo`, `stub`, `off` |
+| weatherUnits | `"fahrenheit"` | `fahrenheit`, `celsius` |
+| portraitCostUsd | 0.04 | 0 to 100 (above 0 on a paid image provider) |
+| portraitSize | `"1024x1024"` | like `imageSize` |
+| callProvider | `"openai"` | `openai`, `stub`, `off`, `elevenlabs` (reserved: 503 on start) |
+| callModel | `"gpt-realtime"` | a string up to 120 characters |
+| callVoice | `"marin"` | up to 40 characters |
+| callTranscribeModel | `"gpt-4o-mini-transcribe"` | up to 120 characters |
+| callSystemMode | `"compact"` | `compact`, `full` |
+| callMaxMinutes | 20 | 1 to 60 |
+| callPricePerMinute | 0.30 | 0 to 100 (the floor of the meter) |
+| callPrices | `{ audioInPerMTok: 32, audioOutPerMTok: 64, textInPerMTok: 4, textOutPerMTok: 16 }` | the four keys, each 0 to 100000, nothing else |
+| elevenLabsAgentId | `""` | up to 120 characters (reserved) |
+| elevenLabsCallPricePerMinute | 0.10 | 0 to 100 (reserved) |
+| videoProvider | `"runway"` | `runway`, `stub`, `off` (no key: reports not configured) |
+| videoModel | `"gen4_turbo"` | up to 60 characters |
+| videoSeconds | 5 | 5 or 10 |
+| videoRatio | `"720:1280"` | `\d{3,4}:\d{3,4}` |
+| videoCostUsd | 0.25 | 0 to 100 (above 0 on Runway) |
+| textureCuesEnabled | true | boolean |
+| typoCueShare | 0 | 0 to 0.3 (his switch) |
+| tastingEnabled | false | boolean (the tasting performer must be priced first) |
+| tastingProvider | `"openai"` | a text provider name |
+| tastingModel | `"gpt-4.1"` | up to 200 characters |
+| tastingDailyCapUsd | 1 | 0 to 1000 |
+| finetuneMinExamples | 200 | 10 to 5000 |
+| finetuneSystemMode | `"compact"` | `compact`, `full` |
+| texterModel | `""` | up to 200 characters (written by `/use`) |
+| texterPrevious | null | null or `{ provider, model }` (written by `/use`, read by `/revert`; not in the panel) |
+
+`prices` gains `gpt-4.1` (2 / 8), `gpt-4.1-mini` (0.4 / 1.6) and `gpt-4.1-mini-2025-04-14` (0.4 / 1.6).
+
+## Secrets added in v3 (optional)
+
+| Secret | Used by |
+|---|---|
+| RUNWAY_API_KEY | clips (`videoProvider: "runway"`); without it every clip control is hidden and generate answers 503. On the Mac: `security find-generic-password -s runwayml -w \| npx wrangler secret put RUNWAY_API_KEY` when the keychain item exists. |
+
+`OPENAI_API_KEY` now also serves calls (the realtime token), portraits (text-to-image) and the fine-tuned texter. The key used for training never becomes a Worker concern: `scripts/finetune_run.mjs` reads it from the environment or the clipboard on the Mac and clears the clipboard.
+
+## Cron (unchanged triggers)
+
+No new trigger. The 07:00 UTC daily handler runs the backup and then the maintenance pass (`src/maintenance.ts`): weather cache rows older than a day deleted, open asks older than `askLetGoDays` let go, pending tastings older than 30 minutes expired, calls with no tick for two minutes expired. Each change is audited; a failure there is logged by class and never stops the backup.

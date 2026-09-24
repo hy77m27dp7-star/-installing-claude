@@ -26,6 +26,8 @@
 <main class="page">
   <div class="tabs" role="tablist">
     <button type="button" role="tab" data-tab="photos">Photos</button>
+    <button type="button" role="tab" data-tab="clips">Clips</button>
+    <button type="button" role="tab" data-tab="portraits">Portraits</button>
     <button type="button" role="tab" data-tab="library">Library</button>
   </div>
 
@@ -57,6 +59,32 @@
       <h2 class="section-title">Rejected</h2>
       <div class="card" id="rejected"></div>
     </section>
+  </section>
+
+  <section id="tab-clips" class="stack hidden" role="tabpanel">
+    <div class="chips" id="clips-status"></div>
+    <div class="card stack" id="clipMake">
+      <h2 class="section-title">Source</h2>
+      <div class="source-picker" id="clipSources"></div>
+      <textarea id="clipMotion" placeholder="Motion" maxlength="1000"></textarea>
+      <div class="row">
+        <button type="button" class="btn primary" id="clipGenerate">Make clip</button>
+        <span class="chips" id="clip-status"></span>
+      </div>
+    </div>
+    <section class="section">
+      <h2 class="section-title">Candidates</h2>
+      <div class="grid-imgs" id="clipCandidates"></div>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Approved</h2>
+      <div class="grid-imgs" id="clipApproved"></div>
+    </section>
+  </section>
+
+  <section id="tab-portraits" class="stack hidden" role="tabpanel">
+    <div class="chips" id="portraits-status"></div>
+    <div class="stack" id="portraitPeople"></div>
   </section>
 
   <section id="tab-library" class="stack hidden" role="tabpanel">

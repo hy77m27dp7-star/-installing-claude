@@ -6,7 +6,7 @@
 // "needs owner" with the scenario's rubric.
 //
 //   node tests/behavior/run.mjs [--base http://127.0.0.1:8787] [--provider anthropic] [--model claude-opus-5]
-//                               [--only <id>[,<id>]] [--daily-cap 20] [--strict]
+//                               [--only <id or group>[,<id>]] [--daily-cap 20] [--strict]
 //                               [--compare providerA:modelA,providerB:modelB[,...]]
 //
 // A turn that starts with "OPERATOR: " goes through POST /api/operator (out of scene)
@@ -112,6 +112,8 @@ const KNOWN_FLAGS = new Set([
   "em_dash", "emoji", "markdown_structure", "lol_lmao", "question_chain", "name_overuse", "braking_repeat",
   "therapy_cadence", "menu_offer", "tech_leak", "dependency_hook", "first_meeting_replay", "unknown_resolved",
   "caption_tail", "length_pattern", "price_unknown", "song_marker_dup", "callback_forced", "media_unknown", "truncated",
+  // v3 (SPEC_V3): the voice bank, the asks, the imperfection engine, the tastings.
+  "written_joke", "exemplar_verbatim", "ask_nag", "shape_uniform", "over_polish", "retry_skipped", "tasting_void",
 ]);
 
 const PRIOR_HISTORY_RE = /\b(last time|remember when|like before|the other night|the other day we|missed you|when we met|our (?:first|last) (?:date|night|time)|as usual|you always|like always|again already|since we)\b/i;
@@ -220,7 +222,29 @@ function evaluateCheck(name, exchanges) {
 
 // ------------------------------------------------------------------ one scenario
 
+// v3: a scenario may carry `settings` (the half-remember scenario sets provisionalRecallEvery
+// to 8). They are written before the scenario and put back after it, whatever happens.
+async function withScenarioSettings(base, scenario, fn) {
+  const patch = scenario.settings && typeof scenario.settings === "object" && !Array.isArray(scenario.settings) ? scenario.settings : null;
+  if (!patch || !Object.keys(patch).length) return fn();
+  const current = (await api(base, "GET", "/api/settings")).json;
+  const original = {};
+  for (const k of Object.keys(patch)) original[k] = current ? current[k] : undefined;
+  const put = await api(base, "PUT", "/api/settings", patch);
+  if (put.status !== 200) throw new Error(`scenario settings ${JSON.stringify(patch)} refused: ${put.status} ${put.text.slice(0, 200)}`);
+  try {
+    return await fn();
+  } finally {
+    const back = await api(base, "PUT", "/api/settings", original);
+    if (back.status !== 200) console.error(`scenario settings restore failed: ${back.status} ${back.text.slice(0, 200)}; put ${JSON.stringify(original)} back by hand`);
+  }
+}
+
 async function runScenario(base, scenario, stamp) {
+  return withScenarioSettings(base, scenario, () => runScenarioInner(base, scenario, stamp));
+}
+
+async function runScenarioInner(base, scenario, stamp) {
   const conv = await api(base, "POST", "/api/conversations", { title: `behavior ${scenario.id}` });
   if (conv.status !== 201) throw new Error(`conversation create failed: ${conv.status} ${conv.text.slice(0, 200)}`);
   const conversationId = conv.json.id;
@@ -440,7 +464,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const all = JSON.parse(readFileSync(SCENARIOS_PATH, "utf8"));
   const wanted = args.only ? new Set(args.only.split(",").map((s) => s.trim()).filter(Boolean)) : null;
-  const scenarios = wanted ? all.filter((s) => wanted.has(s.id)) : all;
+  // --only takes ids and group names (life, v3, acceptance, pressure, v5).
+  const scenarios = wanted ? all.filter((s) => wanted.has(s.id) || wanted.has(s.group)) : all;
   if (!scenarios.length) {
     console.error("no scenarios selected" + (wanted ? ` for --only ${args.only}` : ""));
     process.exit(2);

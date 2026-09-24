@@ -5,6 +5,10 @@
 // of what is on her phone) and a hash of the stable prompt prefix so a rebuild elsewhere
 // can prove it runs the same rules. No settings, no secrets, no storage keys, no prompt
 // text. The markdown form is the same record as a readable character bible.
+//
+// v3 (SPEC_V3 "Export and import"): the package gains her approved voice lines (AA), the
+// active corrections (AA), her wants and the asks (CC). A database behind migration 0005
+// answers empty lists for them.
 import { ADAPTATIONS, CONSTITUTION_VERSION } from "./generated/constitution";
 import { getCurrentState, listAssets, listFacts, listHistory, listUnknowns, sha256Hex } from "./db";
 import { listLog, listThreads, parseSchedule } from "./life";
@@ -72,6 +76,41 @@ export interface CharacterImage {
   createdAt: string;
 }
 
+// v3 rows, typed here so the package never depends on a table's full shape.
+export interface CharacterVoiceLine {
+  id: string;
+  text: string;
+  tags: string[];
+  origin: string;
+}
+
+export interface CharacterCorrection {
+  id: string;
+  kind: string;
+  note: string | null;
+  original: string;
+  rewrite: string | null;
+  createdAt: string;
+}
+
+export interface CharacterWant {
+  id: string;
+  title: string;
+  why: string | null;
+  stakes: string | null;
+  nextStep: string | null;
+  progress: number;
+  status: string;
+  lastMoved: string | null;
+}
+
+export interface CharacterAsk {
+  id: string;
+  text: string;
+  status: string;
+  askedAt: string;
+}
+
 export interface CharacterPackage {
   format: "avelie-character";
   version: 1;
@@ -90,6 +129,33 @@ export interface CharacterPackage {
   images: CharacterImage[];
   mediaTitles: Array<{ kind: string; title: string; description: string | null }>;
   promptPrefixSha256: string;
+  // v3
+  voiceLines: CharacterVoiceLine[];
+  corrections: CharacterCorrection[];
+  wants: CharacterWant[];
+  asks: CharacterAsk[];
+}
+
+interface VoiceLineRow { id: string; text: string; tags_json: string; origin: string; status: string }
+interface CorrectionRow { id: string; kind: string; note: string | null; original: string; rewrite: string | null; status: string; created_at: string }
+interface WantRow { id: string; title: string; why: string | null; stakes: string | null; next_step: string | null; progress: number; status: string; last_moved: string | null }
+interface AskRow { id: string; text: string; status: string; asked_at: string }
+
+async function rowsOrEmpty<T>(db: D1Database, sql: string): Promise<T[]> {
+  try {
+    return (await db.prepare(sql).all<T>()).results;
+  } catch {
+    return [];
+  }
+}
+
+function tagsOf(json: string): string[] {
+  try {
+    const v: unknown = JSON.parse(json);
+    return Array.isArray(v) ? v.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 const LOG_ROWS = 200;
@@ -134,7 +200,7 @@ async function currentState<T extends RelationshipState | SceneState>(db: D1Data
 }
 
 export async function exportCharacterJson(db: D1Database, _env: Env): Promise<CharacterPackage> {
-  const [fixed, avelie, history, unknowns, threads, log, assets, media, relationship, scene, prefixHash] = await Promise.all([
+  const [fixed, avelie, history, unknowns, threads, log, assets, media, relationship, scene, prefixHash, voiceLines, corrections, wants, asks] = await Promise.all([
     listFacts(db, "fixed", "approved"),
     listFacts(db, "avelie", "approved"),
     listHistory(db, "approved"),
@@ -146,6 +212,10 @@ export async function exportCharacterJson(db: D1Database, _env: Env): Promise<Ch
     currentState<RelationshipState>(db, "relationship"),
     currentState<SceneState>(db, "scene"),
     sha256Hex(stablePrefix()),
+    rowsOrEmpty<VoiceLineRow>(db, "SELECT id, text, tags_json, origin, status FROM voice_lines WHERE status = 'approved' ORDER BY created_at, id"),
+    rowsOrEmpty<CorrectionRow>(db, "SELECT id, kind, note, original, rewrite, status, created_at FROM corrections WHERE status = 'active' ORDER BY created_at, id"),
+    rowsOrEmpty<WantRow>(db, "SELECT id, title, why, stakes, next_step, progress, status, last_moved FROM wants WHERE status != 'dropped' ORDER BY created_at, id"),
+    rowsOrEmpty<AskRow>(db, "SELECT id, text, status, asked_at FROM asks ORDER BY asked_at, id"),
   ]);
 
   const approvedFixed = fixed.filter((f) => f.status === "approved");
@@ -170,6 +240,10 @@ export async function exportCharacterJson(db: D1Database, _env: Env): Promise<Ch
     images: assets.filter((a) => a.approval_status === "approved" && (a.role === "scene" || a.role === "master")).map(image),
     mediaTitles: media.filter((m) => m.status === "active").map((m) => ({ kind: m.kind, title: m.title, description: m.description })),
     promptPrefixSha256: prefixHash,
+    voiceLines: voiceLines.filter((v) => v.status === "approved").map((v) => ({ id: v.id, text: v.text, tags: tagsOf(v.tags_json), origin: v.origin })),
+    corrections: corrections.filter((c) => c.status === "active").map((c) => ({ id: c.id, kind: c.kind, note: c.note, original: c.original, rewrite: c.rewrite, createdAt: c.created_at })),
+    wants: wants.filter((w) => w.status !== "dropped").map((w) => ({ id: w.id, title: w.title, why: w.why, stakes: w.stakes, nextStep: w.next_step, progress: w.progress, status: w.status, lastMoved: w.last_moved })),
+    asks: asks.map((a) => ({ id: a.id, text: a.text, status: a.status, askedAt: a.asked_at })),
   };
 }
 
@@ -298,6 +372,18 @@ export function renderCharacterMarkdown(pkg: CharacterPackage): string {
 
   out.push("## Things on her phone");
   out.push(lines(pkg.mediaTitles.map((m) => `- ${m.kind}: ${plain(m.title)}${m.description ? " (" + plain(m.description) + ")" : ""}`)) || "Nothing uploaded.");
+
+  out.push("## How she texts (approved lines)");
+  out.push(lines((pkg.voiceLines ?? []).map((v) => `- ${plain(v.text)}${v.tags.length ? " (" + v.tags.join(", ") + ")" : ""}`)) || "None approved yet.");
+
+  out.push("## Notes from him (active)");
+  out.push(lines((pkg.corrections ?? []).map((c) => line(c.kind.replace(/_/g, " "), (c.note ? plain(c.note) + ". " : "") + "She wrote: " + plain(c.original) + (c.rewrite ? ". His version: " + plain(c.rewrite) : "")))) || "None.");
+
+  out.push("## What she wants");
+  out.push(lines((pkg.wants ?? []).map((w) => `- ${plain(w.title)} (${w.status}, ${w.progress}%)${w.nextStep ? ": next, " + plain(w.nextStep) : ""}${w.stakes ? "; if it falls through, " + plain(w.stakes) : ""}`)) || "Nothing yet.");
+
+  out.push("## What she asked him");
+  out.push(lines((pkg.asks ?? []).map((a) => `- ${day(a.askedAt)}: ${plain(a.text)} (${a.status.replace(/_/g, " ")})`)) || "Nothing yet.");
 
   out.push(`## Constitution adaptations (${pkg.adaptations.length})`);
   out.push(lines(pkg.adaptations.map((a) => `- ${a.id} (${a.file}): ${plain(a.to)}`)) || "None.");

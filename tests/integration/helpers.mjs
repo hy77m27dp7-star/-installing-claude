@@ -111,7 +111,8 @@ export function ensureDevVars() {
     "# temporary: written by tests/integration/run.mjs, removed when the run ends",
     `DEV_ACTOR_EMAIL=${DEV_ACTOR_EMAIL}`,
     "ANTHROPIC_API_KEY=",
-    "OPENAI_API_KEY=",
+    // v3: the /use route needs the key to exist; the stub providers never call OpenAI.
+    "OPENAI_API_KEY=dummy-for-settings-only",
     "DEFAULT_PROVIDER=stub",
     "DEFAULT_IMAGE_PROVIDER=stub",
     "",

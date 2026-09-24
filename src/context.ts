@@ -1,16 +1,32 @@
 // Bounded context assembly: approved state + relevant history + recent story messages,
-// plus (v2) her life and the things she could bring up. Never the whole transcript,
-// never operator-channel messages, never developer text.
-import { buildSystemPrompt, sceneMode } from "./prompt";
-import { dayKey, getCurrentState, listFacts, listHistory, listRecentStoryMessages, listUnknowns } from "./db";
-import { listLog, listThreads } from "./life";
+// plus (v2) her life and the things she could bring up, plus (v3) her voice bank and his
+// notes, memory that fades, her wants, where she is and what the weather is doing, and the
+// shape cue for this message. Never the whole transcript, never operator-channel messages,
+// never developer text.
+//
+// v3 seeds (SPEC_V3 header, Seeds): every per-turn seeded choice keys on `turnKey`, which
+// assembleContext computes before generation: the pending user row id on an idempotent
+// resume, else "s" + the next seq of the conversation. A retry reuses the same request, so
+// the exemplars and the cue are identical on the retry.
+import { PROMPT_VERSION, SYSTEM_SEPARATOR, buildSystemPrompt, compactPrefix, coolingOff, moodPhase, sceneMode, stablePrefix, stateSections } from "./prompt";
+import { DEFAULT_SETTINGS, dayKey, getCurrentState, listAssets, listFacts, listHistory, listRecentStoryMessages, listUnknowns, nextSeq } from "./db";
+import { listLog, listThreads, localParts, safeTimezone } from "./life";
 import { pickCallbacks } from "./callbacks";
 import { listMedia } from "./media";
 import { parseInboxImages } from "./images";
 import { limitImageMessages } from "./vision";
+import { voiceConfigured } from "./voice";
+import { listApproved, recentUseIds, selectExemplars, turnTags } from "./voicebank";
+import { listCorrections } from "./corrections";
+import { loadWeights, pickProvisional, rankFacts, rankHistory, rankThreads, recentRecallCount } from "./memory";
+import { listAsks, listWantLogRecent, listWants } from "./wants";
+import { outfitNow, todayRows } from "./grounding";
+import { getWeather } from "./weather";
+import { shapeCue, signature } from "./imperfection";
 import type { ImageRef } from "./vision";
 import type {
-  AssembledContext, ChatMessage, HistoryRow, MediaRow, PromptCallback, PromptState, RelationshipState, SceneState, Settings,
+  AssembledContext, AskRow, ChatMessage, Correction, Env, HistoryRow, MediaRow, OutfitNow, PromptCallback, PromptState, RecallPick,
+  RelationshipState, SceneState, Settings, ShapeCue, SystemMode, VisualAssetRow, VoiceLine, WantLogRow, WantRow, WeatherNow,
 } from "./types";
 import type { LifeThread } from "./life";
 
@@ -22,6 +38,14 @@ const DEFAULT_TZ = "America/New_York";
 const CALLBACK_RECENT = 20;
 // Enough log rows for the prompt's "last 5 notes" and the callback picker's recent-past look.
 const LOG_ROWS = 60;
+// v3: the exemplar section's character cap (AA), the signature window (GG), the log rows
+// per want (CC), how long a paused or done want still renders (CC), the weather race (DD).
+const EXEMPLAR_MAX_CHARS = 1200;
+const SIGNATURE_WINDOW = 2;
+const WANT_LOG_ROWS = 3;
+const WANT_SETTLED_DAYS = 14;
+const WEATHER_TIMEOUT_MS = 3500;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function keywords(text: string): Set<string> {
   const out = new Set<string>();
@@ -34,6 +58,8 @@ export function keywords(text: string): Set<string> {
 
 // Keep every history entry while the ledger is short; when it grows, keep the newest
 // six in full plus any older entry that shares vocabulary with the recent conversation.
+// v3: the memory ranking (rankHistory) replaces this in the turn; kept as the fallback
+// and for the unit suite.
 export function selectHistory(all: HistoryRow[], recentText: string, maxFull = 12): HistoryRow[] {
   if (all.length <= maxFull) return all;
   const recent = all.slice(-6);
@@ -73,6 +99,19 @@ export interface LoadOptions {
   conversationId?: string | null;
   // The last messages' texts (both roles), for the callback picker's exclusion rule.
   recentTexts?: string[];
+  // v3. The settings the sections render with (the defaults when absent); the turn key
+  // every seeded choice keys on; whether this turn is an opener or a first text (no message
+  // of his; the hisText-derived tags are skipped and an unanswered ask never leads); his
+  // pending text; her last replies (the signature window); the weather already fetched;
+  // the env (whether a voice note is possible); cues false skips the shape cue (a call).
+  settings?: Settings;
+  turnKey?: string;
+  opener?: boolean;
+  hisText?: string;
+  recentAssistantTexts?: string[];
+  weather?: WeatherNow | null;
+  env?: Env;
+  cues?: boolean;
 }
 
 // Threads the prompt may know about: live ones and finished ones (a done event is still
@@ -81,10 +120,74 @@ function livingThreads(threads: LifeThread[]): LifeThread[] {
   return threads.filter((t) => t.status === "active" || t.status === "done");
 }
 
+// A v3 read or ranking is a nicety: a table that is not there yet or a broken helper must
+// never cost a turn. The class is logged, never the message.
+function errorClass(e: unknown): string {
+  return e instanceof Error ? e.name || "Error" : "error";
+}
+
+function nicety<T>(name: string, p: Promise<T>, fallback: T): Promise<T> {
+  return p.catch((e: unknown): T => {
+    console.warn("context: " + name + " skipped", errorClass(e));
+    return fallback;
+  });
+}
+
+function attempt<T>(name: string, fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch (e) {
+    console.warn("context: " + name + " skipped", errorClass(e));
+    return fallback;
+  }
+}
+
+function intSetting(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.trunc(v)) : fallback;
+}
+
+function numSetting(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+// Active wants first; a paused or done want still shows for two weeks after the change
+// (the section renders it as one line), then only in the UI. Dropped wants never render.
+function wantsForPrompt(all: WantRow[], now: Date): WantRow[] {
+  const out: WantRow[] = [];
+  for (const w of all) {
+    if (!w) continue;
+    if (w.status === "active") { out.push(w); continue; }
+    if (w.status !== "paused" && w.status !== "done") continue;
+    const at = Date.parse(w.updated_at);
+    if (Number.isFinite(at) && now.getTime() - at <= WANT_SETTLED_DAYS * DAY_MS) out.push(w);
+  }
+  return out;
+}
+
+// The last few log rows of the active wants the section shows (M2's bulk reader, chunked
+// by 90 ids), oldest first so the newest lands last.
+async function wantLogsFor(db: D1Database, wants: WantRow[], limit: number): Promise<WantLogRow[]> {
+  const ids = wants.filter((w) => w.status === "active").slice(0, Math.max(1, limit)).map((w) => w.id);
+  if (!ids.length) return [];
+  const rows = await nicety("want log", listWantLogRecent(db, ids, WANT_LOG_ROWS), [] as WantLogRow[]);
+  return rows.slice().sort((a, b) => a.occurred.localeCompare(b.occurred) || a.created_at.localeCompare(b.created_at));
+}
+
 export async function loadPromptState(db: D1Database, recentText = "", opts: LoadOptions = {}): Promise<PromptState> {
   const now = opts.now ?? new Date();
   const tz = opts.tz && opts.tz.trim() ? opts.tz.trim() : DEFAULT_TZ;
-  const [facts, historyAll, unknowns, rel, scene, threadsAll, log, media] = await Promise.all([
+  const settings = opts.settings ?? DEFAULT_SETTINGS;
+  const conversationId = opts.conversationId ?? null;
+  const turnKey = opts.turnKey && opts.turnKey.trim() ? opts.turnKey.trim() : "s0";
+  const opener = opts.opener === true;
+  const perTurn = Math.min(12, intSetting(settings.exemplarsPerTurn, 6));
+  const cooldownTurns = intSetting(settings.exemplarCooldownTurns, 30);
+  const correctionsShown = Math.min(100, intSetting(settings.correctionsShown, 25));
+  const wantsShown = Math.min(20, intSetting(settings.wantsShown, 5));
+  const recallEvery = intSetting(settings.provisionalRecallEvery, 0);
+  const seed = callbackSeed(now, conversationId);
+
+  const [facts, historyAll, unknowns, rel, scene, threadsAll, log, media, approvedLines, usedIds, corrections, weights, wantsAll, asks, today, approvedAssets, recallCount] = await Promise.all([
     listFacts(db),
     listHistory(db),
     listUnknowns(db, "open"),
@@ -94,29 +197,109 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     listLog(db, LOG_ROWS),
     // The library is a nicety; a missing table (migration not applied yet) costs no turn.
     listMedia(db).catch((): MediaRow[] => []),
+    // v3 (AA): the approved bank, read fresh every turn (no cache: an approval made a
+    // second ago is in the next turn); the lines used in the cooldown window; his notes.
+    nicety("voice bank", perTurn > 0 ? listApproved(db) : Promise.resolve([] as VoiceLine[]), [] as VoiceLine[]),
+    nicety("exemplar uses", perTurn > 0 && conversationId && cooldownTurns > 0 ? recentUseIds(db, conversationId, cooldownTurns) : Promise.resolve(new Set<string>()), new Set<string>()),
+    nicety("corrections", correctionsShown > 0 ? listCorrections(db, "active", correctionsShown) : Promise.resolve([] as Correction[]), [] as Correction[]),
+    // v3 (BB): the weights map, read once; (CC): her wants and the open asks; (DD): today's
+    // grounding rows and the approved photos (what she wore); (BB): the recall rate window.
+    nicety("memory weights", loadWeights(db), new Map() as Awaited<ReturnType<typeof loadWeights>>),
+    nicety("wants", listWants(db), [] as WantRow[]),
+    nicety("asks", listAsks(db, "open"), [] as AskRow[]),
+    nicety("grounding rows", todayRows(db, now, tz), [] as Awaited<ReturnType<typeof todayRows>>),
+    nicety("approved assets", listAssets(db, "approved"), [] as VisualAssetRow[]),
+    nicety("recall count", conversationId && recallEvery > 0 ? recentRecallCount(db, conversationId, recallEvery) : Promise.resolve(0), 0),
   ]);
-  const history = selectHistory(historyAll, recentText);
-  const justinFacts = facts.filter((f) => f.scope === "justin" || f.scope === "shared");
-  const threads = livingThreads(threadsAll);
+
+  const recentKeywords = keywords(recentText);
+  const justinAll = facts.filter((f) => f.scope === "justin" || f.scope === "shared");
+  // A fact about him can only exist because they talked: it ends the stranger mode just as
+  // a history entry does, so the prompt never says both at once. A faded fact still counts.
+  const hasSharedHistory = historyAll.length > 0 || justinAll.length > 0;
+  const living = livingThreads(threadsAll);
+
+  // v3 (BB): what mattered and what came up recently stays; what a person would have let
+  // go is not in the prompt (and comes back the moment it is touched).
+  const justinFacts = attempt("rankFacts", () => rankFacts(justinAll, weights, recentKeywords, now, settings).kept, justinAll);
+  const history = attempt("rankHistory", () => rankHistory(historyAll, weights, recentKeywords, now, settings).kept, selectHistory(historyAll, recentText));
+  const threads = attempt("rankThreads", () => rankThreads(living, weights, recentKeywords, now, settings).kept, living);
+
+  const mode = sceneMode(scene.state.status);
+  const cooling = coolingOff(rel.state.cooling_off_until, now);
+  const phase = moodPhase(rel.state, now, numSetting(settings.moodDaysDefault, 3), rel.row.created_at);
+  const mood = phase === "gone" ? "" : (typeof rel.state.mood === "string" ? rel.state.mood.trim() : "");
+
+  // v3 (BB): the one half-remembered detail; never on an opener or a first text, never
+  // while the setting is 0 (the shipped default).
+  let recall: RecallPick | null = null;
+  if (recallEvery > 0 && !opener) {
+    recall = attempt("pickProvisional", () => pickProvisional(justinAll, weights, recentKeywords, now, settings, recallCount, cooling, hasSharedHistory, opener) ?? null, null);
+  }
+
+  // v3 (GG): the shape cue, rolled against the signatures of her last two replies.
+  const recentSignatures = attempt("signatures", () => (opts.recentAssistantTexts ?? []).slice(-SIGNATURE_WINDOW).map((t) => signature(t)), [] as string[]);
+  let cue: ShapeCue | null = null;
+  if (opts.cues !== false) {
+    const voiceAllowed = settings.voiceMode !== "off" && opts.env !== undefined && attempt("voiceConfigured", () => voiceConfigured(opts.env as Env, settings), false);
+    cue = attempt("shapeCue", () => shapeCue(seed + ":cue:" + turnKey, recentSignatures, {
+      voiceAllowed,
+      typoShare: numSetting(settings.typoCueShare, 0),
+      enabled: settings.textureCuesEnabled !== false,
+    }), null);
+  }
+
+  // v3 (AA): the tags this turn matches and the bank lines that fit them.
+  let tags: string[] = [];
+  let exemplars: VoiceLine[] = [];
+  if (perTurn > 0 && approvedLines.length) {
+    const localHour = localParts(now, safeTimezone(tz)).hour;
+    tags = attempt("turnTags", () => turnTags({
+      mode, localHour, hasSharedHistory, mood, coolingOff: cooling, hisText: opts.hisText ?? "", cue, opener,
+    }), []);
+    exemplars = attempt("selectExemplars", () => selectExemplars(approvedLines, tags, usedIds, seed + ":" + turnKey, { perTurn, maxChars: EXEMPLAR_MAX_CHARS }), []);
+  }
+
+  // v3 (CC): the wants the section shows and their last log rows.
+  const wants = wantsForPrompt(wantsAll, now);
+  const wantLog = wants.length ? await wantLogsFor(db, wants, wantsShown) : [];
+
+  // v3 (DD): what she is wearing today, from today's approved photo or today's outfit row.
+  const sceneAssets = approvedAssets.filter((a) => a.role === "scene");
+  const outfit = attempt("outfitNow", () => outfitNow(sceneAssets, today, now, tz), null as unknown as OutfitNow);
+  const grounding = {
+    city: typeof settings.herCity === "string" ? settings.herCity.trim() : "",
+    weather: opts.weather ?? null,
+    outfit,
+    today,
+  };
+
   let callbacks: PromptCallback[] = [];
   try {
-    callbacks = pickCallbacks({
+    // v3 (CC): the picker also sees her wants and the open asks, and knows an opener when it
+    // sees one (an unanswered ask never opens a first text). Passed as a variable, not a
+    // literal, so a picker that ignores the extra keys still typechecks.
+    const cbArgs = {
       history: historyAll,
       threads,
       log,
       recentTexts: opts.recentTexts ?? [],
       now,
-      seed: callbackSeed(now, opts.conversationId ?? null),
-    }).slice(0, 2);
+      seed,
+      opener,
+      wants,
+      wantLog,
+      asks,
+    };
+    callbacks = pickCallbacks(cbArgs).slice(0, 2);
   } catch (e) {
     // A callback is a nicety; a broken picker must never cost a turn.
-    console.warn("callbacks skipped", e instanceof Error ? e.name : "error");
+    console.warn("callbacks skipped", errorClass(e));
     callbacks = [];
   }
+
   return {
-    // A fact about him can only exist because they talked: it ends the stranger mode
-    // just as a history entry does, so the prompt never says both at once.
-    hasSharedHistory: historyAll.length > 0 || justinFacts.length > 0,
+    hasSharedHistory,
     fixedFacts: facts.filter((f) => f.scope === "fixed"),
     avelieFacts: facts.filter((f) => f.scope === "avelie"),
     justinFacts,
@@ -124,10 +307,28 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     unknowns,
     relationship: rel.state,
     scene: scene.state,
-    mode: sceneMode(scene.state.status),
+    mode,
     life: { threads, log, now, tz },
     callbacks,
     media,
+    // v3
+    exemplars,
+    corrections,
+    turnTags: tags,
+    recall,
+    fadedFactCount: Math.max(0, justinAll.length - justinFacts.length),
+    wants,
+    wantLog,
+    asks,
+    grounding,
+    shapeCue: cue,
+    recentSignatures,
+    turnKey,
+    opener,
+    relationshipSince: rel.row.created_at,
+    moodDaysDefault: numSetting(settings.moodDaysDefault, 3),
+    wantsShown,
+    correctionsShown,
   };
 }
 
@@ -135,6 +336,29 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
 function imageRefs(row: { role: string; images_json?: string | null }): ImageRef[] {
   if (row.role !== "user" || !row.images_json) return [];
   return parseInboxImages(row.images_json).map((i) => ({ key: i.key, mime: i.mime }));
+}
+
+// The weather for the turn (SPEC_V3 section DD), fetched alongside the state load. A slow
+// or failed call costs the turn nothing and produces no line, never a made-up weather.
+async function weatherFor(env: Env | undefined, db: D1Database, settings: Settings, now: Date): Promise<WeatherNow | null> {
+  if (!env) return null;
+  if (settings.weatherProvider === "off") return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), WEATHER_TIMEOUT_MS); });
+  try {
+    return await Promise.race([nicety("weather", getWeather(env, db, settings, now), null), late]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+export interface AssembleOptions {
+  // The turn has no message of his (an /open turn, a first text): the cue is the pending text.
+  opener?: boolean;
+  // The env, for the weather call and the voice-cue check; absent in the unit suite.
+  env?: Env;
+  // false skips the shape cue (assembleSystemOnly uses it for calls).
+  cues?: boolean;
 }
 
 // pendingMessageId names a stored user row that pendingUserText repeats (an idempotent
@@ -150,9 +374,16 @@ export async function assembleContext(
   pendingMessageId: string | null = null,
   now: Date = new Date(),
   pendingImages: ImageRef[] = [],
+  opts: AssembleOptions = {},
 ): Promise<AssembledContext> {
-  const recentRows = (await listRecentStoryMessages(db, conversationId, settings.contextRecentMessages))
-    .filter((r) => r.content.trim().length > 0 && r.id !== pendingMessageId);
+  const opener = opts.opener === true;
+  const [recentAll, seq, weather] = await Promise.all([
+    listRecentStoryMessages(db, conversationId, settings.contextRecentMessages),
+    pendingMessageId ? Promise.resolve(0) : nextSeq(db, conversationId),
+    weatherFor(opts.env, db, settings, now),
+  ]);
+  const turnKey = pendingMessageId ?? "s" + seq;
+  const recentRows = recentAll.filter((r) => r.content.trim().length > 0 && r.id !== pendingMessageId);
   const chat: ChatMessage[] = recentRows.map((r) => {
     const images = imageRefs(r);
     return images.length ? { role: r.role, content: r.content, images } : { role: r.role, content: r.content };
@@ -161,13 +392,87 @@ export async function assembleContext(
   chat.push(pendingRefs.length ? { role: "user", content: pendingUserText, images: pendingRefs } : { role: "user", content: pendingUserText });
   const messages = boundMessages(limitImageMessages(chat), settings.contextMaxChars);
   const recentText = messages.slice(-8).map((m) => m.content).join(" ");
+  const recentAssistantTexts = recentRows.filter((r) => r.role === "assistant").slice(-5).map((r) => r.content);
   const state = await loadPromptState(db, recentText, {
     now,
     tz: settings.timezone,
     conversationId,
     recentTexts: [...recentRows.slice(-CALLBACK_RECENT).map((r) => r.content), pendingUserText],
+    settings,
+    turnKey,
+    opener,
+    hisText: pendingUserText,
+    recentAssistantTexts,
+    weather,
+    env: opts.env,
+    cues: opts.cues,
   });
   const built = buildSystemPrompt(state);
+  return {
+    state,
+    system: built.system,
+    systemParts: { prefix: built.prefix, state: built.state },
+    promptVersion: built.promptVersion,
+    messages,
+    recentAssistantTexts,
+    turnKey,
+    opener,
+  };
+}
+
+// The compact system text (SPEC_V3 sections EE and II): the always-on rules and the
+// runtime overlay in front of the given state sections, joined the way the live prompt is.
+export function compactSystem(state: string): string {
+  return compactPrefix() + SYSTEM_SEPARATOR + state;
+}
+
+export function fullSystem(state: string): string {
+  return stablePrefix() + SYSTEM_SEPARATOR + state;
+}
+
+export interface SystemOnly {
+  prefix: string;
+  state: string;
+  system: string;
+  promptVersion: string;
+  promptState: PromptState;
+}
+
+// Her rules and her state with no pending user text (SPEC_V3 section EE): the instructions
+// of a phone call. `compact` is ALWAYS_ON + OVERLAY plus every state section; `full` is the
+// whole stable prefix plus the state. No shape cue (she speaks; nothing about bubbles
+// applies), no opener. The caller appends its own note after the state.
+export async function assembleSystemOnly(
+  db: D1Database,
+  conversationId: string,
+  settings: Settings,
+  now: Date = new Date(),
+  mode: SystemMode = "compact",
+  opts: { env?: Env } = {},
+): Promise<SystemOnly> {
+  const [recentAll, seq, weather] = await Promise.all([
+    listRecentStoryMessages(db, conversationId, settings.contextRecentMessages),
+    nextSeq(db, conversationId),
+    weatherFor(opts.env, db, settings, now),
+  ]);
+  const recentRows = recentAll.filter((r) => r.content.trim().length > 0);
+  const recentText = recentRows.slice(-8).map((r) => r.content).join(" ");
   const recentAssistantTexts = recentRows.filter((r) => r.role === "assistant").slice(-5).map((r) => r.content);
-  return { state, system: built.system, promptVersion: built.promptVersion, messages, recentAssistantTexts };
+  const promptState = await loadPromptState(db, recentText, {
+    now,
+    tz: settings.timezone,
+    conversationId,
+    recentTexts: recentRows.slice(-CALLBACK_RECENT).map((r) => r.content),
+    settings,
+    turnKey: "sys" + seq,
+    opener: false,
+    hisText: "",
+    recentAssistantTexts,
+    weather,
+    env: opts.env,
+    cues: false,
+  });
+  const state = stateSections(promptState);
+  const prefix = mode === "full" ? stablePrefix() : compactPrefix();
+  return { prefix, state, system: prefix + SYSTEM_SEPARATOR + state, promptVersion: PROMPT_VERSION, promptState };
 }

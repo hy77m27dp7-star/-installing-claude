@@ -1,20 +1,42 @@
-// Model: settings (with the price table), her timing and voice, notifications, drift reports, voiceprint, usage, system.
-import { api, h, chip, clear, flash, fmtDate, fmtTime, parseJson, registerServiceWorker, usd } from "./api.js";
+// Model: settings (with the price table), her timing and voice, grounding, calls,
+// tastings, the texter meter, notifications, drift reports, voiceprint, usage, system.
+import { api, h, chip, clear, downloadUrl, flash, fmtDate, fmtTime, parseJson, registerServiceWorker, today, usd } from "./api.js";
 
 const $ = (id) => document.getElementById(id);
 const form = $("settingsForm");
 
 const FIELDS = [
-  "provider", "model", "effort", "temperature", "maxTokens",
-  "replyDelayMode", "realDelayMaxMinutes", "timezone",
+  "provider", "model", "effort", "temperature", "maxTokens", "textureCuesEnabled", "typoCueShare",
+  "exemplarsPerTurn", "exemplarCooldownTurns", "correctionsShown", "correctionRewriteToBank",
+  "memoryDecayEnabled", "memoryFactsMax", "memoryHalfLifeLowDays", "memoryHalfLifeMidDays", "memoryHalfLifeHighDays", "provisionalRecallEvery",
+  "wantsShown", "askLetGoDays", "moodDaysDefault",
+  "herCity", "weatherUnits", "weatherProvider", "timezone",
+  "replyDelayMode", "realDelayMaxMinutes",
   "herFirstTextsPerDay", "herFirstQuietHours",
   "voiceProvider", "voiceMode", "elevenLabsVoiceId", "transcribeProvider",
+  "callProvider", "callModel", "callVoice", "callTranscribeModel", "callSystemMode", "callMaxMinutes", "callPricePerMinute",
+  "elevenLabsAgentId", "elevenLabsCallPricePerMinute",
   "proposalsEnabled", "proposalProvider", "proposalModel",
-  "imageProvider", "imageModel", "imageQuality", "imageSize", "imageCostUsd",
+  "tastingEnabled", "tastingProvider", "tastingModel", "tastingDailyCapUsd",
+  "finetuneMinExamples", "finetuneSystemMode",
+  "imageProvider", "imageModel", "imageQuality", "imageSize", "imageCostUsd", "portraitSize", "portraitCostUsd",
+  "videoProvider", "videoModel", "videoSeconds", "videoRatio", "videoCostUsd",
   "dailyCapUsd", "monthlyCapUsd", "driftCheckEnabled",
 ];
-const NUMERIC = new Set(["temperature", "maxTokens", "imageCostUsd", "dailyCapUsd", "monthlyCapUsd", "realDelayMaxMinutes", "herFirstTextsPerDay"]);
-const BOOL = new Set(["proposalsEnabled", "driftCheckEnabled"]);
+const NUMERIC = new Set([
+  "temperature", "maxTokens", "typoCueShare", "imageCostUsd", "dailyCapUsd", "monthlyCapUsd", "realDelayMaxMinutes", "herFirstTextsPerDay",
+  "exemplarsPerTurn", "exemplarCooldownTurns", "correctionsShown",
+  "memoryFactsMax", "memoryHalfLifeLowDays", "memoryHalfLifeMidDays", "memoryHalfLifeHighDays", "provisionalRecallEvery",
+  "wantsShown", "askLetGoDays", "moodDaysDefault",
+  "callMaxMinutes", "callPricePerMinute", "elevenLabsCallPricePerMinute",
+  "tastingDailyCapUsd", "finetuneMinExamples", "portraitCostUsd", "videoSeconds", "videoCostUsd",
+]);
+const BOOL = new Set(["proposalsEnabled", "driftCheckEnabled", "textureCuesEnabled", "correctionRewriteToBank", "memoryDecayEnabled", "tastingEnabled"]);
+// The four call prices live in one settings object; the form shows them as four fields.
+const CALL_PRICE_KEYS = ["audioInPerMTok", "audioOutPerMTok", "textInPerMTok", "textOutPerMTok"];
+// Rough tokens per training example, for the two estimates the Texter card shows.
+const EST_COMPACT = 3000;
+const EST_FULL = 12000;
 
 // Only keys the server returned go back in a save: a field the runtime does not know yet
 // stays visible but disabled instead of failing the whole form.
@@ -33,25 +55,47 @@ function fill(s) {
     const el = form.elements[k];
     if (!el) continue;
     const has = known.has(k);
-    el.disabled = !has;
+    // The two ElevenLabs call fields stay disabled: reserved for v3.1.
+    el.disabled = !has || el.dataset.reserved === "1";
     if (!has) continue;
     if (BOOL.has(k)) el.checked = !!s[k];
     else el.value = s[k] === undefined || s[k] === null ? "" : String(s[k]);
   }
+  const cp = s && s.callPrices && typeof s.callPrices === "object" ? s.callPrices : null;
+  for (const key of CALL_PRICE_KEYS) {
+    const el = form.elements["callPrices." + key];
+    if (!el) continue;
+    el.disabled = !known.has("callPrices");
+    el.value = cp && cp[key] !== undefined && cp[key] !== null ? String(cp[key]) : "";
+  }
   fillPrices(s.prices);
+  renderTexterLive();
 }
 
 function collect() {
   const out = {};
   for (const k of FIELDS) {
     const el = form.elements[k];
-    if (!el || (known && !known.has(k))) continue;
+    if (!el || (known && !known.has(k)) || el.dataset.reserved === "1") continue;
     let v;
     if (BOOL.has(k)) v = el.checked;
     else if (NUMERIC.has(k)) v = Number(el.value);
     else v = el.value.trim();
     if (loaded && loaded[k] === v) continue;
     out[k] = v;
+  }
+  if (known && known.has("callPrices")) {
+    const cp = {};
+    let any = false;
+    for (const key of CALL_PRICE_KEYS) {
+      const el = form.elements["callPrices." + key];
+      if (!el) continue;
+      const n = Number(el.value);
+      if (!el.value.trim() || !Number.isFinite(n)) throw new Error("callPrices: " + key + " needs a number of 0 or more");
+      cp[key] = n;
+      if (!loaded || !loaded.callPrices || loaded.callPrices[key] !== n) any = true;
+    }
+    if (any) out.callPrices = cp;
   }
   return out;
 }
@@ -133,7 +177,13 @@ async function loadSettings() {
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn = $("saveBtn");
-  const patch = collect();
+  let patch;
+  try {
+    patch = collect();
+  } catch (e0) {
+    fail($("settings-status"), e0);
+    return;
+  }
   for (const k of NUMERIC) {
     if (k in patch && !Number.isFinite(patch[k])) {
       flash($("settings-status"), k, "danger");
@@ -155,12 +205,269 @@ form.addEventListener("submit", async (e) => {
     flash($("settings-status"), Object.keys(patch).length ? "saved" : "nothing to save", "ok");
     loadUsage();
     loadSystem();
+    loadGrounding();
+    loadTexter();
+    loadTastings();
   } catch (e2) {
     fail($("settings-status"), e2);
   } finally {
     btn.disabled = false;
   }
 });
+
+// ------------------------------------------------------------ grounding (SPEC_V3 DD)
+
+function cityLabel(r) {
+  return [r.name, r.admin1, r.country].filter((x) => typeof x === "string" && x).join(", ").slice(0, 80);
+}
+
+$("geoFind").addEventListener("click", async () => {
+  const name = form.elements.herCity.value.trim();
+  const box = $("geoResults");
+  const slot = $("geo-status");
+  clear(box);
+  if (!name) { flash(slot, "city", "danger"); return; }
+  const btn = $("geoFind");
+  btn.disabled = true;
+  try {
+    const r = await api("POST", "/api/grounding/geocode", { name });
+    const results = r && Array.isArray(r.results) ? r.results : [];
+    if (!results.length) { flash(slot, "No match", "danger"); return; }
+    for (const c of results.slice(0, 5)) {
+      const pickBtn = h("button", { type: "button", class: "btn small" },
+        h("span", { text: cityLabel(c) }),
+        c.timezone ? chip(String(c.timezone)) : null);
+      pickBtn.addEventListener("click", async () => {
+        pickBtn.disabled = true;
+        try {
+          const patch = { herCity: cityLabel(c), herLat: Number(c.latitude), herLon: Number(c.longitude) };
+          if (typeof c.timezone === "string" && c.timezone) patch.timezone = c.timezone;
+          fill(await api("PUT", "/api/settings", patch));
+          clear(box);
+          flash(slot, "set", "ok");
+          loadGrounding();
+        } catch (e) {
+          pickBtn.disabled = false;
+          fail(slot, e);
+        }
+      });
+      box.append(pickBtn);
+    }
+  } catch (e) {
+    fail(slot, e);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// The read-only Now line: time of day, the weather words, what she is wearing.
+async function loadGrounding() {
+  const line = $("groundingNow");
+  clear(line);
+  let g;
+  try {
+    g = await api("GET", "/api/grounding");
+  } catch {
+    return;
+  }
+  if (!g || typeof g !== "object") return;
+  const parts = [];
+  if (g.timeOfDay) parts.push(["now", String(g.timeOfDay)]);
+  const w = g.weather && typeof g.weather === "object" ? g.weather : null;
+  if (w) {
+    const temp = w.temp !== undefined && w.temp !== null ? Math.round(Number(w.temp)) + (w.units === "celsius" ? "C" : "F") : "";
+    const feels = w.feels !== undefined && w.feels !== null && Math.round(Number(w.feels)) !== Math.round(Number(w.temp)) ? ", feels " + Math.round(Number(w.feels)) : "";
+    parts.push([g.city ? String(g.city) : "weather", [temp, w.words].filter(Boolean).join(", ") + feels]);
+  } else if (g.city) {
+    parts.push(["city", String(g.city)]);
+  }
+  const outfit = g.outfit && typeof g.outfit === "object" ? g.outfit.text : g.outfit;
+  if (outfit) parts.push(["wearing", String(outfit)]);
+  if (!parts.length) { line.append(chip("nothing yet")); return; }
+  for (const [k, v] of parts) line.append(h("span", null, h("span", { class: "k", text: k }), v), " ");
+}
+
+// ------------------------------------------------------------ texter (SPEC_V3 II)
+
+let texterStatus = null;
+
+function renderTexterLive() {
+  const box = $("texterLive");
+  clear(box);
+  const live = texterStatus && texterStatus.live && typeof texterStatus.live === "object" ? texterStatus.live : loaded ? { provider: loaded.provider, model: loaded.model } : null;
+  if (live) box.append(chip("live: " + String(live.provider || "") + " " + String(live.model || ""), "accent"));
+  const tm = (texterStatus && texterStatus.texterModel) || (loaded && loaded.texterModel);
+  if (tm && live && live.model === tm) box.append(chip("texter", "ok"));
+  const prev = texterStatus && texterStatus.previous && typeof texterStatus.previous === "object" ? texterStatus.previous : loaded && loaded.texterPrevious;
+  if (prev && typeof prev === "object" && prev.model) box.append(chip("back: " + String(prev.provider || "") + " " + String(prev.model || "")));
+}
+
+async function loadTexter() {
+  const box = $("texterBox");
+  let s;
+  try {
+    s = await api("GET", "/api/finetune/status");
+  } catch (e) {
+    box.classList.toggle("hidden", e.status === 404);
+    flash($("texter-status"), e.code, "danger");
+    return;
+  }
+  box.classList.remove("hidden");
+  texterStatus = s && typeof s === "object" ? s : null;
+  const approved = Number(s && s.approved) || 0;
+  const minimum = Number(s && s.minimum) || 0;
+  const count = $("texterCount");
+  clear(count);
+  count.append(String(approved), h("span", { text: " of " + minimum }));
+  const pct = minimum > 0 ? Math.min(100, Math.round((approved / minimum) * 100)) : 0;
+  const meter = $("texterMeter");
+  meter.setAttribute("aria-valuenow", String(pct));
+  meter.querySelector("span").style.width = pct + "%";
+  const chips = $("texterChips");
+  clear(chips);
+  const b = s && s.breakdown && typeof s.breakdown === "object" ? s.breakdown : {};
+  for (const [k, label] of [["keeps", "keeps"], ["rewrites", "rewrites"], ["picks", "picks"]]) {
+    if (b[k] !== undefined) chips.append(chip(label + " " + b[k]));
+  }
+  chips.append(chip(s && s.ready ? "ready" : "not yet", s && s.ready ? "ok" : "amber"));
+  chips.append(chip("compact ~" + Math.round((approved * EST_COMPACT) / 1000) + "k tokens"));
+  chips.append(chip("full ~" + Math.round((approved * EST_FULL) / 1000) + "k tokens"));
+  if (s && typeof s.texterModel === "string" && s.texterModel && !$("texterModel").value) $("texterModel").value = s.texterModel;
+  renderTexterLive();
+}
+
+function stripHimQuery() {
+  return "?stripHim=" + ($("stripHim").checked ? "1" : "0");
+}
+
+async function exportTexter(btn, path, name) {
+  const slot = $("export-status");
+  btn.disabled = true;
+  try {
+    await downloadUrl(path + stripHimQuery(), name);
+    flash(slot, "exported", "ok");
+  } catch (e) {
+    fail(slot, e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("exportTrain").addEventListener("click", () => exportTexter($("exportTrain"), "/api/finetune/export.jsonl", "avelie-train-" + today() + ".jsonl"));
+$("exportRecord").addEventListener("click", () => exportTexter($("exportRecord"), "/api/finetune/export.json", "avelie-train-" + today() + ".json"));
+
+$("texterUse").addEventListener("click", async () => {
+  const slot = $("texter-status");
+  const model = $("texterModel").value.trim();
+  if (!model) { flash(slot, "model id", "danger"); return; }
+  const body = { model };
+  const inRaw = $("texterIn").value.trim();
+  const outRaw = $("texterOut").value.trim();
+  if (inRaw || outRaw) {
+    const i = Number(inRaw);
+    const o = Number(outRaw);
+    if (!inRaw || !outRaw || !Number.isFinite(i) || !Number.isFinite(o) || i < 0 || o < 0) { flash(slot, "both prices", "danger"); return; }
+    body.inputPerMTok = i;
+    body.outputPerMTok = o;
+  }
+  const btn = $("texterUse");
+  btn.disabled = true;
+  try {
+    fill(await api("POST", "/api/finetune/use", body));
+    flash(slot, "in use", "ok");
+    loadTexter();
+    loadSystem();
+  } catch (e) {
+    fail(slot, e);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("texterRevert").addEventListener("click", async () => {
+  const slot = $("texter-status");
+  const btn = $("texterRevert");
+  btn.disabled = true;
+  try {
+    fill(await api("POST", "/api/finetune/revert", {}));
+    flash(slot, "reverted", "ok");
+    loadTexter();
+    loadSystem();
+  } catch (e) {
+    fail(slot, e);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ------------------------------------------------------------ tastings (SPEC_V3 HH)
+
+function performerKey(p) {
+  return String(p && p.provider || "") + " " + String(p && p.model || "");
+}
+
+async function loadTastings() {
+  const box = $("tastingsBox");
+  const tbody = $("ledgerRows");
+  const recent = $("tastingsRecent");
+  let r;
+  try {
+    r = await api("GET", "/api/tastings/ledger");
+  } catch (e) {
+    box.classList.toggle("hidden", e.status === 404);
+    flash($("tastings-status"), e.code, "danger");
+    return;
+  }
+  box.classList.remove("hidden");
+  clear(tbody);
+  clear(recent);
+  const performers = r && Array.isArray(r.performers) ? r.performers : [];
+  const live = loaded ? performerKey(loaded) : "";
+  if (!performers.length) tbody.append(h("tr", null, h("td", { colspan: "7" }, chip("none"))));
+  for (const p of performers) {
+    const key = performerKey(p);
+    const slot = h("span", { class: "chips" });
+    const promote = h("button", {
+      type: "button", class: "btn small", text: "Promote", disabled: key === live,
+      onclick: async () => {
+        if (!window.confirm("Promote " + key + "?")) return;
+        promote.disabled = true;
+        try {
+          fill(await api("POST", "/api/tastings/promote", { provider: p.provider, model: p.model }));
+          flash($("tastings-status"), "promoted", "ok");
+          loadTastings();
+          loadSystem();
+        } catch (e) {
+          promote.disabled = false;
+          fail(slot, e);
+        }
+      },
+    });
+    const rate = Number(p.rate);
+    tbody.append(h("tr", null,
+      h("td", { class: "mono", text: key }),
+      h("td", { class: "num", text: String(Number(p.wins) || 0) }),
+      h("td", { class: "num", text: String(Number(p.losses) || 0) }),
+      h("td", { class: "num", text: String(Number(p.draws) || 0) }),
+      h("td", { class: "num", text: Number.isFinite(rate) ? Math.round((rate <= 1 ? rate * 100 : rate)) + "%" : "" }),
+      h("td", { text: p.lastPickedAt || p.last_picked_at ? fmtTime(p.lastPickedAt || p.last_picked_at) : "" }),
+      h("td", null, h("span", { class: "row" }, key === live ? chip("live", "accent") : promote, slot))));
+  }
+  const rows = r && Array.isArray(r.recent) ? r.recent : [];
+  if (!rows.length) recent.append(h("div", { class: "chips" }, chip("none")));
+  for (const t of rows.slice(0, 20)) {
+    const winner = t.winner && typeof t.winner === "object" ? performerKey(t.winner) : t.winner ? String(t.winner) : "";
+    const loser = t.loser && typeof t.loser === "object" ? performerKey(t.loser) : t.loser ? String(t.loser) : "";
+    const st = String(t.status || t.pick || "");
+    recent.append(h("div", { class: "recent-row" },
+      h("span", { class: "when", text: fmtTime(t.decided_at || t.decidedAt || t.created_at) }),
+      h("span", { class: "chips" },
+        st ? chip(st, st === "picked" ? "ok" : st === "void" ? "amber" : "") : null,
+        winner ? chip("won: " + winner, "accent") : null,
+        loser ? chip("lost: " + loser) : null),
+      h("span", { class: "muted small mono", text: String(t.id || "").slice(0, 8) })));
+  }
+}
 
 // ------------------------------------------------------------ her first texts
 
@@ -373,7 +680,7 @@ async function loadVoiceprint() {
   clear(sparks);
   const list = rows.slice(0, 8).map((row) => ({ row, j: parseJson(row.json, null) || row.stats || row }));
   if (!list.length) {
-    tbody.append(h("tr", null, h("td", { colspan: "8" }, chip("none"))));
+    tbody.append(h("tr", null, h("td", { colspan: "10" }, chip("none"))));
     return;
   }
   for (const { row, j } of list) {
@@ -386,7 +693,9 @@ async function loadVoiceprint() {
       h("td", { class: "num", text: num(pick(j, ["meanLength", "mean", "mean_length"]), 0) }),
       h("td", { class: "num", text: num(pick(j, ["medianLength", "median", "median_length"]), 0) }),
       h("td", { class: "num", text: pct(pick(j, ["questionShare", "question_share", "questions"])) }),
-      h("td", { class: "num", text: num(pick(j, ["bubblesPerReply", "bubbles", "bubble_count"]), 1) }),
+      h("td", { class: "num", text: num(pick(j, ["avgBubbles", "bubblesPerReply", "bubbles", "bubble_count"]), 1) }),
+      h("td", { class: "num", text: pct(pick(j, ["oneWordShare", "one_word_share"])) }),
+      h("td", { class: "num", text: pct(pick(j, ["lowercaseShare", "lowercase_share"])) }),
       h("td", { class: "num", text: num(pick(j, ["firstTexts", "first_texts", "firstTextCount"])) }),
       h("td", { class: "num", text: flagText })));
   }
@@ -442,9 +751,14 @@ async function loadSystem() {
     const s = await api("GET", "/api/system");
     $("sysConstitution").textContent = s.constitutionVersion || "";
     $("sysPrompt").textContent = s.promptVersion || "";
-    const keys = s.providerKeys || {};
-    $("keyAnthropic").classList.toggle("on", !!keys.anthropic);
-    $("keyOpenai").classList.toggle("on", !!keys.openai);
+    const keys = s.providerKeys && typeof s.providerKeys === "object" ? s.providerKeys : {};
+    const kbox = $("sysKeys");
+    clear(kbox);
+    const names = ["anthropic", "openai", ...Object.keys(keys).filter((k) => k !== "anthropic" && k !== "openai")];
+    for (const k of names) {
+      const dot = h("span", { class: "dot" + (keys[k] ? " on" : ""), role: "img", "aria-label": keys[k] ? "set" : "missing" });
+      kbox.append(h("span", { class: "k", text: k }), h("span", { class: "v" }, dot));
+    }
     const counts = $("sysCounts");
     clear(counts);
     for (const [k, v] of Object.entries(s.counts || {})) {
@@ -462,9 +776,12 @@ async function init() {
   } catch {
     /* gated before this page loads */
   }
-  loadSettings();
+  await loadSettings();
   loadUsage();
   loadSystem();
+  loadGrounding();
+  loadTexter();
+  loadTastings();
   loadDrift();
   loadVoiceprint();
   initPush();

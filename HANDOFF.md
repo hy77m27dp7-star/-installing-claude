@@ -1,6 +1,6 @@
-# Avelie: handoff (2026-09-24, v2 built on the branch, v1 live)
+# Avelie: handoff (2026-09-24, v3 lanes written on the v2 tree, v1 live)
 
-This is the whole project in one file, written for a Claude Code session on Justin's Mac that carries it forward: the v2 merge and deploy, then v3. Read it whole. Then DEPLOY.md section 13. Then SPEC_V2.md. Typography " -- " and "..." only, in code, copy and chat.
+This is the whole project in one file, written for a Claude Code session on Justin's Mac that carries it forward: the v3 integration, review, fix and verify, then one deploy of v2 plus v3 together, before he tests. Read it whole. Then SPEC_V3.md (the contract), DEPLOY.md sections 13 and 19 to 24. Typography " -- " and "..." only, in code, copy and chat.
 
 ## Paste this first (the Mac session's opening move)
 
@@ -8,7 +8,7 @@ This is the whole project in one file, written for a Claude Code session on Just
 2. `cd ~/Documents/ClaudeCode/2026-09-24_avelie && git pull` (the clone exists; the branch is claude/modest-dijkstra-ju73pw)
 3. `npm install && npm test && npm run test:integration`
 4. Read this file, then DEPLOY.md section 13, and do it. Take his one word before the deploy.
-5. Then SPEC_V3.md (being written in its own workflow) and the Next section below.
+5. Then SPEC_V3.md and the Next section below: the v3 lanes are written; the integrator runs next (docs/workflows/avelie-v3-build.js has the gate and every prompt).
 
 ## Who she is (the part that must never drift)
 
@@ -95,13 +95,21 @@ A cron job by hand: `npx wrangler dev --port 8787 --var ACCESS_AUD: --test-sched
 
 DEPLOY.md. Sections 1 to 9 are done (v1). Section 10 is any redeploy. Section 13 is the v2 round: pull, `ls migrations`, `npm test`, `npm run test:integration`, `npm run db:remote`, `npm run deploy`, the proof curls, the four cron rows in the dashboard. Sections 14 to 18: the optional secrets (ElevenLabs, VAPID), the backups, the drift check, the phone install and notifications, what she-texts-first does and does not do. One before/after list, one word from him, one deploy.
 
+## v3: what was built (2026-09-24, six lanes on the v2 tree, unintegrated)
+
+SPEC_V3.md is the contract (revision 2, the skeptic's cuts folded in). His direction: "she needs to be REAL, not this AI BULLSHIT"; "SHE WILL BE HUMAN"; everything except a day engine ("she needs to always be available for now"); he will not test until v3 is deployed. His answers to the spec's open questions, baked in as defaults: her city is Portland, Maine with the weather on; training on OpenAI is acceptable, "Leave him out of the state" on by default, explicit exchanges left out by default; the texter base is gpt-4.1-mini; there is no Runway key, so clips ship off with the code path complete; the three numeric defaults ship as written; an Approve-all button as well as per line and per tag, the second 150 lines later; `provisionalRecallEvery` 0 and `typoCueShare` 0 ship off; ElevenLabs calls deferred, the settings reserved.
+
+The lanes (files by owner, in SPEC_V3 "Build lanes"): M1 voice bank, corrections, imperfection, checks, the 0005 migrations; M2 memory, wants, grounding, weather, portraits, maintenance, callbacks, life; M3 the pipeline (types, db defaults, the TEXTURE paragraph and -p5, prompt, context, the prepareTurn / generateDraft / commitReply split with the pending-tasting gate, proposals, state, provenance); M4 calls, video, tastings, finetune, budget, images (Range, portrait approval), export, operator, timeline, character export, the providers (the two-block cache split, generateFromText, mintRealtimeSecret, runway.ts, the stub triggers); M5 the UI; M6 the router (every route in the table and every settings row), the entry (CSP for the realtime origin, the microphone permission, the nightly maintenance), the Mac fine-tune script, the unit and integration tests, the scenarios, the v3 workflow and these docs.
+
+M6's contract notes for the integrator (names the router imports that the spec did not fix, chosen to be settled): `geocode(settings, name)` from weather.ts; `finetuneStatus`, `exportTrainingStream(db, settings, { stripHim, includeExplicit })` (a ReadableStream), `exportSidecar`, `useTexter`, `revertTexter` from finetune.ts; `ledger(db)` returning `{ performers, recent }` and `promote` from tastings.ts; `nightly(env, db, settings)` from maintenance.ts; `serveMedia(env, db, id, range)` in images.ts (the fourth argument, as the other three media servers already take). The router reads a tasting and a call's messages with its own SQL (no export named for them). The marks routes are the router's own SQL on `message_marks`. `GET /api/finetune/status`, `/use` and `/revert` read the stored settings, never the local `.dev.vars` overlay. `GET /api/memory` defaults to entity fact. The v3 unit tests skip themselves (visibly) while a lane's module is not in the tree, and look through short alias lists where the spec names a behavior but not an export; the integration block skips itself when the server has no v3 routes. The runner passes `OPENAI_API_KEY=dummy-for-settings-only` as a `--var` so `/use` can be exercised on the stub.
+
 ## Next
 
-1. The integrator merges the v1 fix pass and the six v2 lanes, makes `npm test` and `npm run test:integration` green, then the adversarial review, the fix pass and the independent verify (docs/workflows/avelie-v2-build.js).
-2. Deploy v2 per DEPLOY.md section 13 with his one word. Then HQ (STATE.md, MAP.md, memory/avelie.md, CONFLICTS.md), commit and push, the Drive STATE copy.
-3. v3 on top of v2: SPEC_V3.md when the spec workflow lands it, then lanes, one integration, review, fix, verify, one deploy. He said "deployed before i even start testing".
-4. Only then his first real talk on v3. Read what he says about her before touching her rules (docs/BEHAVIOR.md, the standing rule).
-5. Run `npm run behavior` on the real provider once, and `--compare` once (Opus 5 against the explicit performer), and read the reports as a person before looking at the counts.
+1. The v3 integrator (docs/workflows/avelie-v3-build.js, Integrate phase): settle every drifted name between lanes, `npm run build:canon`, `node scripts/build_voicebank.mjs`, typography, tsc, `npm run test:unit` with no v3 file skipping, `npm run test:integration` (the runner applies 0001 to 0005b and drives every v3 check), the UI smoke; then the three reviewers, the fix pass, the independent verify.
+2. Deploy v2 and v3 together per DEPLOY.md sections 13 and 19 (one before/after list, his pre-authorised go still shown once), then sections 20 to 24 as they apply (no Runway key today; the city is already Portland; the two switches stay off). Then HQ (STATE.md, MAP.md, memory/avelie.md, CONFLICTS.md), commit and push, the Drive STATE copy, ONE zip in chat with its hash.
+3. Only then his first real talk on v3. Read what he says about her before touching her rules (docs/BEHAVIOR.md, the standing rule). Approve some voice lines first (State > Voice), or she reads none of them.
+4. Run `npm run behavior -- --only v3` on the real provider once (H03 is the gate for `provisionalRecallEvery`; H05 for `typoCueShare`), `--compare` once (Opus 5 against the tasting performer), and read the reports as a person before looking at the counts.
+5. v3.1 when he asks: the second 150 seed lines, the recall outcome bookkeeping, the `[clip:]` marker, the ElevenLabs call path (SPEC_V3 "Deferred to v3.1").
 
 ## Rules that stay on (each one cost real hours)
 
@@ -116,6 +124,8 @@ DEPLOY.md. Sections 1 to 9 are done (v1). Section 10 is any redeploy. Section 13
 - node_modules is never a symlink inside a worktree that git can see (.gitignore says `node_modules`, no trailing slash, since e2c89fc). A tracked symlink once replaced the real packages with a link to itself.
 
 ## Open items for him (ask once, in one list, when the time comes)
+
+- v3, after the deploy: approve the first voice lines (State > Voice: per line, per tag, or Approve all); whether to turn on the half-remembered recall (Model > Memory, 8) and the typo cue (Model > Text, 0.05) once the two scenarios read right; a Runway key if he wants clips; which ElevenLabs voice for calls in v3.1; the first Keep marks toward the 200 the texter needs.
 
 - The shipped default for her first texts (0 until he turns it on, or 10 from the start); the two optional secrets (ElevenLabs, VAPID) if he wants the voice he chooses and the phone notification.
 - claude-opus-5-5 as her performer: add it to the price table on the Model page, then switch between conversations.

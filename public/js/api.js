@@ -172,6 +172,59 @@ export function download(name, blob) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// Fetches a file route (a streamed JSONL export, the sidecar record) with the owner's
+// cookie and saves it under the name the server gives, or the fallback. The body is
+// never parsed: it goes to disk as it came. Throws the same error shape as api().
+export async function downloadUrl(path, fallbackName) {
+  let res;
+  try {
+    res = await fetch(path, { method: "GET", credentials: "same-origin" });
+  } catch {
+    throw makeError("network", 0, "network");
+  }
+  if (!res.ok) {
+    let obj = {};
+    try { obj = JSON.parse(await res.text()) || {}; } catch { obj = {}; }
+    throw makeError(obj.code || String(res.status), res.status, obj.error || res.statusText || "error");
+  }
+  const blob = await res.blob();
+  const cd = res.headers.get("content-disposition") || "";
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  const name = m && m[1] ? decodeURIComponent(m[1].trim()) : fallbackName;
+  download(name || "download", blob);
+  return name;
+}
+
+// "4:12" for 252 seconds; hours only when there are any.
+export function fmtDuration(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m >= 60) return Math.floor(m / 60) + ":" + String(m % 60).padStart(2, "0") + ":" + String(r).padStart(2, "0");
+  return m + ":" + String(r).padStart(2, "0");
+}
+
+// "3d ago", "2h ago", "just now": the age of an ISO time, coarse on purpose.
+export function ago(iso) {
+  const t = Date.parse(iso || "");
+  if (!Number.isFinite(t)) return "";
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return m + "m ago";
+  const hr = Math.round(m / 60);
+  if (hr < 24) return hr + "h ago";
+  const d = Math.round(hr / 24);
+  if (d < 60) return d + "d ago";
+  return Math.round(d / 30) + "mo ago";
+}
+
+// "sounded like a bot" -> "sounded like a b..." at the cap; whole text under it.
+export function truncate(text, max) {
+  const s = String(text ?? "");
+  return s.length > max ? s.slice(0, Math.max(0, max - 3)).trimEnd() + "..." : s;
+}
+
 // The shell registers only once the owner is known (a successful GET /api/me).
 export function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
@@ -191,6 +244,11 @@ const ICONS = {
   more: ["M5 12h.01", "M12 12h.01", "M19 12h.01"],
   menu: ["M4 7h16", "M4 12h16", "M4 17h16"],
   play: ["M6 4l14 8-14 8z"],
+  phone: ["M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6.2 6.2l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 1.9z"],
+  check: ["M20 6L9 17l-5-5"],
+  scale: ["M12 3v18", "M5 7h14", "M5 7l-3 7a3 3 0 0 0 6 0z", "M19 7l-3 7a3 3 0 0 0 6 0z"],
+  pen: ["M12 20h9", "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"],
+  micOff: ["M1 1l22 22", "M9 9v3a3 3 0 0 0 5.1 2.1", "M15 9.3V5a3 3 0 0 0-5.9-.7", "M17 16.9A7 7 0 0 1 5 12v-1", "M19 11v1a7 7 0 0 1-.1 1.2", "M12 19v3", "M8 22h8"],
 };
 
 export function svgIcon(name) {

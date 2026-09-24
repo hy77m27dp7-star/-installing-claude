@@ -27,8 +27,12 @@
   <div class="tabs" role="tablist">
     <button type="button" role="tab" data-tab="now">Now</button>
     <button type="button" role="tab" data-tab="life">Life</button>
+    <button type="button" role="tab" data-tab="wants">Wants</button>
     <button type="button" role="tab" data-tab="history">History</button>
     <button type="button" role="tab" data-tab="facts">Facts</button>
+    <button type="button" role="tab" data-tab="memory">Memory</button>
+    <button type="button" role="tab" data-tab="voice">Voice</button>
+    <button type="button" role="tab" data-tab="notes">Notes</button>
     <button type="button" role="tab" data-tab="unknowns">Unknowns</button>
     <button type="button" role="tab" data-tab="inbox">Inbox</button>
     <button type="button" role="tab" data-tab="rulebook">Rulebook</button>
@@ -46,13 +50,16 @@
         <label class="field">Mood
           <input type="text" id="moodInput" placeholder="fine" maxlength="200">
         </label>
+        <label class="field">Mood days
+          <input type="number" id="moodDays" min="1" max="14" step="1" inputmode="numeric" placeholder="3">
+        </label>
         <label class="field">Cooling off until
           <input type="datetime-local" id="coolInput">
         </label>
       </div>
       <div class="row">
         <button type="button" class="btn primary" id="moodSave">Save</button>
-        <button type="button" class="btn ghost" id="moodClear">Clear</button>
+        <button type="button" class="btn ghost" id="moodClear">Clear mood</button>
         <span class="chips" id="moodStatus"></span>
       </div>
     </div>
@@ -99,6 +106,33 @@
         <button type="button" id="lifeDropped" aria-pressed="false">Dropped</button>
       </div>
       <span class="chips" id="life-status"></span>
+    </div>
+    <div class="card stack tight" id="todayCard">
+      <div class="row between">
+        <h2 class="section-title">Today</h2>
+        <span class="chips" id="todayNow"></span>
+      </div>
+      <div id="todayList"></div>
+      <div class="grid-form">
+        <label class="field">Kind
+          <select id="todayKind">
+            <option value="meal">meal</option>
+            <option value="outfit">outfit</option>
+            <option value="errand">errand</option>
+            <option value="misc">misc</option>
+          </select>
+        </label>
+        <label class="field">Note
+          <input type="text" id="todayNote" placeholder="Note" maxlength="500">
+        </label>
+        <label class="field">When
+          <input type="datetime-local" id="todayWhen">
+        </label>
+      </div>
+      <div class="row">
+        <button type="button" class="btn primary" id="todayAdd">Add</button>
+        <span class="chips" id="todayStatus"></span>
+      </div>
     </div>
     <div class="stack" id="lifeGroups"></div>
     <div class="card stack">
@@ -164,6 +198,135 @@
   <section id="tab-inbox" class="stack hidden" role="tabpanel">
     <div class="chips" id="inbox-status"></div>
     <div class="stack" id="inboxList"></div>
+  </section>
+
+  <section id="tab-wants" class="stack hidden" role="tabpanel">
+    <div class="row between">
+      <div class="filter-chips" id="wantsFilter" role="group" aria-label="Status">
+        <button type="button" data-status="active" aria-pressed="true">active</button>
+        <button type="button" data-status="paused" aria-pressed="false">paused</button>
+        <button type="button" data-status="done" aria-pressed="false">done</button>
+        <button type="button" data-status="dropped" aria-pressed="false">dropped</button>
+      </div>
+      <span class="chips" id="wants-status"></span>
+    </div>
+    <div class="stack" id="wantsList"></div>
+    <div class="card stack">
+      <h2 class="section-title">Add want</h2>
+      <div class="grid-form">
+        <label class="field">Title
+          <input type="text" id="wantTitle" placeholder="Title" maxlength="200">
+        </label>
+        <label class="field">Progress
+          <input type="number" id="wantProgress" min="0" max="100" step="1" inputmode="numeric" value="0">
+        </label>
+      </div>
+      <input type="text" id="wantWhy" placeholder="Why" maxlength="500">
+      <input type="text" id="wantStakes" placeholder="Stakes" maxlength="500">
+      <input type="text" id="wantNext" placeholder="Next step" maxlength="500">
+      <div class="row">
+        <button type="button" class="btn primary" id="wantAdd">Add</button>
+        <span class="chips" id="wantAddStatus"></span>
+      </div>
+    </div>
+    <div class="card stack tight">
+      <div class="row between">
+        <h2 class="section-title">Asks</h2>
+        <div class="filter-chips" id="asksFilter" role="group" aria-label="Status">
+          <button type="button" data-status="open" aria-pressed="true">open</button>
+          <button type="button" data-status="all" aria-pressed="false">all</button>
+        </div>
+      </div>
+      <div id="asksList"></div>
+      <div class="row">
+        <input type="text" id="askText" class="grow" placeholder="Ask" maxlength="300">
+        <select id="askWant" aria-label="Want"></select>
+        <button type="button" class="btn" id="askAdd">Add ask</button>
+        <span class="chips" id="askStatus"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-memory" class="stack hidden" role="tabpanel">
+    <div class="row between">
+      <div class="filter-chips" id="memoryFilter" role="group" aria-label="Entity">
+        <button type="button" data-entity="fact" aria-pressed="true">facts</button>
+        <button type="button" data-entity="history" aria-pressed="false">history</button>
+        <button type="button" data-entity="thread" aria-pressed="false">life</button>
+        <button type="button" data-entity="log" aria-pressed="false">log</button>
+        <button type="button" data-entity="want" aria-pressed="false">wants</button>
+      </div>
+      <span class="chips" id="memory-status"></span>
+    </div>
+    <div class="card memory">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Entity</th>
+              <th>Text</th>
+              <th>Weight</th>
+              <th>Last touched</th>
+              <th class="num">Touches</th>
+              <th class="num">Score</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="memoryRows"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card stack tight">
+      <h2 class="section-title">Recalls</h2>
+      <div id="recallsList"></div>
+    </div>
+  </section>
+
+  <section id="tab-voice" class="stack hidden" role="tabpanel">
+    <div class="row between">
+      <div class="filter-chips" id="voiceStatusFilter" role="group" aria-label="Status">
+        <button type="button" data-status="unapproved" aria-pressed="true">unapproved</button>
+        <button type="button" data-status="approved" aria-pressed="false">approved</button>
+        <button type="button" data-status="rejected" aria-pressed="false">rejected</button>
+        <button type="button" data-status="all" aria-pressed="false">all</button>
+      </div>
+      <span class="chips" id="voiceCounts"></span>
+    </div>
+    <div class="filter-chips" id="voiceTagFilter" role="group" aria-label="Tag"></div>
+    <div class="card stack tight">
+      <div class="row between">
+        <label class="check"><input type="checkbox" id="voiceSelectAll"> Select all</label>
+        <div class="row">
+          <button type="button" class="btn small" id="voiceApproveSelected">Approve selected</button>
+          <button type="button" class="btn small danger" id="voiceRejectSelected">Reject selected</button>
+          <button type="button" class="btn small" id="voiceApproveTag" disabled>Approve all in tag</button>
+          <button type="button" class="btn small primary" id="voiceApproveAll">Approve all</button>
+          <span class="chips" id="voice-status"></span>
+        </div>
+      </div>
+      <div id="voiceList"></div>
+    </div>
+    <div class="card stack tight">
+      <h2 class="section-title">Add line</h2>
+      <input type="text" id="voiceNewText" placeholder="Line" maxlength="160">
+      <div class="tag-picker" id="voiceNewTags" role="group" aria-label="Tags"></div>
+      <div class="row">
+        <button type="button" class="btn primary" id="voiceAdd">Add</button>
+        <span class="chips" id="voiceAddStatus"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-notes" class="stack hidden" role="tabpanel">
+    <div class="row between">
+      <div class="filter-chips" id="notesFilter" role="group" aria-label="Status">
+        <button type="button" data-status="active" aria-pressed="true">active</button>
+        <button type="button" data-status="retired" aria-pressed="false">retired</button>
+        <button type="button" data-status="all" aria-pressed="false">all</button>
+      </div>
+      <span class="chips" id="notes-status"></span>
+    </div>
+    <div class="card" id="notesList"></div>
   </section>
 
   <section id="tab-rulebook" class="stack hidden" role="tabpanel">

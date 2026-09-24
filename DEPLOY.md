@@ -236,9 +236,73 @@ What it does: every 20 minutes the Worker looks once. It skips if the number is 
 
 What it does not do: she never says she missed him, waited, or wondered where he was; never mentions how long it has been; never asks him to reply; never sends a third message in a row without an answer; never texts during quiet hours or while her schedule says she is busy; never pushes a notification for anything else. A first text that trips the `dependency_hook` check is dropped and logged, not retried. There is no streak, no counter he can see in the story, and nothing happens while the number is 0.
 
+## 19. v3: pull, migrate, deploy (one round, one "go")
+
+v3 adds two migration files, no new cron trigger, no new page, and one optional secret. The Worker name, the domain, the Access door and the existing secrets do not change. He pre-authorised this deploy ("deployed before i even start testing"); still show the before/after once.
+
+Before: v2 live (tables through 0004d, four cron triggers).
+After: the same Worker with the v3 code; new tables (the voice bank and its uses, the corrections, memory weights and recalls, wants, the want log, asks, the grounding log, the weather cache, calls, tastings and their candidates, message marks) and three new columns (`life_threads.portrait_asset_id`, `messages.call_id`, `message_context.state_text`); 150 seed voice lines, every one unapproved; one new fact about her (she lives in Portland, Maine, his decision); the same four cron triggers, the nightly one now also running the maintenance pass. Nothing in the account outside the Worker and its database changes. No row that exists today is touched.
+
+Then, in order:
+
+```
+cd ~/Documents/ClaudeCode/2026-09-24_avelie
+git pull
+ls migrations
+npm test
+npm run test:integration
+npm run db:remote
+npm run deploy
+```
+
+- `ls migrations` must show 0005_v3.sql and 0005b_voicebank_seed.sql after the 0004 files.
+- `npm test` now also runs `build:voicebank` (it regenerates 0005b from canon/seed/voicebank.json; a regenerated file is byte-identical, so nothing changes in git).
+- `npm run db:remote` prints the two 0005 files as applied and skips 0001 to 0004d. Run it BEFORE the deploy: the new code reads the new tables on its first request. Apply 0005 and 0005b together; the seed file is written to be applied once and never re-applied (the ledger records it by name).
+- `npm run deploy` runs `npm test` and `check:deploy` again and then `wrangler deploy`. The output must list the custom domain and the same four cron triggers as v2. If it shows `workers.dev` as enabled, stop.
+
+Proof: the two curls of section 7, then `curl -sI https://avelie.bladepharoh.com/ | grep -i -E "content-security-policy|permissions-policy"` after logging in is not possible from curl (Access), so open the site in his Chrome and check the response headers in the Network tab: `content-security-policy` carries `connect-src 'self' https://api.openai.com` and `media-src 'self' blob:`, and `permissions-policy` carries `microphone=(self)`. Without them the Call button cannot reach the realtime provider or the microphone.
+
+## 20. v3: the optional Runway secret (only if there is a key)
+
+Clips ship OFF: there is no Runway key on the Mac today (his answer to open question 4), the code path is complete, and without the secret every clip control stays hidden and `POST /api/video/generate` answers 503. When a key exists in the keychain item `runwayml`:
+
+```
+security find-generic-password -s runwayml -w | npx wrangler secret put RUNWAY_API_KEY
+```
+
+That line never prints the key. Then on the Model page: Images > Video provider `runway`, model `gen4_turbo`, 5 seconds, `720:1280`, price 0.25 per clip (confirm on Runway's pricing page), Save. Clips are made from the Images page, Clips tab, and are candidates until approved.
+
+## 21. v3: her city and the weather
+
+Her city ships as Portland, Maine (his decision, 2026-09-24) with the weather on through Open-Meteo, which needs no key. To change it: Model page > Grounding > type a city, click Find, pick one from the list (that writes the city, its coordinates and its timezone), Save. Weather provider `off` turns the line off; nothing else changes. The weather is fetched at most once every 20 minutes and never delays a turn: a slow or failed call produces no line.
+
+## 22. v3: calls, what the browser needs
+
+Calls run on OpenAI Realtime with the OpenAI key already in the Worker. The first time he taps Call, the browser asks for the microphone once: tap Allow. On the phone the call works from Safari or the home-screen copy alike. The call sheet shows Connecting, Live, captions both ways, Mute and End; every 30 seconds the app meters the call from what the session bills (never below `callPricePerMinute` a minute), and it hangs up on its own at `callMaxMinutes` (20) or when a spending cap is reached, with the reason on the sheet. The transcript lands in the thread as a card. Calls on an ElevenLabs voice are v3.1; the two fields on the Calls card are marked Reserved.
+
+## 23. v3: the texter, step by step (only when the meter says ready)
+
+Nothing trains until he runs the script and types the word.
+
+1. Model page > Texter. The bar shows approved exchanges against the minimum (200). Approved means: her messages he marked Keep, his rewrites in the Notes tab, and tasting picks. "Leave him out of the state" is on by default (his facts and his name are left out of the state part; his own messages still go as written, and the export record lists which fact ids went out). An exchange the explicit detector flags is left out by default; a Drop mark leaves one out by hand.
+2. Click Export training set (the JSONL lands in Downloads) and Export record (the JSON beside it).
+3. On the Mac, copy the OpenAI key (platform.openai.com, the key page, the copy button). Paste nothing.
+4. Run `npm run finetune:run -- ~/Downloads/avelie-train-<date>.jsonl --verify ~/Downloads/avelie-train-<date>.json` (add `--dry-run` first to see the count and the cost estimate without uploading). The script reads the key from the clipboard and clears it, validates the file, prints the estimate, and asks: `type train to start`. Type `train` and press Return; anything else stops it.
+5. It uploads, starts the job on `gpt-4.1-mini-2025-04-14` (his answer to open question 3; `--base gpt-4.1-2025-04-14` for the bigger one) and prints the status every 30 seconds. On success it prints the model id (`ft:...`).
+6. Back in the panel: paste the id into Model id, add its two prices (USD per million tokens; the fine-tuned mini is about 0.8 in, 3.2 out, confirm on the pricing page), click Use. Her texts now come from that model; proposals, checks and the operator stay on Claude. Back to Claude puts the previous performer back.
+
+If OpenAI's moderation refuses the file, the job fails with a message the script prints; leave the flagged exchanges out with Drop marks and export again.
+
+## 24. v3: the two switches that ship off, and how to turn them on
+
+- `provisionalRecallEvery` (Model page > Memory): 0 means she never half-remembers a detail. The behavior scenario H03 ("she half-remembers a low-weight detail and takes his correction in one line") is the gate; when it reads as a person on the real performer, set it to 8.
+- `typoCueShare` (Model page > Text): 0 means the app never cues a typo; the TEXTURE paragraph lets typos happen on their own. If none ever do, set it to 0.05.
+- Clips (section 20) are off for want of a key. Everything else in v3 is on.
+
 ## Cost ceilings (from the build brief, 2026-09-24; confirm on Cloudflare's pricing pages, they move)
 
 - Workers Paid (5 USD a month) is required for photos: the Free plan's 10 ms CPU per request cannot decode and hash a multi-megabyte image. Paid allows 30 s. Requests: 100,000 per day free on either plan. D1 Free: 5 million rows read and 100,000 written per day, 5 GB. Workers AI: 10,000 free Neurons per day.
 - Anthropic and OpenAI bill separately; the app's own caps (docs/COSTS.md, default 3 USD a day, 30 USD a month) are what stop that spend.
 - R2 for photo candidates is small at this scale but is its own line.
 - v2 lines: the nightly backup is one small R2 write a day; the drift check is five short conversations a week at the text model's price, only when on; her voice notes cost Workers AI Neurons (inside the free 10,000 a day at this scale) or ElevenLabs characters on that account; her first texts are ordinary turns, at most 10 a day, inside the caps; push is free.
+- v3 lines: the weather and geocoding are free (Open-Meteo); a call is metered every 30 seconds from the session's real usage with a floor of `callPricePerMinute` (0.30 a minute, so a 20-minute call is at least 6 USD and needs the daily cap raised for the day); a portrait is `portraitCostUsd` (0.04); a clip is `videoCostUsd` per five seconds (0.25) on his Runway account; a tasting turn spends double and is capped by `tastingDailyCapUsd` (1 a day) on top of the normal caps; training runs on his OpenAI account from the Mac and never through the app (docs/COSTS.md has the arithmetic).

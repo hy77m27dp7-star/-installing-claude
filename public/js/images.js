@@ -1,12 +1,19 @@
 // Images: masters with hashes and Verify, the candidate queue, approved scenes, the rejected
-// list, and the library of media she may send.
+// list, the library of media she may send; v3 adds Clips (short videos of her, owner-made)
+// and Portraits (the faces of the people in her life, by person).
 import { api, apiForm, h, chip, clear, flash, bytesLabel, fmtTime } from "./api.js";
 
 const $ = (id) => document.getElementById(id);
-const TABS = ["photos", "library"];
+const TABS = ["photos", "clips", "portraits", "library"];
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
+// A pending clip is polled every 5 s for up to 10 minutes (SPEC_V3 FF).
+const CLIP_POLL_MS = 5000;
+const CLIP_POLL_MAX = 120;
 
 let verifyResults = null;
+let clipSource = null;
+const clipPollers = new Map();
+const clipPending = new Map();
 
 function basename(file) {
   const parts = String(file || "").split("/");
@@ -21,6 +28,23 @@ function encode(id) {
   return encodeURIComponent(String(id));
 }
 
+// Every row /api/assets carries, once, whatever list it sits in (the v3 roles portrait and
+// video may arrive in their own lists or inside the v1 ones).
+function allAssets(assets) {
+  const out = [];
+  const seen = new Set();
+  if (!assets || typeof assets !== "object") return out;
+  for (const list of Object.values(assets)) {
+    if (!Array.isArray(list)) continue;
+    for (const a of list) {
+      if (!a || !a.id || seen.has(a.id)) continue;
+      seen.add(a.id);
+      out.push(a);
+    }
+  }
+  return out;
+}
+
 // ------------------------------------------------------------ tabs
 
 function showTab(name) {
@@ -33,6 +57,8 @@ function showTab(name) {
   });
   if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
   if (name === "photos") load();
+  else if (name === "clips") loadClips();
+  else if (name === "portraits") loadPortraits();
   else loadLibrary();
 }
 
@@ -45,7 +71,7 @@ async function load() {
   try {
     const a = await api("GET", "/api/assets");
     renderMasters(a.masters || []);
-    renderCandidates(a.candidates || []);
+    renderCandidates((a.candidates || []).filter((x) => x.role !== "video" && x.role !== "portrait"));
     renderScenes(a.scenes || []);
     renderRejected(a.rejected || []);
   } catch (e) {
@@ -99,17 +125,17 @@ $("verifyBtn").addEventListener("click", async () => {
   }
 });
 
-function decideButtons(id, slot) {
+function decideButtons(id, slot, reload, withRegenerate) {
   const approve = h("button", { type: "button", class: "btn small", text: "Approve" });
   const reject = h("button", { type: "button", class: "btn small danger", text: "Reject" });
-  const regen = h("button", { type: "button", class: "btn small quiet", text: "Regenerate" });
-  const all = [approve, reject, regen];
+  const regen = withRegenerate ? h("button", { type: "button", class: "btn small quiet", text: "Regenerate" }) : null;
+  const all = [approve, reject, regen].filter(Boolean);
   const lock = (on) => { for (const b of all) b.disabled = on; };
   const act = async (decision) => {
     lock(true);
     try {
       await api("POST", "/api/images/" + encode(id) + "/decide", { decision });
-      load();
+      reload();
     } catch (e) {
       lock(false);
       flash(slot, e.code, "danger");
@@ -118,16 +144,18 @@ function decideButtons(id, slot) {
   approve.addEventListener("click", () => act("approve"));
   reject.addEventListener("click", () => act("reject"));
   // Reject and ask again with the same description; the page holds the request open.
-  regen.addEventListener("click", async () => {
-    lock(true);
-    try {
-      await api("POST", "/api/images/" + encode(id) + "/regenerate", {});
-      load();
-    } catch (e) {
-      lock(false);
-      flash(slot, e.code, "danger");
-    }
-  });
+  if (regen) {
+    regen.addEventListener("click", async () => {
+      lock(true);
+      try {
+        await api("POST", "/api/images/" + encode(id) + "/regenerate", {});
+        reload();
+      } catch (e) {
+        lock(false);
+        flash(slot, e.code, "danger");
+      }
+    });
+  }
   return all;
 }
 
@@ -142,7 +170,7 @@ function imageCard(a, withButtons) {
         a.model ? chip(a.model) : null,
         h("span", { class: "mono muted", title: a.sha256 || "", text: hashPrefix(a.sha256) })),
       h("div", { class: "muted small", text: fmtTime(a.decided_at || a.created_at) }),
-      withButtons ? h("div", { class: "row" }, decideButtons(a.id, slot), slot) : null));
+      withButtons ? h("div", { class: "row" }, decideButtons(a.id, slot, load, true), slot) : null));
 }
 
 function renderCandidates(rows) {
@@ -170,6 +198,214 @@ function renderRejected(rows) {
       h("span", { class: "muted small", text: fmtTime(a.decided_at || a.created_at) }),
       h("span", { class: "grow small", text: a.notes || "" })));
   }
+}
+
+// ------------------------------------------------------------ clips (SPEC_V3 FF)
+
+async function loadClips() {
+  let assets;
+  let settings = null;
+  let system = null;
+  try {
+    [assets, settings, system] = await Promise.all([
+      api("GET", "/api/assets"),
+      api("GET", "/api/settings").catch(() => null),
+      api("GET", "/api/system").catch(() => null),
+    ]);
+  } catch (e) {
+    flash($("clips-status"), e.code, "danger");
+    return;
+  }
+  // Every video control is hidden when clips are off or the provider has no key.
+  const provider = settings && typeof settings.videoProvider === "string" ? settings.videoProvider : null;
+  const keys = system && system.providerKeys && typeof system.providerKeys === "object" ? system.providerKeys : {};
+  const configured = provider && provider !== "off" && !(provider === "runway" && keys.runway === false);
+  $("clipMake").classList.toggle("hidden", !configured);
+  const slot = $("clips-status");
+  clear(slot);
+  if (!provider || provider === "off") slot.append(chip("clips off"));
+  else if (!configured) slot.append(chip("no key"));
+  const rows = allAssets(assets);
+  const sources = [...(assets.masters || []), ...(assets.scenes || [])];
+  renderClipSources(sources);
+  const videos = rows.filter((a) => a.role === "video");
+  const candidates = videos.filter((a) => a.approval_status === "candidate");
+  const pending = videos.filter((a) => a.approval_status === "generating" || a.approval_status === "pending");
+  const approved = videos.filter((a) => a.approval_status === "approved");
+  for (const a of pending) if (!clipPending.has(a.id)) clipPending.set(a.id, a);
+  renderClipCandidates(candidates);
+  renderClipApproved(approved);
+  for (const id of clipPending.keys()) startClipPoll(id);
+}
+
+function renderClipSources(rows) {
+  const box = $("clipSources");
+  clear(box);
+  if (!rows.length) { box.append(chip("none")); return; }
+  if (clipSource && !rows.some((a) => a.id === clipSource)) clipSource = null;
+  for (const a of rows) {
+    const src = a.role === "master" ? "/images/masters/" + encodeURIComponent(basename(a.file)) : "/media/" + encode(a.id);
+    const btn = h("button", { type: "button", "aria-pressed": String(clipSource === a.id), "aria-label": a.role === "master" ? basename(a.file) : "photo " + fmtTime(a.created_at), title: a.prompt || basename(a.file) || "" },
+      h("img", { src, alt: "", loading: "lazy" }));
+    btn.addEventListener("click", () => {
+      clipSource = a.id;
+      for (const b of box.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b === btn));
+    });
+    box.append(btn);
+  }
+}
+
+function clipCard(a, withButtons) {
+  const slot = h("span", { class: "chips" });
+  const pending = clipPending.has(a.id) || a.approval_status === "generating" || a.approval_status === "pending";
+  const media = pending
+    ? h("div", { class: "clip-pending", "aria-label": "Clip pending" })
+    : h("video", { controls: true, playsinline: true, preload: "metadata", src: "/media/" + encode(a.id) });
+  return h("div", { class: "img-card clip-card", "data-id": a.id },
+    media,
+    h("div", { class: "body" },
+      a.prompt ? h("div", { class: "prompt", text: a.prompt }) : null,
+      h("div", { class: "chips" },
+        pending ? chip(a.approval_status || "generating", "amber") : null,
+        a.provider ? chip(a.provider) : null,
+        a.model ? chip(a.model) : null,
+        a.sha256 ? h("span", { class: "mono muted", title: a.sha256, text: hashPrefix(a.sha256) }) : null),
+      h("div", { class: "muted small", text: fmtTime(a.decided_at || a.created_at) }),
+      withButtons && !pending ? h("div", { class: "row" }, decideButtons(a.id, slot, loadClips, false), slot) : slot));
+}
+
+function renderClipCandidates(rows) {
+  const box = $("clipCandidates");
+  clear(box);
+  const pending = [...clipPending.values()].filter((p) => !rows.some((r) => r.id === p.id));
+  if (!rows.length && !pending.length) box.append(chip("none"));
+  for (const a of pending) box.append(clipCard(a, false));
+  for (const a of rows) box.append(clipCard(a, true));
+}
+
+function renderClipApproved(rows) {
+  const box = $("clipApproved");
+  clear(box);
+  if (!rows.length) box.append(chip("none"));
+  for (const a of rows) box.append(clipCard(a, false));
+}
+
+$("clipGenerate").addEventListener("click", async () => {
+  const slot = $("clip-status");
+  const description = $("clipMotion").value.trim();
+  if (!clipSource) { flash(slot, "source", "danger"); return; }
+  if (!description) { flash(slot, "motion", "danger"); return; }
+  const btn = $("clipGenerate");
+  btn.disabled = true;
+  try {
+    const r = await api("POST", "/api/video/generate", { sourceAssetId: clipSource, description });
+    const asset = r && r.asset && typeof r.asset === "object" ? r.asset : null;
+    if (asset && asset.id) {
+      clipPending.set(asset.id, asset);
+      startClipPoll(asset.id);
+    }
+    $("clipMotion").value = "";
+    flash(slot, "started", "ok");
+    loadClips();
+  } catch (e) {
+    flash(slot, e.code + (e.detail && typeof e.detail === "string" ? " " + e.detail : ""), "danger wrap");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function startClipPoll(id) {
+  if (clipPollers.has(id)) return;
+  let count = 0;
+  const timer = setInterval(async () => {
+    count++;
+    let r = null;
+    try {
+      r = await api("POST", "/api/video/" + encode(id) + "/poll", {});
+    } catch (e) {
+      if (e.status === 404 || e.status === 422) {
+        stopClipPoll(id);
+        clipPending.delete(id);
+        flash($("clips-status"), e.code, "danger");
+        loadClips();
+      }
+      return;
+    }
+    const status = r && r.status;
+    if (status === "candidate" || status === "failed") {
+      stopClipPoll(id);
+      clipPending.delete(id);
+      if (status === "failed") flash($("clips-status"), "clip failed", "danger");
+      loadClips();
+      return;
+    }
+    if (count >= CLIP_POLL_MAX) {
+      stopClipPoll(id);
+      clipPending.delete(id);
+      flash($("clips-status"), "timeout", "danger");
+      loadClips();
+    }
+  }, CLIP_POLL_MS);
+  clipPollers.set(id, timer);
+}
+
+function stopClipPoll(id) {
+  const t = clipPollers.get(id);
+  if (t) clearInterval(t);
+  clipPollers.delete(id);
+}
+
+// ------------------------------------------------------------ portraits (SPEC_V3 DD)
+
+async function loadPortraits() {
+  const box = $("portraitPeople");
+  clear(box);
+  let assets;
+  let life;
+  try {
+    [assets, life] = await Promise.all([api("GET", "/api/assets"), api("GET", "/api/life?status=active")]);
+  } catch (e) {
+    flash($("portraits-status"), e.code, "danger");
+    return;
+  }
+  const people = (life && Array.isArray(life.threads) ? life.threads : []).filter((t) => t.kind === "person");
+  const byPerson = new Map();
+  for (const a of allAssets(assets)) {
+    const m = /^person:([^|\s]+)/.exec(String(a.notes || ""));
+    if (a.role !== "portrait" && !m) continue;
+    const key = m ? m[1] : "";
+    const list = byPerson.get(key) || [];
+    list.push(a);
+    byPerson.set(key, list);
+  }
+  if (!people.length) { box.append(h("div", { class: "chips" }, chip("none"))); return; }
+  for (const t of people) {
+    const rows = byPerson.get(String(t.id)) || [];
+    const approvedId = t.portrait_asset_id ? String(t.portrait_asset_id) : "";
+    const candidates = rows.filter((a) => a.approval_status === "candidate");
+    const approved = rows.filter((a) => a.approval_status === "approved" || a.id === approvedId);
+    const grid = h("div", { class: "grid-imgs square" });
+    if (approvedId && !approved.some((a) => a.id === approvedId)) approved.push({ id: approvedId, approval_status: "approved", created_at: t.updated_at || t.created_at });
+    for (const a of candidates) grid.append(portraitCard(a, true));
+    for (const a of approved) grid.append(portraitCard(a, false));
+    if (!grid.childElementCount) grid.append(chip("no face yet"));
+    box.append(h("div", { class: "card person-block" },
+      h("div", { class: "row" }, h("span", { class: "person-name", text: t.title }), t.relation ? chip(t.relation, "accent") : null, approvedId ? chip("portrait", "ok") : null, candidates.length ? chip(candidates.length + " to decide", "amber") : null),
+      grid));
+  }
+}
+
+function portraitCard(a, withButtons) {
+  const slot = h("span", { class: "chips" });
+  return h("div", { class: "img-card", "data-id": a.id },
+    h("img", { src: "/media/" + encode(a.id), alt: "", loading: "lazy" }),
+    h("div", { class: "body" },
+      a.prompt ? h("div", { class: "prompt", text: a.prompt }) : null,
+      h("div", { class: "chips" },
+        chip(a.approval_status || "approved", a.approval_status === "candidate" ? "amber" : "ok"),
+        a.model ? chip(a.model) : null),
+      h("div", { class: "muted small", text: fmtTime(a.decided_at || a.created_at) }),
+      withButtons ? h("div", { class: "row" }, decideButtons(a.id, slot, loadPortraits, false), slot) : null));
 }
 
 // ------------------------------------------------------------ library

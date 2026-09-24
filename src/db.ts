@@ -44,6 +44,11 @@ export const DEFAULT_SETTINGS: Settings = {
     // Workers AI fallback (DEPLOY.md section 8). Cloudflare list price, to confirm on the
     // Workers AI pricing page; nominal until then.
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { inputPerMTok: 0.29, outputPerMTok: 2.25 },
+    // v3 (SPEC_V3 section HH and II): the tasting performer and the fine-tunable bases.
+    // List prices as of 2026-09-24; confirm on the OpenAI pricing page.
+    "gpt-4.1": { inputPerMTok: 2, outputPerMTok: 8 },
+    "gpt-4.1-mini": { inputPerMTok: 0.4, outputPerMTok: 1.6 },
+    "gpt-4.1-mini-2025-04-14": { inputPerMTok: 0.4, outputPerMTok: 1.6 },
   },
   // v2
   replyDelayMode: "instant",
@@ -58,6 +63,61 @@ export const DEFAULT_SETTINGS: Settings = {
   voiceMode: "some",
   elevenLabsVoiceId: "",
   transcribeProvider: "workersai",
+  // v3, SPEC_V3 section AA: the voice bank and the corrections ledger.
+  exemplarsPerTurn: 6,
+  exemplarCooldownTurns: 30,
+  correctionsShown: 25,
+  correctionRewriteToBank: true,
+  // v3, section BB: human memory. The recall ships off (0); his switch (Open question 7).
+  memoryDecayEnabled: true,
+  memoryFactsMax: 40,
+  memoryHalfLifeLowDays: 10,
+  memoryHalfLifeMidDays: 45,
+  memoryHalfLifeHighDays: 400,
+  provisionalRecallEvery: 0,
+  // v3, section CC: wants and the mood clock.
+  wantsShown: 5,
+  askLetGoDays: 14,
+  moodDaysDefault: 3,
+  // v3, section DD: her city is Portland, Maine (Justin's decision 2026-09-24), weather on.
+  herCity: "Portland, Maine",
+  herLat: 43.6591,
+  herLon: -70.2568,
+  weatherProvider: "openmeteo",
+  weatherUnits: "fahrenheit",
+  portraitCostUsd: 0.04,
+  portraitSize: "1024x1024",
+  // v3, section EE: calls on OpenAI Realtime; the ElevenLabs path is reserved (v3.1).
+  callProvider: "openai",
+  callModel: "gpt-realtime",
+  callVoice: "marin",
+  callTranscribeModel: "gpt-4o-mini-transcribe",
+  callSystemMode: "compact",
+  callMaxMinutes: 20,
+  callPricePerMinute: 0.3,
+  callPrices: { audioInPerMTok: 32, audioOutPerMTok: 64, textInPerMTok: 4, textOutPerMTok: 16 },
+  elevenLabsAgentId: "",
+  elevenLabsCallPricePerMinute: 0.1,
+  // v3, section FF: clips. No Runway key exists (Open question 4): the provider name stays
+  // runway so the code path is complete, and without the secret every video control is off.
+  videoProvider: "runway",
+  videoModel: "gen4_turbo",
+  videoSeconds: 5,
+  videoRatio: "720:1280",
+  videoCostUsd: 0.25,
+  // v3, section GG: the texture cues; the scheduled typo ships at 0 (his switch).
+  textureCuesEnabled: true,
+  typoCueShare: 0,
+  // v3, section HH: tastings, off until he turns them on.
+  tastingEnabled: false,
+  tastingProvider: "openai",
+  tastingModel: "gpt-4.1",
+  tastingDailyCapUsd: 1,
+  // v3, section II: the texter (gpt-4.1-mini is the base the script defaults to; Open question 3).
+  finetuneMinExamples: 200,
+  finetuneSystemMode: "compact",
+  texterModel: "",
+  texterPrevious: null,
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -195,6 +255,14 @@ export async function listRecentStoryMessages(db: D1Database, conversationId: st
   return r.results.reverse();
 }
 
+// v3: the newest `limit` of her story replies, oldest first (the signature and cooldown
+// windows read these).
+export async function listRecentAssistantMessages(db: D1Database, conversationId: string, limit: number): Promise<MessageRow[]> {
+  const n = Number.isInteger(limit) && limit > 0 ? Math.min(500, limit) : 1;
+  const r = await db.prepare("SELECT * FROM messages WHERE conversation_id = ?1 AND channel = 'story' AND role = 'assistant' ORDER BY seq DESC LIMIT ?2").bind(conversationId, n).all<MessageRow>();
+  return r.results.reverse();
+}
+
 export async function getMessage(db: D1Database, id: string): Promise<MessageRow | null> {
   return db.prepare("SELECT * FROM messages WHERE id = ?1").bind(id).first<MessageRow>();
 }
@@ -208,7 +276,13 @@ export async function nextSeq(db: D1Database, conversationId: string): Promise<n
   return (r?.m ?? 0) + 1;
 }
 
+// A call transcript row (SPEC_V3 section EE) names its call; the column exists from
+// migration 0005, so it is written only when set and every other insert keeps the v2 shape.
 export function insertMessageStmt(db: D1Database, m: MessageRow): D1PreparedStatement {
+  if (typeof m.call_id === "string" && m.call_id) {
+    return db.prepare("INSERT INTO messages (id, conversation_id, channel, role, content, created_at, seq, idempotency_key, reply_to_id, model_run_id, flags_json, image_id, image_status, deliver_at, song_json, audio_key, images_json, media_id, call_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")
+      .bind(m.id, m.conversation_id, m.channel, m.role, m.content, m.created_at, m.seq, m.idempotency_key, m.reply_to_id, m.model_run_id, m.flags_json, m.image_id, m.image_status, m.deliver_at ?? null, m.song_json ?? null, m.audio_key ?? null, m.images_json ?? null, m.media_id ?? null, m.call_id);
+  }
   return db.prepare("INSERT INTO messages (id, conversation_id, channel, role, content, created_at, seq, idempotency_key, reply_to_id, model_run_id, flags_json, image_id, image_status, deliver_at, song_json, audio_key, images_json, media_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)")
     .bind(m.id, m.conversation_id, m.channel, m.role, m.content, m.created_at, m.seq, m.idempotency_key, m.reply_to_id, m.model_run_id, m.flags_json, m.image_id, m.image_status, m.deliver_at ?? null, m.song_json ?? null, m.audio_key ?? null, m.images_json ?? null, m.media_id ?? null);
 }

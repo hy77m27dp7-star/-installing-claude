@@ -1,7 +1,14 @@
-// Anthropic adapter. The whole system prompt is sent as one text block with a cache
-// breakpoint (the constitution prefix is byte-stable, so repeat turns hit the cache).
+// Anthropic adapter. The system prompt goes as text blocks with a cache breakpoint on the
+// stable constitution prefix (byte-identical every turn, so repeat turns hit the cache).
 // Sampling parameters are never sent: current models reject temperature and top_p.
 // Thinking is left at the model default; effort is the only depth control.
+//
+// v3 (SPEC_V3 header, "the cache claim true in the adapter"): when the request carries
+// systemParts { prefix, state }, two system blocks are sent: the prefix with
+// cache_control ephemeral, the state without. Before v3 the whole prompt was one cached
+// block, so any per-turn state change missed the entire prompt; v3 changes the state
+// every turn by design (the seeded cue, the clock, the exemplars). Without systemParts
+// the v1 shape stands: one block, cached when the request says so.
 //
 // The SDK never retries on its own: a re-send after a timeout, a 429 or a 5xx can bill a
 // second generation the adapter would never see (it records one response), and the app
@@ -15,6 +22,34 @@ import { imageMime, imagesOf, loadInboxImages } from "../vision";
 
 const REQUEST_TIMEOUT_MS = 120_000;
 const MAX_RETRIES = 0;
+
+// The two texts of a v3 request, when the pipeline supplied them and both are non-empty.
+function partsOf(req: GenerateRequest): { prefix: string; state: string } | null {
+  const parts = req.systemParts;
+  if (!parts || typeof parts !== "object") return null;
+  if (typeof parts.prefix !== "string" || typeof parts.state !== "string") return null;
+  if (!parts.prefix.trim() || !parts.state.trim()) return null;
+  return { prefix: parts.prefix, state: parts.state };
+}
+
+// Pure: the system blocks a request is sent with. Two blocks when systemParts is present
+// (cache_control on the first only; the two texts joined by the pipeline's separator
+// equal req.system), one block otherwise (cached when req.cacheable). A retry reuses
+// the same request, so both blocks are byte-identical on the retry. Exported so a unit
+// test can assert the split without a network.
+export function systemBlocks(req: GenerateRequest): Anthropic.TextBlockParam[] {
+  const parts = partsOf(req);
+  if (parts) {
+    return [
+      { type: "text", text: parts.prefix, cache_control: { type: "ephemeral" } },
+      { type: "text", text: parts.state },
+    ];
+  }
+  if (!req.system.trim().length) return [];
+  return req.cacheable
+    ? [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }]
+    : [{ type: "text", text: req.system }];
+}
 
 // His photos go as base64 image blocks before the text of the message they came with
 // (SPEC_V2 section T). A picture that cannot be loaded is simply not sent.
@@ -75,17 +110,14 @@ export const anthropicProvider: TextProvider = {
       ...(workspace ? { defaultHeaders: { "anthropic-workspace-id": workspace } } : {}),
     });
 
-    const systemBlock: Anthropic.TextBlockParam = req.cacheable
-      ? { type: "text", text: req.system, cache_control: { type: "ephemeral" } }
-      : { type: "text", text: req.system };
-
+    const system = systemBlocks(req);
     const messages = await toParams(env, req.messages);
     let res: Anthropic.Message;
     try {
       res = await client.messages.create({
         model: req.model,
         max_tokens: req.maxTokens,
-        ...(req.system.trim().length ? { system: [systemBlock] } : {}),
+        ...(system.length ? { system } : {}),
         messages,
         output_config: { effort: req.effort },
       });

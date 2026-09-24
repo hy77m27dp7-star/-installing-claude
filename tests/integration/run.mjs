@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { deflateSync } from "node:zlib";
 import {
   BASE, DEV_ACTOR_EMAIL, EM_DASH, BAD_TYPOGRAPHY, PORT, STATE_DIR, api, fetchBytes, waitFor, Report, removeDir,
-  ensureDevVars, runCommand, startWrangler, stopWrangler,
+  ensureDevVars, runCommand, startWrangler, stopWrangler, sleep,
 } from "./helpers.mjs";
 
 const BOOT_TIMEOUT_MS = 90_000;
@@ -1312,6 +1312,1093 @@ async function scenariosV2(report, conversationId) {
   });
 }
 
+// ------------------------------------------------------------------ v3 scenarios (SPEC_V3 sections AA to II)
+
+// The v3 modules under test are TypeScript; the unit helpers' resolve hook lets this plain
+// runner import the two pure pieces it needs (the cue roll and the constitution text).
+async function loadTs(name) {
+  try {
+    const { loadSrc } = await import("../unit/helpers.mjs");
+    return await loadSrc(name);
+  } catch {
+    return null;
+  }
+}
+
+const MIN_MS = 60 * 1000;
+const DAY_MS_V3 = 24 * 60 * 60 * 1000;
+const ago = (ms) => new Date(Date.now() - ms).toISOString();
+
+async function contextOf(messageId) {
+  const r = await api("GET", `/api/messages/${messageId}/context`);
+  assert.equal(r.status, 200, "context: " + r.text);
+  return r.json;
+}
+
+async function settingsPut(patch) {
+  const r = await api("PUT", "/api/settings", patch);
+  assert.equal(r.status, 200, "settings " + JSON.stringify(patch) + ": " + r.text);
+  return r.json;
+}
+
+// The first pending proposal of a kind whose text mentions `needle`, within 10 s.
+async function pendingProposal(kind, needle) {
+  return waitFor(`a pending ${kind} proposal about ${JSON.stringify(needle)}`, async () => {
+    const r = await api("GET", "/api/proposals?status=pending");
+    if (r.status !== 200) return null;
+    return r.json.find((p) => p.kind === kind && (p.proposal.toLowerCase().includes(needle.toLowerCase()) || (p.payload_json || "").toLowerCase().includes(needle.toLowerCase()))) || null;
+  }, 10_000, 300);
+}
+
+async function approve(proposalId) {
+  const r = await api("POST", `/api/proposals/${proposalId}/decide`, { decision: "approve" });
+  assert.equal(r.status, 200, "approve: " + r.text);
+  return r.json;
+}
+
+async function newConversation(title) {
+  const r = await api("POST", "/api/conversations", { title });
+  assert.equal(r.status, 201, r.text);
+  return r.json.id;
+}
+
+// The state text a reply saw: the context row carries it when the pipeline stores it there;
+// null otherwise (the check that needs it then says so instead of failing on the shape).
+function stateTextOf(ctx) {
+  return typeof ctx.stateText === "string" ? ctx.stateText : typeof ctx.state_text === "string" ? ctx.state_text : null;
+}
+
+async function scenariosV3(report) {
+  // Every v3 route answers 404 on a tree without the v3 router; then nothing below can run.
+  const probe = await api("GET", "/api/finetune/status");
+  if (probe.status === 404) {
+    console.log("v3: the routes are not on this server (GET /api/finetune/status -> 404); skipping the v3 block");
+    return;
+  }
+  const original = (await api("GET", "/api/settings")).json;
+  const restore = {
+    dailyCapUsd: original.dailyCapUsd, monthlyCapUsd: original.monthlyCapUsd, model: original.model,
+    weatherProvider: original.weatherProvider, herCity: original.herCity, herLat: original.herLat, herLon: original.herLon,
+    provisionalRecallEvery: original.provisionalRecallEvery, typoCueShare: original.typoCueShare,
+    tastingEnabled: original.tastingEnabled, tastingProvider: original.tastingProvider, tastingModel: original.tastingModel, tastingDailyCapUsd: original.tastingDailyCapUsd,
+    callProvider: original.callProvider, videoProvider: original.videoProvider, exemplarsPerTurn: original.exemplarsPerTurn,
+  };
+  await report.check("v3: settings carry the new defaults; caps raised for this block; the stub call, weather and video providers", async () => {
+    assert.equal(original.exemplarsPerTurn, 6);
+    assert.equal(original.provisionalRecallEvery, 0, "the recall switch ships off");
+    assert.equal(original.typoCueShare, 0, "the typo cue ships off");
+    assert.equal(original.tastingEnabled, false);
+    assert.equal(original.callSystemMode, "compact");
+    assert.equal(original.callMaxMinutes, 20);
+    assert.equal(original.herCity, "Portland, Maine", "the owner's answer of 2026-09-24");
+    assert.deepEqual(original.callPrices, { audioInPerMTok: 32, audioOutPerMTok: 64, textInPerMTok: 4, textOutPerMTok: 16 });
+    await settingsPut({ dailyCapUsd: 200, monthlyCapUsd: 500, callProvider: "stub", videoProvider: "stub" });
+  });
+
+  await report.check("v3: PUT /api/settings refuses a bad value on every new row and changes nothing", async () => {
+    for (const patch of [{ exemplarsPerTurn: 13 }, { memoryFactsMax: 4 }, { provisionalRecallEvery: 51 }, { moodDaysDefault: 15 }, { herLat: 91 }, { weatherProvider: "noaa" }, { callProvider: "twilio" }, { callPrices: { audioInPerMTok: 1 } }, { videoSeconds: 7 }, { videoRatio: "16:9" }, { typoCueShare: 0.4 }, { tastingModel: "" }, { finetuneMinExamples: 9 }, { texterPrevious: "x" }]) {
+      const r = await api("PUT", "/api/settings", patch);
+      assert.equal(r.status, 400, JSON.stringify(patch) + " -> " + r.text);
+      assert.equal(r.json.code, "validation");
+    }
+    const s = (await api("GET", "/api/settings")).json;
+    assert.equal(s.exemplarsPerTurn, 6);
+    assert.equal(s.callProvider, "stub");
+  });
+
+  const conversationId = await newConversation("integration v3");
+
+  // ---------------------------------------------------------------- AA: the voice bank and the notes
+
+  let approvedBanter = [];
+  await report.check("voicebank: seed applied, 150 unapproved, none in the prompt (provenance exemplarIds empty)", async () => {
+    const r = await api("GET", "/api/voicebank?status=unapproved");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.lines.length, 150, "150 seed lines");
+    assert.equal(r.json.counts.unapproved, 150);
+    assert.equal(r.json.counts.approved, 0);
+    assert.ok(Array.isArray(r.json.tags) && r.json.tags.includes("banter"));
+    assert.ok(r.json.lines.every((l) => l.status === "unapproved" && l.origin === "seed"));
+    const t = await turn(conversationId, "hey there", key("v3-seed"));
+    assert.equal(t.status, 200, t.text);
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.deepEqual(ctx.exemplarIds ?? [], [], "she reads none of them until he approves some");
+  });
+
+  await report.check("approve 12 lines by tag -> the very next turn's provenance carries 2 to 6 exemplarIds, all approved, none repeated in the following turn", async () => {
+    const list = await api("GET", "/api/voicebank?status=unapproved&tag=banter");
+    assert.equal(list.status, 200, list.text);
+    assert.ok(list.json.lines.length >= 12, "at least 12 banter lines in the seed: " + list.json.lines.length);
+    const ids = list.json.lines.slice(0, 12).map((l) => l.id);
+    const d = await api("POST", "/api/voicebank/decide", { ids, decision: "approve" });
+    assert.equal(d.status, 200, d.text);
+    assert.equal(d.json.changed, 12);
+    approvedBanter = ids;
+    const approved = new Set(((await api("GET", "/api/voicebank?status=approved")).json.lines).map((l) => l.id));
+    for (const id of ids) assert.ok(approved.has(id), id);
+    const t1 = await turn(conversationId, "so. hey", key("v3-ex1"));
+    assert.equal(t1.status, 200, t1.text);
+    const c1 = await contextOf(t1.json.assistantMessage.id);
+    assert.ok(Array.isArray(c1.exemplarIds) && c1.exemplarIds.length >= 2 && c1.exemplarIds.length <= 6, "exemplarIds: " + JSON.stringify(c1.exemplarIds));
+    for (const id of c1.exemplarIds) assert.ok(approved.has(id), "offered line is approved: " + id);
+    const t2 = await turn(conversationId, "ok then", key("v3-ex2"));
+    assert.equal(t2.status, 200, t2.text);
+    const c2 = await contextOf(t2.json.assistantMessage.id);
+    for (const id of c2.exemplarIds ?? []) assert.ok(!c1.exemplarIds.includes(id), "not repeated within the cooldown: " + id);
+    return `${c1.exemplarIds.length} then ${(c2.exemplarIds ?? []).length} exemplars`;
+  });
+
+  await report.check("[[EXEMPLAR:<an approved line>]] -> exemplar_verbatim retry recorded (two runs), stored reply differs from the line", async () => {
+    // His own line, approved on creation, the only approved line whose primary tag is
+    // answering: with every candidate offered (perTurn 12, 2 per primary tag) it is in the prompt.
+    const mine = await api("POST", "/api/voicebank", { text: "depends what you mean by fine, honestly", tags: ["answering", "dry"] });
+    assert.equal(mine.status, 201, mine.text);
+    assert.equal(mine.json.status, "approved");
+    assert.equal(mine.json.origin, "owner");
+    await settingsPut({ exemplarsPerTurn: 12 });
+    const t = await turn(conversationId, "[[EXEMPLAR:depends what you mean by fine, honestly]] are you doing ok today or not?", key("v3-verbatim"));
+    assert.equal(t.status, 200, t.text);
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.ok((ctx.exemplarIds ?? []).includes(mine.json.id), "the line was offered: " + JSON.stringify(ctx.exemplarIds));
+    // The first draft ("x, basically. anyway") reused the line verbatim: a retry. The stub
+    // answers a retry by echoing the operator note (its last user turn), so the retry draft
+    // carries tech_leak and wins the tie; exemplar_verbatim sits on the first run row.
+    assert.equal(ctx.retried, true, "the verbatim line forced a retry: " + JSON.stringify(ctx.flags));
+    assert.equal(ctx.runIds.length, 2, "two runs");
+    assert.ok(!t.json.assistantMessage.content.includes("depends what you mean by fine, honestly"), "the stored reply is not the line: " + t.json.assistantMessage.content);
+    const control = await turn(conversationId, "are you doing ok today or not?", key("v3-verbatim-control"));
+    assert.equal((await contextOf(control.json.assistantMessage.id)).retried, false, "the same message without the verbatim line is not retried");
+    await settingsPut({ exemplarsPerTurn: 6 });
+  });
+
+  let correctionId = null;
+  await report.check("POST /api/corrections with a rewrite -> corrections row active, voice_lines row approved with origin correction, next turn's provenance carries the correction id", async () => {
+    const t = await turn(conversationId, "tell me about your afternoon", key("v3-corr-src"));
+    assert.equal(t.status, 200, t.text);
+    const r = await api("POST", "/api/corrections", { messageId: t.json.assistantMessage.id, kind: "ai", note: "too smooth", rewrite: "nah. tell me the actual thing" });
+    assert.equal(r.status, 201, r.text);
+    assert.equal(r.json.status, "active");
+    assert.equal(r.json.kind, "ai");
+    assert.equal(r.json.original, t.json.assistantMessage.content);
+    assert.equal(r.json.rewrite, "nah. tell me the actual thing");
+    assert.equal(typeof r.json.voice_line_id, "string", "the rewrite became a bank line");
+    correctionId = r.json.id;
+    const bank = (await api("GET", "/api/voicebank?status=approved")).json.lines.find((l) => l.id === r.json.voice_line_id);
+    assert.ok(bank, "the correction's line is in the bank");
+    assert.equal(bank.origin, "correction");
+    assert.equal(bank.status, "approved");
+    const his = await api("POST", "/api/corrections", { messageId: t.json.userMessage.id, kind: "other" });
+    assert.equal(his.status, 400, "his message cannot be corrected: " + his.text);
+    const t2 = await turn(conversationId, "and after that", key("v3-corr-next"));
+    assert.equal(t2.status, 200, t2.text);
+    const ctx = await contextOf(t2.json.assistantMessage.id);
+    assert.ok((ctx.correctionIds ?? []).includes(correctionId), "correctionIds: " + JSON.stringify(ctx.correctionIds));
+  });
+
+  await report.check("retire -> gone from provenance; restore -> back; GET /api/corrections filters by status", async () => {
+    const ret = await api("POST", `/api/corrections/${correctionId}/retire`);
+    assert.equal(ret.status, 200, ret.text);
+    assert.equal(ret.json.status, "retired");
+    const t = await turn(conversationId, "go on", key("v3-corr-retired"));
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.ok(!(ctx.correctionIds ?? []).includes(correctionId));
+    const retired = await api("GET", "/api/corrections?status=retired");
+    assert.ok(retired.json.some((c) => c.id === correctionId));
+    const active = await api("GET", "/api/corrections?status=active");
+    assert.ok(!active.json.some((c) => c.id === correctionId));
+    const back = await api("POST", `/api/corrections/${correctionId}/restore`);
+    assert.equal(back.status, 200, back.text);
+    assert.equal(back.json.status, "active");
+  });
+
+  await report.check("POST /api/voicebank/decide with all 150 seed ids -> changed 138 in one request (the 12 approved by tag stay; one statement per id in one batch, never an IN list); again -> 0", async () => {
+    const all = (await api("GET", "/api/voicebank?status=all&limit=1000")).json.lines.filter((l) => l.origin === "seed");
+    assert.equal(all.length, 150);
+    const d = await api("POST", "/api/voicebank/decide", { ids: all.map((l) => l.id), decision: "approve" });
+    assert.equal(d.status, 200, d.text);
+    assert.equal(d.json.changed, 150 - approvedBanter.length);
+    const again = await api("POST", "/api/voicebank/decide", { ids: all.map((l) => l.id), decision: "approve" });
+    assert.equal(again.status, 200, again.text);
+    assert.equal(again.json.changed, 0, "already decided lines are not changed again");
+    const counts = (await api("GET", "/api/voicebank?status=all")).json.counts;
+    assert.equal(counts.unapproved, 0);
+    const tooMany = await api("POST", "/api/voicebank/decide", { ids: Array.from({ length: 501 }, (_, i) => "vl_" + i), decision: "reject" });
+    assert.equal(tooMany.status, 400, tooMany.text);
+    const single = await api("POST", `/api/voicebank/${all[0].id}/decide`, { decision: "reject" });
+    assert.equal(single.status, 409, "deciding a decided line: " + single.text);
+    assert.equal(single.json.code, "already_decided");
+    const edit = await api("PUT", `/api/voicebank/${all[0].id}`, { tags: ["banter", "dry"] });
+    assert.equal(edit.status, 200, edit.text);
+    assert.deepEqual(JSON.parse(edit.json.tags_json), ["banter", "dry"]);
+  });
+
+  // ---------------------------------------------------------------- BB: memory
+
+  let cousinFactId = null;
+  await report.check("PUT /api/memory/fact/:id weight 0.2 lastTouched 400 days ago -> next turn's provenance omits the fact (fadedCount 1)", async () => {
+    const f = await api("POST", "/api/facts", { scope: "justin", subject: "cousin", fact: "his cousin plays drums in a wedding band" });
+    assert.equal(f.status, 201, f.text);
+    cousinFactId = f.json.id;
+    const before = await turn(conversationId, "what are you doing", key("v3-mem-before"));
+    const cb = await contextOf(before.json.assistantMessage.id);
+    assert.ok(cb.factIds.justin.includes(cousinFactId), "a fresh fact is in the prompt");
+    const put = await api("PUT", `/api/memory/fact/${cousinFactId}`, { weight: 0.2, lastTouched: ago(400 * DAY_MS_V3) });
+    assert.equal(put.status, 200, put.text);
+    const t = await turn(conversationId, "what else is going on", key("v3-mem-faded"));
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.ok(!ctx.factIds.justin.includes(cousinFactId), "faded: " + JSON.stringify(ctx.factIds.justin));
+    assert.ok(ctx.recall && ctx.recall.fadedCount >= 1, "recall: " + JSON.stringify(ctx.recall));
+    const list = await api("GET", "/api/memory?entity=fact");
+    assert.equal(list.status, 200, list.text);
+    const row = list.json.find((m) => (m.entityId ?? m.entity_id ?? m.id) === cousinFactId);
+    assert.ok(row, "the Memory tab row");
+    assert.equal(Number(row.weight), 0.2);
+    const bad = await api("PUT", `/api/memory/fact/${cousinFactId}`, { weight: 1.5 });
+    assert.equal(bad.status, 400, bad.text);
+    const unknown = await api("PUT", `/api/memory/thing/${cousinFactId}`, { weight: 0.5 });
+    assert.equal(unknown.status, 400, unknown.text);
+  });
+
+  await report.check("Remind her (lastTouched now) and the detail coming up -> the fact is back in firmFactIds", async () => {
+    const put = await api("PUT", `/api/memory/fact/${cousinFactId}`, { lastTouched: new Date().toISOString() });
+    assert.equal(put.status, 200, put.text);
+    // A 0.2-weight fact scores 0.2 x (0.35 + 0.65 x recency) + 0.3 x relevance: freshly touched
+    // and unmentioned it sits a hair under the 0.20 line, so the message names the detail.
+    const t = await turn(conversationId, "anything new with your cousin and the band", key("v3-mem-remind"));
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.ok(ctx.recall && Array.isArray(ctx.recall.firmFactIds) && ctx.recall.firmFactIds.includes(cousinFactId), JSON.stringify(ctx.recall));
+    assert.ok(ctx.factIds.justin.includes(cousinFactId));
+  });
+
+  await report.check("default settings: a 0.2 fact 40 days old whose words are in his message -> provenance.recall.provisional is null (the setting is 0)", async () => {
+    await api("PUT", `/api/memory/fact/${cousinFactId}`, { weight: 0.2, lastTouched: ago(40 * DAY_MS_V3) });
+    // One keyword of the fact (cousin): relevant, and still under the firm line at 40 days.
+    const t = await turn(conversationId, "does your cousin still do that thing on weekends", key("v3-mem-off"));
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.ok(ctx.recall, "recall block present");
+    assert.equal(ctx.recall.provisional, null);
+  });
+
+  await report.check("PUT settings provisionalRecallEvery 8 -> the same turn shape names it and GET /api/memory/recalls shows one row with outcome unknown", async () => {
+    await settingsPut({ provisionalRecallEvery: 8 });
+    await api("PUT", `/api/memory/fact/${cousinFactId}`, { weight: 0.2, lastTouched: ago(40 * DAY_MS_V3) });
+    const t = await turn(conversationId, "does your cousin still do that thing on weekends", key("v3-mem-on"));
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.ok(ctx.recall && ctx.recall.provisional, "provisional: " + JSON.stringify(ctx.recall));
+    assert.equal(ctx.recall.provisional.entityId ?? ctx.recall.provisional.entity_id, cousinFactId);
+    const recalls = await api("GET", "/api/memory/recalls");
+    assert.equal(recalls.status, 200, recalls.text);
+    const row = recalls.json.find((r) => (r.entity_id ?? r.entityId) === cousinFactId);
+    assert.ok(row, "a memory_recalls row: " + JSON.stringify(recalls.json).slice(0, 300));
+    assert.equal(row.outcome, "unknown");
+    assert.equal(row.mode, "provisional");
+    await settingsPut({ provisionalRecallEvery: 0 });
+    await api("PUT", `/api/memory/fact/${cousinFactId}`, { weight: 0.5, lastTouched: new Date().toISOString() });
+  });
+
+  // ---------------------------------------------------------------- CC: wants and asks
+
+  let wantId = null;
+  await report.check("[[WANT:finish the bridge]] -> want proposal -> approve -> wants row active; next turn's provenance carries the want id", async () => {
+    const t = await turn(conversationId, "[[WANT:finish the bridge]] what are you working on", key("v3-want"));
+    assert.equal(t.status, 200, t.text);
+    const p = await pendingProposal("want", "finish the bridge");
+    const decided = await approve(p.id);
+    wantId = decided.promotedId ?? decided.proposal.promoted_id;
+    assert.ok(wantId, "promoted id: " + JSON.stringify(decided));
+    const w = await api("GET", "/api/wants");
+    assert.equal(w.status, 200, w.text);
+    const row = w.json.wants.find((x) => x.id === wantId);
+    assert.ok(row, "the want row");
+    assert.equal(row.status, "active");
+    assert.equal(row.title, "finish the bridge");
+    const t2 = await turn(conversationId, "how is that going", key("v3-want-next"));
+    const ctx = await contextOf(t2.json.assistantMessage.id);
+    assert.ok((ctx.wantIds ?? []).includes(wantId), "wantIds: " + JSON.stringify(ctx.wantIds));
+  });
+
+  await report.check("[[WANTUP:finish the bridge|30]] -> want_update -> approve -> progress 30, last_moved set; the log route lists it", async () => {
+    const t = await turn(conversationId, "[[WANTUP:finish the bridge|30]] did you get anywhere", key("v3-wantup"));
+    assert.equal(t.status, 200, t.text);
+    const p = await pendingProposal("want_update", "finish the bridge");
+    await approve(p.id);
+    const row = (await api("GET", "/api/wants")).json.wants.find((x) => x.id === wantId);
+    assert.equal(row.progress, 30);
+    assert.equal(typeof row.last_moved, "string");
+    assert.ok(row.lastLog && row.lastLog.kind === "progress", "lastLog: " + JSON.stringify(row.lastLog));
+    const log = await api("GET", `/api/wants/${wantId}/log`);
+    assert.equal(log.status, 200, log.text);
+    assert.ok(log.json.some((l) => l.kind === "progress" && l.delta === 30));
+    const owner = await api("POST", `/api/wants/${wantId}/log`, { kind: "setback", delta: 10, note: "lost the take" });
+    assert.equal(owner.status, 201, owner.text);
+    assert.equal((await api("GET", "/api/wants")).json.wants.find((x) => x.id === wantId).progress, 20);
+    const bad = await api("POST", `/api/wants/${wantId}/log`, { kind: "progress", delta: 500, note: "x" });
+    assert.equal(bad.status, 400, bad.text);
+    const done = await api("PUT", `/api/wants/${wantId}`, { status: "done" });
+    assert.equal(done.status, 200, done.text);
+    const closed = await api("POST", `/api/wants/${wantId}/log`, { kind: "note", note: "x" });
+    assert.equal(closed.status, 409, closed.text);
+    assert.equal(closed.json.code, "not_active");
+    const reopen = await api("PUT", `/api/wants/${wantId}`, { status: "active" });
+    assert.equal(reopen.status, 200, reopen.text);
+  });
+
+  let askId = null;
+  await report.check("[[ASK:send me the song you meant]] -> ask -> approve -> asks row open with asked_message_id", async () => {
+    const t = await turn(conversationId, "[[ASK:send me the song you meant]] anything you want from me", key("v3-ask"));
+    assert.equal(t.status, 200, t.text);
+    const p = await pendingProposal("ask", "song you meant");
+    const decided = await approve(p.id);
+    askId = decided.promotedId ?? decided.proposal.promoted_id;
+    const asks = (await api("GET", "/api/wants")).json.asks;
+    const row = asks.find((a) => a.id === askId);
+    assert.ok(row, "the ask row: " + JSON.stringify(asks).slice(0, 300));
+    assert.equal(row.status, "open");
+    assert.equal(row.asked_message_id, t.json.assistantMessage.id);
+    assert.equal(row.brought_up, 0);
+  });
+
+  await report.check("two [[NAG:song you meant]] turns -> brought_up 1 after the first, ask_nag retry on the second", async () => {
+    const first = await turn(conversationId, "[[NAG:song you meant]] ok", key("v3-nag1"));
+    assert.equal(first.status, 200, first.text);
+    assert.equal((await contextOf(first.json.assistantMessage.id)).retried, false, "the first mention is allowed");
+    const row1 = (await api("GET", "/api/wants")).json.asks.find((a) => a.id === askId);
+    assert.equal(row1.brought_up, 1, "brought up once");
+    const second = await turn(conversationId, "[[NAG:song you meant]] ok", key("v3-nag2"));
+    assert.equal(second.status, 200, second.text);
+    // The second mention is ask_nag on the first draft, a retry; the stub answers a retry by
+    // echoing the operator note, which wins the tie, so the evidence is the retry itself.
+    const ctx = await contextOf(second.json.assistantMessage.id);
+    assert.equal(ctx.retried, true, "the nag was retried: " + JSON.stringify(second.json.flags));
+    assert.equal(ctx.runIds.length, 2);
+    assert.ok(!/song you meant/.test(second.json.assistantMessage.content), "the stored reply does not nag");
+    const row2 = (await api("GET", "/api/wants")).json.asks.find((a) => a.id === askId);
+    assert.equal(row2.brought_up, 1, "still once");
+  });
+
+  await report.check("PUT /api/asks/:id status let_go -> next turn's section omits it", async () => {
+    const put = await api("PUT", `/api/asks/${askId}`, { status: "let_go", note: "he never answered" });
+    assert.equal(put.status, 200, put.text);
+    assert.equal(put.json.status, "let_go");
+    const t = await turn(conversationId, "anyway", key("v3-ask-gone"));
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.ok(!(ctx.askIds ?? []).includes(askId), "askIds: " + JSON.stringify(ctx.askIds));
+    const bad = await api("PUT", `/api/asks/${askId}`, { status: "maybe" });
+    assert.equal(bad.status, 400, bad.text);
+  });
+
+  await report.check("relationship proposal with mood_days 1 -> Now shows mood fresh; a state row with mood_set_at 3 days back renders no mood line (moodPhase gone) and the state text carries no mood key", async () => {
+    const t = await turn(conversationId, "[[MOODDAYS:irritated|1]] you forgot again", key("v3-mood"));
+    assert.equal(t.status, 200, t.text);
+    const p = await pendingProposal("relationship", "irritated");
+    await approve(p.id);
+    const s = (await api("GET", "/api/state")).json.relationship.state;
+    assert.equal(s.mood, "irritated");
+    assert.equal(s.mood_days, 1);
+    assert.equal(typeof s.mood_set_at, "string");
+    const fresh = await turn(conversationId, "so", key("v3-mood-fresh"));
+    const c1 = await contextOf(fresh.json.assistantMessage.id);
+    assert.equal(c1.moodPhase, "fresh", JSON.stringify(c1.moodPhase));
+    const put = await api("PUT", "/api/state/relationship", { state: { ...s, mood_set_at: ago(3 * DAY_MS_V3) }, note: "integration: aged mood" });
+    assert.equal(put.status, 200, put.text);
+    const gone = await turn(conversationId, "so anyway", key("v3-mood-gone"));
+    const c2 = await contextOf(gone.json.assistantMessage.id);
+    assert.equal(c2.moodPhase, "gone");
+    const text = stateTextOf(c2);
+    if (text !== null) {
+      assert.ok(!/"mood"/.test(text), "no mood key in the state text");
+      assert.ok(!/Mood:/.test(text), "no Mood line");
+    }
+    const { mood, mood_set_at, mood_days, cooling_off_until, ...clean } = s;
+    const clear = await api("PUT", "/api/state/relationship", { state: { ...clean, cooling_off_until: null }, note: "integration: mood cleared" });
+    assert.equal(clear.status, 200, clear.text);
+    return text === null ? "state text not on the context row; the mood-key check ran on moodPhase only" : "state text checked";
+  });
+
+  await report.check("an /open turn with an open ask -> provenance.callbacks carries no ask (the ask cannot be aged through the API; the opener rule is what is checked)", async () => {
+    const created = await api("POST", "/api/asks", { text: "listen to the demo i sent", wantId });
+    assert.equal(created.status, 201, created.text);
+    const open = await api("POST", `/api/conversations/${conversationId}/open`);
+    assert.equal(open.status, 200, open.text);
+    const ctx = await contextOf(open.json.assistantMessage.id);
+    assert.equal(ctx.opener, true);
+    for (const cb of ctx.callbacks ?? []) assert.ok(!/^you asked him/i.test(cb.text), "no ask on an opener: " + cb.text);
+    await api("PUT", `/api/asks/${created.json.id}`, { status: "let_go" });
+    // Answer the opener so the next /open in a later block is not refused as his turn.
+    const t = await turn(conversationId, "hey", key("v3-after-open"));
+    assert.equal(t.status, 200, t.text);
+  });
+
+  // ---------------------------------------------------------------- DD: grounding
+
+  await report.check("PUT settings herCity with the stub weather provider -> a turn's provenance carries weather true and GET /api/grounding returns 68F clear", async () => {
+    await settingsPut({ herCity: "Stubtown", herLat: 40.7, herLon: -74, weatherProvider: "stub" });
+    const g = await api("GET", "/api/grounding");
+    assert.equal(g.status, 200, g.text);
+    assert.equal(g.json.city, "Stubtown");
+    assert.ok(g.json.weather, "weather: " + g.text);
+    assert.equal(g.json.weather.temp, 68);
+    assert.equal(g.json.weather.words, "clear");
+    assert.equal(typeof g.json.timeOfDay, "string");
+    assert.ok(Array.isArray(g.json.today));
+    const t = await turn(conversationId, "how is it outside", key("v3-weather"));
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.equal(ctx.weather, true);
+  });
+
+  await report.check("weatherProvider off -> weather false and GET /api/grounding weather null", async () => {
+    await settingsPut({ weatherProvider: "off" });
+    const g = await api("GET", "/api/grounding");
+    assert.equal(g.json.weather, null);
+    const t = await turn(conversationId, "still raining?", key("v3-weather-off"));
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.equal(ctx.weather, false);
+    await settingsPut({ weatherProvider: "stub" });
+  });
+
+  await report.check("POST /api/grounding/log meal -> today list has it; a turn's provenance carries the row id; DELETE -> gone", async () => {
+    const r = await api("POST", "/api/grounding/log", { kind: "meal", note: "a bagel" });
+    assert.equal(r.status, 201, r.text);
+    assert.equal(r.json.kind, "meal");
+    const g = await api("GET", "/api/grounding");
+    assert.ok(g.json.today.some((x) => x.id === r.json.id), "today: " + JSON.stringify(g.json.today));
+    const t = await turn(conversationId, "did you eat", key("v3-ground"));
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.ok((ctx.groundingRowIds ?? []).includes(r.json.id), "groundingRowIds: " + JSON.stringify(ctx.groundingRowIds));
+    const del = await api("DELETE", `/api/grounding/log/${r.json.id}`);
+    assert.equal(del.status, 200, del.text);
+    const g2 = await api("GET", "/api/grounding");
+    assert.ok(!g2.json.today.some((x) => x.id === r.json.id));
+    const bad = await api("POST", "/api/grounding/log", { kind: "snack", note: "x" });
+    assert.equal(bad.status, 400, bad.text);
+  });
+
+  await report.check("[[GROUND:meal|a bagel]] -> grounding proposal -> approve -> row", async () => {
+    const t = await turn(conversationId, "[[GROUND:meal|a bagel]] what did you have", key("v3-ground-prop"));
+    assert.equal(t.status, 200, t.text);
+    const p = await pendingProposal("grounding", "bagel");
+    await approve(p.id);
+    const g = await api("GET", "/api/grounding");
+    assert.ok(g.json.today.some((x) => x.kind === "meal" && /bagel/i.test(x.note)), JSON.stringify(g.json.today));
+  });
+
+  await report.check("POST /api/grounding/geocode on the stub: 'zzzzqq' -> results []; 'Portland' -> Stubtown", async () => {
+    const none = await api("POST", "/api/grounding/geocode", { name: "zzzzqq" });
+    assert.equal(none.status, 200, none.text);
+    assert.deepEqual(none.json.results, []);
+    const some = await api("POST", "/api/grounding/geocode", { name: "Portland" });
+    assert.equal(some.status, 200, some.text);
+    assert.equal(some.json.results.length, 1);
+    assert.equal(some.json.results[0].name, "Stubtown");
+    assert.equal(some.json.results[0].timezone, "America/New_York");
+    const bad = await api("POST", "/api/grounding/geocode", {});
+    assert.equal(bad.status, 400, bad.text);
+  });
+
+  let daniId = null;
+  await report.check("POST /api/life/threads/:id/portrait with the stub -> a portrait candidate (or 422 blacklisted: the stub repeats master 03, which the v1 block rejected); an unknown thread -> 404", async () => {
+    const dani = await api("POST", "/api/life/threads", { kind: "person", title: "Dani", relation: "best friend", detail: "moved back in March" });
+    assert.equal(dani.status, 201, dani.text);
+    daniId = dani.json.id;
+    const r = await api("POST", `/api/life/threads/${daniId}/portrait`, { description: "a tall woman with short silver hair and a denim jacket" });
+    if (r.status === 422) {
+      assert.equal(r.json.code, "blacklisted");
+      const missing = await api("POST", "/api/life/threads/lt_nothing/portrait", { description: "x" });
+      assert.equal(missing.status, 404, missing.text);
+      return "the blacklist held on the stub's repeated bytes (a rejected face never comes back)";
+    }
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.asset.role, "portrait");
+    assert.equal(r.json.asset.approval_status, "candidate");
+    assert.equal(r.json.asset.notes, "person:" + daniId);
+    const media = await fetchBytes(`/media/${r.json.asset.id}`);
+    assert.equal(media.status, 200);
+    assert.ok(media.contentType.startsWith("image/png"));
+    const ok = await api("POST", `/api/images/${r.json.asset.id}/decide`, { decision: "approve" });
+    assert.equal(ok.status, 200, ok.text);
+    const life = await api("GET", "/api/life");
+    const head = life.json.threads.find((x) => x.title === "Dani" && x.status === "active");
+    assert.equal(head.portrait_asset_id, r.json.asset.id, "the head carries the approved portrait");
+    const missing = await api("POST", "/api/life/threads/lt_nothing/portrait", { description: "x" });
+    assert.equal(missing.status, 404, missing.text);
+    const second = await api("POST", `/api/life/threads/${daniId}/portrait`, { description: "the same face again" });
+    if (second.status === 200) {
+      const rej = await api("POST", `/api/images/${second.json.asset.id}/decide`, { decision: "reject" });
+      assert.equal(rej.status, 200, rej.text);
+      const third = await api("POST", `/api/life/threads/${daniId}/portrait`, { description: "once more" });
+      assert.equal(third.status, 422, "a rejected face never comes back: " + third.text);
+    }
+    return "portrait made, approved and linked to the thread head";
+  });
+
+  await report.check("[[LIFEUP:Dani|cancelled again]] -> life_update -> approve -> a life_log note on the person; the YOUR LIFE section carries it (threadIds unchanged, one log row gained)", async () => {
+    const before = await turn(conversationId, "how is dani", key("v3-lifeup-before"));
+    const cb = await contextOf(before.json.assistantMessage.id);
+    const headBefore = (await api("GET", "/api/life")).json.threads.find((x) => x.title === "Dani" && x.status === "active");
+    const t = await turn(conversationId, "[[LIFEUP:Dani|cancelled again]] and", key("v3-lifeup"));
+    assert.equal(t.status, 200, t.text);
+    const p = await pendingProposal("life_update", "cancelled again");
+    await approve(p.id);
+    const life = await api("GET", "/api/life");
+    const note = life.json.log.find((l) => l.thread_id === headBefore.id && /cancelled again/i.test(l.note));
+    assert.ok(note, "a life_log note on Dani: " + JSON.stringify(life.json.log.slice(0, 5)));
+    const headAfter = life.json.threads.find((x) => x.title === "Dani" && x.status === "active");
+    assert.equal(headAfter.portrait_asset_id ?? null, headBefore.portrait_asset_id ?? null, "a life update never touches the portrait");
+    const after = await turn(conversationId, "poor dani", key("v3-lifeup-after"));
+    const ca = await contextOf(after.json.assistantMessage.id);
+    assert.deepEqual([...ca.threadIds].sort(), [...cb.threadIds].sort(), "threadIds unchanged");
+    if (Array.isArray(ca.logIds) && Array.isArray(cb.logIds)) assert.ok(ca.logIds.includes(note.id), "logIds gains the note");
+  });
+
+  // ---------------------------------------------------------------- EE: calls
+
+  const callConv = await newConversation("integration v3 calls");
+  let callId = null;
+  let callCostAfterUsage = null;
+  await report.check("callProvider stub: POST /api/calls/start -> 201 with a stub secret and a calls row starting; the audit row and GET /api/calls/:id carry no clientSecret; a second start -> 409", async () => {
+    const r = await api("POST", "/api/calls/start", { conversationId: callConv });
+    assert.equal(r.status, 201, r.text);
+    assert.equal(r.json.clientSecret, "stub-secret");
+    assert.equal(r.json.provider, "stub");
+    assert.equal(r.json.call.status, "starting");
+    assert.equal(r.json.tickSeconds, 30);
+    assert.equal(r.json.maxSeconds, 20 * 60);
+    callId = r.json.call.id;
+    const audit = await auditRows(20);
+    const row = audit.find((a) => a.action === "call.start" && a.entity_id === callId);
+    assert.ok(row, "an audit row for the start");
+    assert.ok(!(row.after_json || "").includes("stub-secret"), "the secret is not in the audit row");
+    const get = await api("GET", `/api/calls/${callId}`);
+    assert.equal(get.status, 200, get.text);
+    assert.ok(!get.text.includes("stub-secret"), "the secret is not in the call row");
+    assert.equal(get.json.call.id, callId);
+    assert.deepEqual(get.json.messages, []);
+    const second = await api("POST", "/api/calls/start", { conversationId: callConv });
+    assert.equal(second.status, 409, second.text);
+    assert.equal(second.json.code, "call_in_progress");
+    const list = await api("GET", `/api/calls?conversationId=${callConv}`);
+    assert.equal(list.status, 200, list.text);
+    assert.ok(list.json.some((c) => c.id === callId));
+    assert.ok(!list.text.includes("stub-secret"));
+  });
+
+  await report.check("tick 30 x 3 with no usage -> seconds 90, cost 3 x price/2, stop false", async () => {
+    let last = null;
+    for (let i = 0; i < 3; i++) {
+      last = await api("POST", `/api/calls/${callId}/tick`, { seconds: 30 });
+      assert.equal(last.status, 200, last.text);
+      assert.equal(last.json.ok, true);
+      assert.equal(last.json.stop, false);
+    }
+    assert.equal(last.json.secondsTotal, 90);
+    assert.ok(Math.abs(last.json.costUsd - 3 * 0.15) < 0.0001, "cost " + last.json.costUsd);
+    const get = await api("GET", `/api/calls/${callId}`);
+    assert.equal(get.json.call.status, "live");
+    assert.equal(get.json.call.seconds, 90);
+  });
+
+  await report.check("tick with usage that prices above the meter -> costUsd equals the priced figure and usage_daily carries the delta; the next tick with the same usage adds nothing", async () => {
+    const usage = { audioIn: 20000, audioOut: 10000, textIn: 0, textOut: 0 };
+    const priced = (20000 * 32 + 10000 * 64) / 1_000_000; // 1.28 USD
+    const a = await api("POST", `/api/calls/${callId}/tick`, { seconds: 30, usage });
+    assert.equal(a.status, 200, a.text);
+    assert.ok(Math.abs(a.json.costUsd - priced) < 0.0001, "priced: " + a.json.costUsd);
+    const usageRows = (await api("GET", "/api/usage")).json.byDay;
+    const call = usageRows.filter((r) => r.provider === "stub" && /realtime|stub/.test(r.model) && r.requests > 0);
+    assert.ok(call.length, "a usage row for the call: " + JSON.stringify(usageRows).slice(0, 300));
+    const b = await api("POST", `/api/calls/${callId}/tick`, { seconds: 30, usage });
+    assert.equal(b.status, 200, b.text);
+    assert.ok(Math.abs(b.json.costUsd - priced) < 0.0001, "the same usage adds nothing: " + b.json.costUsd);
+    assert.equal(b.json.secondsTotal, 150);
+    callCostAfterUsage = b.json.costUsd;
+    const bad = await api("POST", `/api/calls/${callId}/tick`, { seconds: 30, usage: { audioIn: -1, audioOut: 0, textIn: 0, textOut: 0 } });
+    assert.equal(bad.status, 400, bad.text);
+  });
+
+  await report.check("dailyCapUsd tiny -> tick returns stop budget, the tick is still recorded", async () => {
+    await settingsPut({ dailyCapUsd: 0.01 });
+    const r = await api("POST", `/api/calls/${callId}/tick`, { seconds: 30 });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.stop, true);
+    assert.equal(r.json.reason, "budget");
+    assert.equal(r.json.secondsTotal, 180, "the crossing tick is recorded");
+    await settingsPut({ dailyCapUsd: 200 });
+  });
+
+  await report.check("end with 5 segments -> 4 story messages with call_id in seq order, her rows flagged, the call ended, proposals ran (stub) within 10 s, GET /api/calls/:id returns them", async () => {
+    const at = (i) => new Date(Date.now() - (5 - i) * 1000).toISOString();
+    const segments = [
+      { who: "him", text: "hey [[FACT:she keeps a jar of sea glass]] can you hear me", at: at(0) },
+      { who: "her", text: "hey. sort of", at: at(1) },
+      { who: "her", text: "the line is bad, hold on", at: at(2) },
+      { who: "him", text: "better now?", at: at(3) },
+      { who: "her", text: "yes. so what did you want. i am not an ai by the way", at: at(4) },
+    ];
+    const r = await api("POST", `/api/calls/${callId}/end`, { reason: "ended", segments, usage: { audioIn: 20000, audioOut: 10000, textIn: 0, textOut: 0 } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.call.status, "ended");
+    assert.equal(r.json.call.end_reason, "ended");
+    assert.equal(r.json.call.transcript_rows, 4, "consecutive same-speaker segments merged");
+    assert.ok(Array.isArray(r.json.messageIds) && r.json.messageIds.length === 4);
+    assert.ok(Math.abs(r.json.call.cost_usd_micro / 1_000_000 - Math.max(callCostAfterUsage, (180 / 60) * 0.3)) < 0.0001, "reconciled from the final usage");
+    const get = await api("GET", `/api/calls/${callId}`);
+    assert.equal(get.json.messages.length, 4);
+    const seqs = get.json.messages.map((m) => m.seq);
+    assert.deepEqual(seqs, [...seqs].sort((x, y) => x - y));
+    for (const m of get.json.messages) {
+      assert.equal(m.call_id, callId);
+      assert.equal(m.channel, "story");
+    }
+    assert.deepEqual(get.json.messages.map((m) => m.role), ["user", "assistant", "user", "assistant"]);
+    const hers = get.json.messages[3];
+    const flags = JSON.parse(hers.flags_json || "[]").map((f) => f.code);
+    assert.ok(flags.includes("tech_leak"), "a leak in speech is stored for the record: " + JSON.stringify(flags));
+    const list = await api("GET", `/api/conversations/${callConv}/messages`);
+    assert.equal(list.json.length, 4, "the call rows are ordinary story messages");
+    const p = await pendingProposal("avelie_fact", "sea glass");
+    assert.ok(p, "the proposal pass ran over the call");
+    await api("POST", `/api/proposals/${p.id}/decide`, { decision: "reject" });
+  });
+
+  await report.check("end with 1,500 raw alternating segments -> 200 accepted, transcript_rows 80", async () => {
+    const start = await api("POST", "/api/calls/start", { conversationId: callConv });
+    assert.equal(start.status, 201, start.text);
+    const id = start.json.call.id;
+    const base = Date.now() - 1_600_000;
+    const segments = Array.from({ length: 1500 }, (_, i) => ({ who: i % 2 ? "her" : "him", text: "segment " + i, at: new Date(base + i * 1000).toISOString() }));
+    const r = await api("POST", `/api/calls/${id}/end`, { reason: "ended", segments });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.call.transcript_rows, 80);
+    assert.equal(r.json.messageIds.length, 80);
+    const tooMany = await api("POST", "/api/calls/start", { conversationId: callConv });
+    assert.equal(tooMany.status, 201, tooMany.text);
+    const over = await api("POST", `/api/calls/${tooMany.json.call.id}/end`, { reason: "ended", segments: Array.from({ length: 2001 }, (_, i) => ({ who: "him", text: "x" + i, at: new Date().toISOString() })) });
+    assert.equal(over.status, 400, over.text);
+    const empty = await api("POST", `/api/calls/${tooMany.json.call.id}/end`, { reason: "pagehide", segments: [] });
+    assert.equal(empty.status, 200, "a call with no segments still ends cleanly: " + empty.text);
+    assert.equal(empty.json.call.transcript_rows, 0);
+  });
+
+  await report.check("end on an unknown id -> 404; end twice -> 409 call_over", async () => {
+    const missing = await api("POST", "/api/calls/call_nothing/end", { reason: "ended", segments: [] });
+    assert.equal(missing.status, 404, missing.text);
+    const again = await api("POST", `/api/calls/${callId}/end`, { reason: "ended", segments: [] });
+    assert.equal(again.status, 409, again.text);
+    assert.equal(again.json.code, "call_over");
+  });
+
+  await report.check("callProvider off -> start 503; callProvider elevenlabs -> start 503 with detail reserved_v3_1", async () => {
+    await settingsPut({ callProvider: "off" });
+    const off = await api("POST", "/api/calls/start", { conversationId: callConv });
+    assert.equal(off.status, 503, off.text);
+    assert.equal(off.json.code, "provider_not_configured");
+    await settingsPut({ callProvider: "elevenlabs" });
+    const reserved = await api("POST", "/api/calls/start", { conversationId: callConv });
+    assert.equal(reserved.status, 503, reserved.text);
+    assert.equal(reserved.json.detail, "reserved_v3_1");
+    await settingsPut({ callProvider: "stub" });
+  });
+
+  // ---------------------------------------------------------------- FF: clips
+
+  let clipId = null;
+  await report.check("videoProvider stub: POST /api/video/generate from master 03 -> 202 generating; poll -> running; poll -> candidate with sha256, /media/:id 200 video/mp4, a Range request 206", async () => {
+    const masters = (await api("GET", "/api/assets")).json.masters;
+    const master = masters.find((m) => /03/.test(m.file)) || masters[0];
+    assert.ok(master, "a master");
+    const gen = await api("POST", "/api/video/generate", { sourceAssetId: master.id, description: "she looks up from her phone and laughs" });
+    assert.equal(gen.status, 202, gen.text);
+    assert.equal(gen.json.asset.role, "video");
+    assert.equal(gen.json.asset.approval_status, "generating");
+    clipId = gen.json.asset.id;
+    const first = await api("POST", `/api/video/${clipId}/poll`);
+    assert.equal(first.status, 200, first.text);
+    assert.equal(first.json.status, "running");
+    const second = await waitFor("the clip to become a candidate", async () => {
+      const r = await api("POST", `/api/video/${clipId}/poll`);
+      return r.status === 200 && r.json.status === "candidate" ? r : null;
+    }, 15_000, 300);
+    assert.equal(second.json.asset.approval_status, "candidate");
+    assert.equal(typeof second.json.asset.sha256, "string");
+    assert.equal(second.json.asset.notes, null);
+    const media = await fetchBytes(`/media/${clipId}`);
+    assert.equal(media.status, 200);
+    assert.ok(media.contentType.startsWith("video/mp4"), media.contentType);
+    assert.equal(String.fromCharCode(...media.bytes.slice(4, 8)), "ftyp");
+    const range = await fetch(BASE + `/media/${clipId}`, { headers: { range: "bytes=0-15" } });
+    assert.equal(range.status, 206, "a Range request is answered 206");
+    assert.ok((range.headers.get("content-range") || "").startsWith("bytes 0-15/"), range.headers.get("content-range"));
+    assert.equal(range.headers.get("accept-ranges"), "bytes");
+    const chunk = new Uint8Array(await range.arrayBuffer());
+    assert.equal(chunk.length, 16);
+  });
+
+  await report.check("approve -> approved role video; reject a second clip -> the hash is blacklisted and a third generate fails 422 at poll", async () => {
+    const ok = await api("POST", `/api/images/${clipId}/decide`, { decision: "approve" });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(ok.json.asset.approval_status, "approved");
+    assert.equal(ok.json.asset.role, "video");
+    const master = (await api("GET", "/api/assets")).json.masters[0];
+    const makeClip = async () => {
+      const gen = await api("POST", "/api/video/generate", { sourceAssetId: master.id, description: "she turns away" });
+      assert.equal(gen.status, 202, gen.text);
+      let last = null;
+      for (let i = 0; i < 6; i++) {
+        last = await api("POST", `/api/video/${gen.json.asset.id}/poll`);
+        if (last.status !== 200 || last.json.status !== "running") break;
+        await sleep(200);
+      }
+      return { id: gen.json.asset.id, last };
+    };
+    const second = await makeClip();
+    assert.equal(second.last.status, 200, second.last.text);
+    assert.equal(second.last.json.status, "candidate");
+    const rej = await api("POST", `/api/images/${second.id}/decide`, { decision: "reject" });
+    assert.equal(rej.status, 200, rej.text);
+    const gone = await fetchBytes(`/media/${second.id}`);
+    assert.equal(gone.status, 404);
+    const third = await makeClip();
+    assert.equal(third.last.status, 422, "blacklisted at poll: " + third.last.text);
+    assert.equal(third.last.json.code, "blacklisted");
+  });
+
+  await report.check("videoProvider off -> generate 503; an unknown source -> 404 (a source over 5 MB encoded cannot be made on the stub: unit-tested only)", async () => {
+    await settingsPut({ videoProvider: "off" });
+    const master = (await api("GET", "/api/assets")).json.masters[0];
+    const off = await api("POST", "/api/video/generate", { sourceAssetId: master.id, description: "x" });
+    assert.equal(off.status, 503, off.text);
+    await settingsPut({ videoProvider: "stub" });
+    const missing = await api("POST", "/api/video/generate", { sourceAssetId: "img_nothing", description: "x" });
+    assert.equal(missing.status, 404, missing.text);
+  });
+
+  // ---------------------------------------------------------------- GG: the imperfection engine
+
+  await report.check("three [[SAME]] turns -> shape_uniform flag on the third", async () => {
+    const shapeConv = await newConversation("integration v3 shape");
+    let last = null;
+    for (let i = 0; i < 3; i++) {
+      last = await turn(shapeConv, "[[SAME]] ok", key("v3-same-" + i));
+      assert.equal(last.status, 200, last.text);
+    }
+    assert.ok(last.json.flags.some((f) => f.code === "shape_uniform"), "flags: " + JSON.stringify(last.json.flags));
+    const ctx = await contextOf(last.json.assistantMessage.id);
+    assert.equal(typeof ctx.signature, "string");
+    assert.equal(ctx.retried, false, "a flag, never a retry");
+  });
+
+  await report.check("[[POLISH]] -> over_polish flag, no retry run", async () => {
+    const t = await turn(conversationId, "[[POLISH]] how was tonight", key("v3-polish"));
+    assert.equal(t.status, 200, t.text);
+    assert.ok(t.json.flags.some((f) => f.code === "over_polish"), "flags: " + JSON.stringify(t.json.flags));
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.equal(ctx.retried, false);
+    assert.equal(ctx.runIds.length, 1);
+  });
+
+  await report.check("[[TYPO]] -> stored reply keeps 'werid' and the 'weird*' bubble, no repair flag", async () => {
+    const t = await turn(conversationId, "[[TYPO]] that was strange", key("v3-typo"));
+    assert.equal(t.status, 200, t.text);
+    const stored = await api("GET", `/api/messages/${t.json.assistantMessage.id}`);
+    assert.equal(stored.json.content, "ok that was werid\n\nweird*");
+    assert.ok(!t.json.flags.some((f) => ["em_dash", "emoji", "markdown_structure"].includes(f.code)), JSON.stringify(t.json.flags));
+  });
+
+  await report.check("PUT settings typoCueShare 0.05, then a conversation whose first turn key rolls typo_fix (computed with the same seed function) -> provenance.shapeCue typo_fix", async () => {
+    const imperfection = await loadTs("imperfection");
+    assert.ok(imperfection && typeof imperfection.shapeCue === "function", "src/imperfection.ts loads under Node");
+    await settingsPut({ typoCueShare: 0.05 });
+    const day = new Date().toISOString().slice(0, 10);
+    let found = null;
+    for (let i = 0; i < 400 && !found; i++) {
+      const id = await newConversation("integration v3 cue " + i);
+      const seed = day + ":" + id + ":cue:s1";
+      if (imperfection.shapeCue(seed, [], { voiceAllowed: true, typoShare: 0.05, enabled: true }) === "typo_fix") found = id;
+    }
+    assert.ok(found, "a conversation whose first turn rolls typo_fix (about one in twenty)");
+    const t = await turn(found, "hey", key("v3-cue-typo"));
+    assert.equal(t.status, 200, t.text);
+    const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.equal(ctx.shapeCue, "typo_fix", "shapeCue: " + JSON.stringify(ctx.shapeCue));
+    await settingsPut({ typoCueShare: 0 });
+  });
+
+  await report.check("default settings over 40 turns -> no provenance carries typo_fix", async () => {
+    const cueConv = await newConversation("integration v3 forty");
+    const cues = [];
+    for (let i = 0; i < 40; i++) {
+      const t = await turn(cueConv, "turn " + i + " ok", key("v3-forty-" + i));
+      assert.equal(t.status, 200, t.text);
+      const ctx = await contextOf(t.json.assistantMessage.id);
+      cues.push(ctx.shapeCue ?? null);
+    }
+    assert.ok(!cues.includes("typo_fix"), "cues: " + JSON.stringify(cues));
+    return `cues: ${cues.filter(Boolean).length} of 40 turns carried one`;
+  });
+
+  // ---------------------------------------------------------------- HH: tastings
+
+  const tasteConv = await newConversation("integration v3 tastings");
+  await report.check("tastingEnabled false -> turn with tasting true -> 400", async () => {
+    const r = await api("POST", `/api/conversations/${tasteConv}/turn`, { content: "hey", idempotencyKey: key("v3-taste-off"), tasting: true });
+    assert.equal(r.status, 400, r.text);
+    assert.equal(r.json.code, "validation");
+  });
+
+  let tastingId = null;
+  let tastingKey = null;
+  let leftText = null;
+  await report.check("enabled with stub A (model stub) and stub B (model stub-b): turn tasting -> two candidates, texts differ ('b: ' prefix), no assistant message, user message stored", async () => {
+    await settingsPut({ prices: { stub: { inputPerMTok: 1, outputPerMTok: 1 }, "stub-b": { inputPerMTok: 1, outputPerMTok: 1 } } });
+    await settingsPut({ model: "stub", tastingProvider: "stub", tastingModel: "stub-b", tastingEnabled: true, tastingDailyCapUsd: 5 });
+    tastingKey = key("v3-taste");
+    const r = await api("POST", `/api/conversations/${tasteConv}/turn`, { content: "bad day. do not cheer me up", idempotencyKey: tastingKey, tasting: true });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(typeof r.json.tastingId, "string", r.text);
+    tastingId = r.json.tastingId;
+    assert.equal(r.json.candidates.length, 2);
+    assert.deepEqual(r.json.candidates.map((c) => c.side), ["left", "right"]);
+    const texts = r.json.candidates.map((c) => c.text);
+    assert.notEqual(texts[0], texts[1]);
+    assert.equal(texts.filter((x) => x.startsWith("b: ")).length, 1, "one side is the stub-b performer: " + JSON.stringify(texts));
+    leftText = texts[0];
+    for (const s of ["stub-b", "provider", "model", "anthropic", "openai"]) assert.ok(!JSON.stringify(r.json.candidates).includes(s), "blind: " + s);
+    assert.ok(r.json.userMessage && r.json.userMessage.role === "user");
+    assert.equal(r.json.assistantMessage, undefined);
+    const list = await api("GET", `/api/conversations/${tasteConv}/messages`);
+    assert.equal(list.json.length, 1, "his message with no reply");
+    const get = await api("GET", `/api/tastings/${tastingId}`);
+    assert.equal(get.status, 200, get.text);
+    assert.equal(get.json.status, "pending");
+    assert.ok(!get.text.includes("stub-b"), "still blind");
+  });
+
+  await report.check("a plain turn with a new key while pending -> 409 tasting_pending; /open while pending -> 409; the same key with tasting true -> replayed; the same key without tasting -> 409", async () => {
+    const plain = await turn(tasteConv, "hello?", key("v3-taste-plain"));
+    assert.equal(plain.status, 409, plain.text);
+    assert.equal(plain.json.code, "tasting_pending");
+    const open = await api("POST", `/api/conversations/${tasteConv}/open`);
+    assert.equal(open.status, 409, open.text);
+    const replay = await api("POST", `/api/conversations/${tasteConv}/turn`, { content: "bad day. do not cheer me up", idempotencyKey: tastingKey, tasting: true });
+    assert.equal(replay.status, 200, replay.text);
+    assert.equal(replay.json.tastingId, tastingId);
+    const sameKeyPlain = await api("POST", `/api/conversations/${tasteConv}/turn`, { content: "bad day. do not cheer me up", idempotencyKey: tastingKey });
+    assert.equal(sameKeyPlain.status, 409, sameKeyPlain.text);
+  });
+
+  await report.check("pick left -> assistant message equals the left text, provenance names the winner, ledger shows one win for that performer", async () => {
+    const r = await api("POST", `/api/tastings/${tastingId}/pick`, { pick: "left" });
+    assert.equal(r.status, 200, r.text);
+    assert.ok(r.json.assistantMessage, r.text);
+    assert.equal(r.json.assistantMessage.content, leftText);
+    assert.equal(r.json.tasting.status, "picked");
+    assert.ok(r.json.tasting.left && r.json.tasting.left.model && r.json.tasting.right && r.json.tasting.right.model, "the mapping is revealed");
+    const ctx = await contextOf(r.json.assistantMessage.id);
+    assert.ok(ctx.tasting && ctx.tasting.winner && ctx.tasting.loser, JSON.stringify(ctx.tasting));
+    assert.equal(ctx.tasting.winner.model, r.json.tasting.left.model);
+    const led = await api("GET", "/api/tastings/ledger");
+    assert.equal(led.status, 200, led.text);
+    const winner = led.json.performers.find((p) => (p.performer ?? p.name ?? "").includes(r.json.tasting.left.model));
+    assert.ok(winner, JSON.stringify(led.json.performers));
+    assert.equal(winner.wins, 1);
+    const list = await api("GET", `/api/conversations/${tasteConv}/messages`);
+    assert.equal(list.json.length, 2);
+    const get = await api("GET", `/api/tastings/${tastingId}`);
+    assert.equal(get.json.pick, "left");
+  });
+
+  await report.check("pick again -> 409 already_decided", async () => {
+    const r = await api("POST", `/api/tastings/${tastingId}/pick`, { pick: "right" });
+    assert.equal(r.status, 409, r.text);
+    assert.equal(r.json.code, "already_decided");
+  });
+
+  await report.check("[[BFAIL]] -> normal TurnResponse with tasting_void, one assistant message", async () => {
+    const before = (await api("GET", `/api/conversations/${tasteConv}/messages`)).json.length;
+    const r = await api("POST", `/api/conversations/${tasteConv}/turn`, { content: "[[BFAIL]] anyway", idempotencyKey: key("v3-bfail"), tasting: true });
+    assert.equal(r.status, 200, r.text);
+    assert.ok(r.json.assistantMessage, "a normal TurnResponse: " + r.text);
+    assert.ok(r.json.flags.some((f) => f.code === "tasting_void"), JSON.stringify(r.json.flags));
+    assert.equal((await api("GET", `/api/conversations/${tasteConv}/messages`)).json.length, before + 2);
+  });
+
+  await report.check("neither -> no reply, the tasting is void; the retry with the same key produces a normal reply and exactly one assistant message exists for that user row", async () => {
+    const k = key("v3-neither");
+    const r = await api("POST", `/api/conversations/${tasteConv}/turn`, { content: "one more", idempotencyKey: k, tasting: true });
+    assert.equal(r.status, 200, r.text);
+    const n = await api("POST", `/api/tastings/${r.json.tastingId}/pick`, { pick: "neither" });
+    assert.equal(n.status, 200, n.text);
+    assert.equal(n.json.assistantMessage, null);
+    assert.equal(n.json.tasting.status, "void");
+    const retry = await turn(tasteConv, "one more", k);
+    assert.equal(retry.status, 200, retry.text);
+    assert.equal(retry.json.userMessage.id, r.json.userMessage.id, "the stored user row is continued");
+    const list = await api("GET", `/api/conversations/${tasteConv}/messages`);
+    const replies = list.json.filter((m) => m.reply_to_id === r.json.userMessage.id);
+    assert.equal(replies.length, 1);
+  });
+
+  await report.check("promote a performer with no price -> 400 price_unknown; with a price -> settings.provider and model change, audit row", async () => {
+    const bad = await api("POST", "/api/tastings/promote", { provider: "stub", model: "stub-c" });
+    assert.equal(bad.status, 400, bad.text);
+    assert.equal(bad.json.code, "price_unknown");
+    const ok = await api("POST", "/api/tastings/promote", { provider: "stub", model: "stub-b" });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(ok.json.model, "stub-b");
+    const audit = await auditRows(20);
+    assert.ok(audit.some((a) => a.action === "tasting.promote"), "audited");
+    await settingsPut({ model: "stub" });
+  });
+
+  await report.check("tastingDailyCapUsd 0 -> 402 tasting_budget_exceeded, nothing written", async () => {
+    await settingsPut({ tastingDailyCapUsd: 0 });
+    const before = (await api("GET", `/api/conversations/${tasteConv}/messages`)).json.length;
+    const r = await api("POST", `/api/conversations/${tasteConv}/turn`, { content: "capped", idempotencyKey: key("v3-taste-cap"), tasting: true });
+    assert.equal(r.status, 402, r.text);
+    assert.equal(r.json.code, "tasting_budget_exceeded");
+    assert.equal((await api("GET", `/api/conversations/${tasteConv}/messages`)).json.length, before);
+    await settingsPut({ tastingDailyCapUsd: 1, tastingEnabled: false });
+  });
+
+  // ---------------------------------------------------------------- II: marks and the fine-tune export
+
+  let keptId = null;
+  await report.check("mark keep on her message -> status approved +1; mark drop -> back; DELETE -> back; his message -> 400", async () => {
+    await api("PUT", `/api/memory/fact/${cousinFactId}`, { weight: 0.9, lastTouched: new Date().toISOString() });
+    const base = (await api("GET", "/api/finetune/status")).json;
+    assert.equal(typeof base.approved, "number");
+    assert.equal(base.minimum, 200);
+    assert.equal(base.ready, base.approved >= 200);
+    const t = await turn(conversationId, "tell me one true thing about your day", key("v3-keep"));
+    assert.equal(t.status, 200, t.text);
+    keptId = t.json.assistantMessage.id;
+    const keep = await api("POST", `/api/messages/${keptId}/mark`, { mark: "keep", note: "this one" });
+    assert.equal(keep.status, 200, keep.text);
+    assert.equal(keep.json.mark, "keep");
+    assert.equal((await api("GET", "/api/finetune/status")).json.approved, base.approved + 1);
+    const drop = await api("POST", `/api/messages/${keptId}/mark`, { mark: "drop" });
+    assert.equal(drop.status, 200, drop.text);
+    assert.equal((await api("GET", "/api/finetune/status")).json.approved, base.approved);
+    const del = await api("DELETE", `/api/messages/${keptId}/mark`);
+    assert.equal(del.status, 200, del.text);
+    assert.equal((await api("GET", "/api/finetune/status")).json.approved, base.approved);
+    const his = await api("POST", `/api/messages/${t.json.userMessage.id}/mark`, { mark: "keep" });
+    assert.equal(his.status, 400, his.text);
+    const again = await api("DELETE", `/api/messages/${keptId}/mark`);
+    assert.equal(again.status, 404, again.text);
+  });
+
+  await report.check("a correction with a rewrite -> status counts it once even when the same message is also kept", async () => {
+    const base = (await api("GET", "/api/finetune/status")).json.approved;
+    const keep = await api("POST", `/api/messages/${keptId}/mark`, { mark: "keep" });
+    assert.equal(keep.status, 200, keep.text);
+    assert.equal((await api("GET", "/api/finetune/status")).json.approved, base + 1);
+    const c = await api("POST", "/api/corrections", { messageId: keptId, kind: "too_nice", rewrite: "one true thing. i ate lunch standing up", toBank: false });
+    assert.equal(c.status, 201, c.text);
+    const after = (await api("GET", "/api/finetune/status")).json;
+    assert.equal(after.approved, base + 1, "deduped by user message");
+    assert.ok(after.breakdown && after.breakdown.rewrites >= 1, JSON.stringify(after.breakdown));
+  });
+
+  await report.check("GET export.jsonl -> lines parse, system starts with the ALWAYS_ON first line, no ANTHROPIC or sk- anywhere; export.json lineHashes match the chain", async () => {
+    const constitution = await loadTs("generated/constitution");
+    const firstLine = constitution ? constitution.ALWAYS_ON.split("\n")[0] : null;
+    const res = await fetch(BASE + "/api/finetune/export.jsonl");
+    assert.equal(res.status, 200);
+    assert.ok((res.headers.get("content-type") || "").startsWith("text/plain"));
+    assert.ok(/attachment; filename="avelie-train-\d{4}-\d{2}-\d{2}\.jsonl"/.test(res.headers.get("content-disposition") || ""));
+    const text = await res.text();
+    const lines = text.split("\n").filter((l) => l.trim());
+    assert.ok(lines.length >= 1, "at least the kept exchange");
+    for (const line of lines) {
+      const obj = JSON.parse(line);
+      assert.deepEqual(obj.messages.map((m) => m.role), ["system", "user", "assistant"]);
+      if (firstLine) assert.ok(obj.messages[0].content.startsWith(firstLine), "compact system starts with ALWAYS_ON");
+      assert.ok(!obj.messages[0].content.includes("REFERENCE: CORE IDENTITY"), "compact, not the whole prefix");
+    }
+    assert.ok(!/ANTHROPIC|sk-/.test(text));
+    assert.ok(lines.some((l) => JSON.parse(l).messages[2].content === "one true thing. i ate lunch standing up"), "the rewrite is the assistant text");
+    const side = await api("GET", "/api/finetune/export.json");
+    assert.equal(side.status, 200, side.text);
+    assert.equal(side.json.count, lines.length);
+    assert.equal(side.json.lineHashes.length, lines.length);
+    assert.equal(side.json.systemMode, "compact");
+    assert.equal(side.json.stripHim, false);
+    const { createHash } = await import("node:crypto");
+    const hashes = lines.map((l) => createHash("sha256").update(l).digest("hex"));
+    assert.deepEqual(side.json.lineHashes, hashes);
+    assert.equal(side.json.sha256, createHash("sha256").update(hashes.join("\n")).digest("hex"));
+    return `${lines.length} line(s)`;
+  });
+
+  await report.check("with a justin fact approved: export.json sentFactIds names it and sentHisName reflects the state; stripHim=1 -> no WHAT YOU KNOW ABOUT HIM, no his_name, sentFactIds empty", async () => {
+    const side = await api("GET", "/api/finetune/export.json");
+    assert.ok(side.json.sentFactIds.includes(cousinFactId), "sentFactIds: " + JSON.stringify(side.json.sentFactIds));
+    const rel = (await api("GET", "/api/state")).json.relationship.state;
+    assert.equal(side.json.sentHisName, !!(rel.his_name && String(rel.his_name).trim()));
+    const text = await (await fetch(BASE + "/api/finetune/export.jsonl?stripHim=1")).text();
+    for (const line of text.split("\n").filter((l) => l.trim())) {
+      const sys = JSON.parse(line).messages[0].content;
+      // The always-on rules name the sections by title; the rendered headers are what must be gone.
+      assert.ok(!sys.includes("WHAT YOU KNOW ABOUT HIM (only what he told you"), "the facts section is stripped");
+      assert.ok(!sys.includes("THINGS YOU HALF REMEMBER (real, but"), "the half-remember section is stripped");
+      const m = /Relationship: (\{.*\})/.exec(sys);
+      if (m) assert.ok(!("his_name" in JSON.parse(m[1])), "no his_name");
+      assert.ok(!sys.includes("his cousin plays drums"), "his fact is out");
+    }
+    const stripped = await api("GET", "/api/finetune/export.json?stripHim=1");
+    assert.deepEqual(stripped.json.sentFactIds, []);
+    assert.equal(stripped.json.stripHim, true);
+    assert.equal(stripped.json.sentHisName, false);
+  });
+
+  await report.check("finetune/use ft:stub-model with prices -> provider openai, model set, texterPrevious stored, proposalProvider unchanged; revert -> back", async () => {
+    const before = (await api("GET", "/api/finetune/status")).json;
+    const use = await api("POST", "/api/finetune/use", { model: "ft:stub-model", inputPerMTok: 0.4, outputPerMTok: 1.6 });
+    assert.equal(use.status, 200, use.text);
+    assert.equal(use.json.provider, "openai");
+    assert.equal(use.json.model, "ft:stub-model");
+    assert.equal(use.json.texterModel, "ft:stub-model");
+    assert.deepEqual(use.json.texterPrevious, { provider: before.live.provider, model: before.live.model });
+    assert.equal(use.json.proposalProvider, "stub", "judgment stays where it was");
+    assert.deepEqual(use.json.prices["ft:stub-model"], { inputPerMTok: 0.4, outputPerMTok: 1.6 });
+    const status = (await api("GET", "/api/finetune/status")).json;
+    assert.equal(status.live.model, "ft:stub-model");
+    assert.equal(status.texterModel, "ft:stub-model");
+    const audit = await auditRows(20);
+    assert.ok(audit.some((a) => a.action === "finetune.use"));
+    const revert = await api("POST", "/api/finetune/revert");
+    assert.equal(revert.status, 200, revert.text);
+    assert.equal(revert.json.provider, before.live.provider);
+    assert.equal(revert.json.model, before.live.model);
+    assert.ok(audit.length >= 0 && (await auditRows(20)).some((a) => a.action === "finetune.revert"));
+  });
+
+  await report.check("use without prices for an unpriced model -> 400 price_unknown; a bad model id -> 400", async () => {
+    const r = await api("POST", "/api/finetune/use", { model: "ft:another-model" });
+    assert.equal(r.status, 400, r.text);
+    assert.equal(r.json.code, "price_unknown");
+    const bad = await api("POST", "/api/finetune/use", { model: "not a model id!" });
+    assert.equal(bad.status, 400, bad.text);
+    const half = await api("POST", "/api/finetune/use", { model: "ft:x", inputPerMTok: 1 });
+    assert.equal(half.status, 400, half.text);
+  });
+
+  await report.check("cron 0 7 * * * -> the backup runs and the maintenance pass follows it (an audit row each)", async () => {
+    const r = await scheduledCron("0 7 * * *");
+    assert.equal(r.status, 200, r.text);
+    const audit = await auditRows(40);
+    assert.ok(audit.some((a) => a.action === "backup.run"), "the backup still runs");
+    assert.ok(audit.some((a) => /maintenance/.test(a.action)), "a maintenance audit row: " + audit.slice(0, 10).map((a) => a.action).join(","));
+  });
+
+  await report.check("v3: settings back to their values before this block", async () => {
+    await settingsPut(restore);
+    const s = (await api("GET", "/api/settings")).json;
+    for (const k of Object.keys(restore)) assert.deepEqual(s[k], restore[k], k);
+  });
+}
+
 // The gate as production runs it: ACCESS_AUD set, so the dev actor is off and only a
 // verified Access token could get in. (A non-local Host header cannot be probed through
 // wrangler dev: with a route configured it rewrites every request's origin, and
@@ -1346,6 +2433,17 @@ async function gateScenarios(report) {
     assert.equal(css.status, 401, css.text);
     const media = await api("GET", "/media/img_nothing");
     assert.equal(media.status, 401, media.text);
+  });
+
+  await report.check("ACCESS_AUD set: the v3 routes are gated too -> 401", async () => {
+    for (const path of ["/api/voicebank", "/api/corrections", "/api/memory", "/api/wants", "/api/grounding", "/api/calls", "/api/tastings/ledger", "/api/finetune/status", "/api/finetune/export.jsonl", "/api/finetune/export.json"]) {
+      const r = await api("GET", path);
+      assert.equal(r.status, 401, path + " -> " + r.status + " " + r.text.slice(0, 100));
+    }
+    for (const path of ["/api/calls/start", "/api/video/generate", "/api/voicebank/decide", "/api/finetune/use", "/api/grounding/geocode"]) {
+      const r = await api("POST", path, {});
+      assert.equal(r.status, 401, path + " -> " + r.status + " " + r.text.slice(0, 100));
+    }
   });
 
   await report.check("ACCESS_AUD set: v2 media paths, the timeline, the character export and the cron routes are gated -> 401", async () => {
@@ -1415,6 +2513,8 @@ async function main() {
       "--var", `DEV_ACTOR_EMAIL:${DEV_ACTOR_EMAIL}`,
       "--var", "DEFAULT_PROVIDER:stub",
       "--var", "DEFAULT_IMAGE_PROVIDER:stub",
+      // v3: POST /api/finetune/use needs the key to exist; the stub never calls OpenAI.
+      "--var", "OPENAI_API_KEY:dummy-for-settings-only",
     ], STUB_ENV);
 
     await waitFor("wrangler dev on " + BASE, async () => {
@@ -1432,6 +2532,8 @@ async function main() {
     const conversationId = await scenarios(report);
     console.log("");
     await scenariosV2(report, conversationId);
+    console.log("");
+    await scenariosV3(report);
 
     // Second phase, same port and state, with the production gate switched on. The gated
     // server cannot be told apart by /api/me (401), so nothing may answer before it boots.

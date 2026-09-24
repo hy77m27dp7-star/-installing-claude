@@ -1,16 +1,29 @@
-// OpenAI adapters over fetch: chat completions for text, images/edits for photos.
-// Error bodies are redacted before they become messages (a 401 body echoes a masked key).
+// OpenAI adapters over fetch: chat completions for text, images/edits for photos,
+// images/generations for portraits (v3, no references), and the realtime client-secret
+// mint for calls (v3). Error bodies are redacted before they become messages (a 401 body
+// echoes a masked key; a realtime body could echo the ephemeral token).
 import { ProviderError } from "../types";
 import type {
-  Env, GenerateRequest, GenerateResult, ImageGenerateRequest, ImageGenerateResult, ImageProvider, TextProvider,
+  Env, GenerateRequest, GenerateResult, ImageGenerateRequest, ImageGenerateResult, TextProvider,
 } from "../types";
 import { redactSecrets, safeErrorMessage } from "./types";
+import type { ImageFromTextRequest, ImageProviderV3, RealtimeSecret, RealtimeSecretRequest } from "./types";
 import { dataUrl, imagesOf, loadInboxImages } from "../vision";
 
 const CHAT_URL = "https://api.openai.com/v1/chat/completions";
 const IMAGE_EDITS_URL = "https://api.openai.com/v1/images/edits";
+const IMAGE_GENERATIONS_URL = "https://api.openai.com/v1/images/generations";
+// GA realtime (SPEC_V3 EE): the Worker mints a client secret; the page posts its SDP offer
+// to the calls endpoint with that secret. The Worker never touches audio.
+const REALTIME_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets";
+export const REALTIME_SDP_URL = "https://api.openai.com/v1/realtime/calls";
 const TEXT_TIMEOUT_MS = 120_000;
 const IMAGE_TIMEOUT_MS = 180_000;
+const REALTIME_TIMEOUT_MS = 20_000;
+// Server VAD: half a second of silence ends his turn; his speech interrupts hers.
+const VAD_SILENCE_MS = 500;
+// The API's default validity for a client secret when expires_after is unset.
+const DEFAULT_SECRET_TTL_S = 600;
 
 interface ChatCompletion {
   choices?: Array<{
@@ -22,6 +35,12 @@ interface ChatCompletion {
 
 interface ImagesResponse {
   data?: Array<{ b64_json?: string; url?: string }>;
+}
+
+interface ClientSecretResponse {
+  value?: unknown;
+  expires_at?: unknown;
+  session?: { model?: unknown } | null;
 }
 
 function requireKey(env: Env): string {
@@ -157,7 +176,16 @@ export const openaiProvider: TextProvider = {
   },
 };
 
-export const openaiImageProvider: ImageProvider = {
+// The image bytes an images response carries, or a server error when it carries none.
+function imageBytes(data: ImagesResponse): ArrayBuffer {
+  const b64 = data.data?.[0]?.b64_json;
+  if (typeof b64 !== "string" || !b64.length) {
+    throw new ProviderError("openai", "server", "image response carried no image data", 502, true);
+  }
+  return base64ToArrayBuffer(b64);
+}
+
+export const openaiImageProvider: ImageProviderV3 = {
   name: "openai",
   async generate(env: Env, req: ImageGenerateRequest): Promise<ImageGenerateResult> {
     const key = requireKey(env);
@@ -187,10 +215,77 @@ export const openaiImageProvider: ImageProvider = {
     if (!res.ok) throw await errorFromResponse(res);
 
     const data = await readJson<ImagesResponse>(res);
-    const b64 = data.data?.[0]?.b64_json;
-    if (typeof b64 !== "string" || !b64.length) {
-      throw new ProviderError("openai", "server", "image response carried no image data", 502, true);
+    return { png: imageBytes(data), model: req.model, provider: "openai" };
+  },
+
+  // v3, SPEC_V3 DD: a portrait of someone in her life. Text to image, no references
+  // (it is not her), same model and quality settings as her photos, the portrait size.
+  async generateFromText(env: Env, req: ImageFromTextRequest): Promise<ImageGenerateResult> {
+    const key = requireKey(env);
+    if (!req.prompt.trim()) throw new ProviderError("openai", "bad_request", "empty prompt", 400, false);
+    let res: Response;
+    try {
+      res = await fetch(IMAGE_GENERATIONS_URL, {
+        method: "POST",
+        headers: { authorization: "Bearer " + key, "content-type": "application/json" },
+        body: JSON.stringify({ model: req.model, prompt: req.prompt, size: req.size, quality: req.quality, n: 1 }),
+        signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
+      });
+    } catch (e) {
+      throw networkError(e);
     }
-    return { png: base64ToArrayBuffer(b64), model: req.model, provider: "openai" };
+    if (!res.ok) throw await errorFromResponse(res);
+    const data = await readJson<ImagesResponse>(res);
+    return { png: imageBytes(data), model: req.model, provider: "openai" };
   },
 };
+
+// ------------------------------------------------------------------ v3: realtime client secret (SPEC_V3 EE)
+
+// The GA session shape. Truncation "auto" so a long call trims its oldest audio turns
+// instead of failing when the window fills; server VAD with interruption so he can cut in.
+export function realtimeSessionBody(args: RealtimeSecretRequest): Record<string, unknown> {
+  return {
+    session: {
+      type: "realtime",
+      model: args.model,
+      instructions: args.instructions,
+      truncation: "auto",
+      audio: {
+        input: {
+          transcription: { model: args.transcribeModel },
+          turn_detection: { type: "server_vad", silence_duration_ms: VAD_SILENCE_MS, interrupt_response: true },
+        },
+        output: { voice: args.voice },
+      },
+    },
+  };
+}
+
+// Mints the short-lived client secret for one call. The value is returned to the caller
+// and nowhere else: not logged, not stored, not in any error message (redactSecrets
+// covers the "ek_" form). Validity is the API's default (ten minutes), enough for one SDP
+// exchange; the secret is never reused.
+export async function mintRealtimeSecret(env: Env, args: RealtimeSecretRequest): Promise<RealtimeSecret> {
+  const key = requireKey(env);
+  let res: Response;
+  try {
+    res = await fetch(REALTIME_SECRETS_URL, {
+      method: "POST",
+      headers: { authorization: "Bearer " + key, "content-type": "application/json" },
+      body: JSON.stringify(realtimeSessionBody(args)),
+      signal: AbortSignal.timeout(REALTIME_TIMEOUT_MS),
+    });
+  } catch (e) {
+    throw networkError(e);
+  }
+  if (!res.ok) throw await errorFromResponse(res);
+  const data = await readJson<ClientSecretResponse>(res);
+  const value = typeof data.value === "string" ? data.value : "";
+  if (!value) throw new ProviderError("openai", "server", "client secret response carried no value", 502, true);
+  const expiresAt = typeof data.expires_at === "number" && Number.isFinite(data.expires_at)
+    ? data.expires_at
+    : Math.floor(Date.now() / 1000) + DEFAULT_SECRET_TTL_S;
+  const served = data.session && typeof data.session.model === "string" && data.session.model.trim() ? data.session.model : args.model;
+  return { value, expiresAt, model: served };
+}

@@ -9,6 +9,7 @@ Avelie is a private, single-owner character runtime that runs inside your own Cl
 - An Anthropic API key for her text. Claude Opus 5 is the default model.
 - An OpenAI API key for her photos. Photos use gpt-image-1 with the five master images as identity references. Without this key she still talks; a photo line in her reply fails quietly and the message shows a failed photo instead of a picture.
 - Optional, v2: an ElevenLabs API key if you want her voice notes from ElevenLabs instead of Cloudflare's own voice (the default needs no key), and a VAPID key pair (made by `node scripts/gen_vapid.mjs`, no account needed) if you want a phone notification when she texts first. Without them those two features stay off and everything else works.
+- Optional, v3: a Runway API key if you want short clips of her (`RUNWAY_API_KEY`; without it the clip controls stay hidden). Calls, portraits and the fine-tuned texter all use the OpenAI key you already have. The weather needs no key (Open-Meteo).
 
 ## Run it on your machine
 
@@ -29,16 +30,17 @@ To run one of the cron jobs by hand on your machine: start the app with `npx wra
 
 ## Tests
 
-- `npm test` builds the canon, checks typography, checks the master image hashes, typechecks, and runs the unit tests. No keys, no network. The v2 units cover where she is on a fixed clock, the life section, the callback picker, the song marker, the opinion supersede, the delivery delay, the bubble splitter, the first-text decision table, the push token shape, the voiceprint stats, the timeline order and the character export.
-- `npm run test:integration` starts `wrangler dev` on port 8790 with the stub providers and drives the API end to end: a turn, a replayed turn, a failed model call, a photo, a rejected photo, export and import, the budget cap, and in v2 the life threads, a real-mode turn that hides her reply until its time, a song card, her opening a conversation, a life proposal becoming a thread, the context of a message, a drift run, the backup cron, a voice note, a photo sent to her, the media library, a first text, the timeline, the voiceprint and the character export.
+- `npm test` builds the canon and the voice-bank seed, checks typography, checks the master image hashes, typechecks, and runs the unit tests. No keys, no network. The v2 units cover where she is on a fixed clock, the life section, the callback picker, the song marker, the opinion supersede, the delivery delay, the bubble splitter, the first-text decision table, the push token shape, the voiceprint stats, the timeline order and the character export. The v3 units (`*_v3`) cover the voice bank rules and picker, the notes section, the new checks, the memory score and ranking, wants and the fading mood, the grounding lines, the call merge and meter, the clip gate, the shape cue, the tastings ledger, the training export and the Mac script, the v3 prompt order, the two-block cache split, the settings table and the 0005 migration.
+- `npm run test:integration` starts `wrangler dev` on port 8790 with the stub providers and drives the API end to end: a turn, a replayed turn, a failed model call, a photo, a rejected photo, export and import, the budget cap, and in v2 the life threads, a real-mode turn that hides her reply until its time, a song card, her opening a conversation, a life proposal becoming a thread, the context of a message, a drift run, the backup cron, a voice note, a photo sent to her, the media library, a first text, the timeline, the voiceprint and the character export; and in v3 the voice bank from seed to exemplars in the prompt, a correction and its bank line, memory fading and reminding, wants and asks through proposals, the fading mood, the stub weather and grounding log, a stub call from start to transcript, a stub clip with Range serving, the shape cue and its flags, a blind tasting from turn to pick, marks and the training export, and the nightly maintenance.
+- `npm run finetune:run <file.jsonl>` is the Mac-side fine-tune script (v3): validate the export, estimate the cost, ask for the word `train`, upload, start and poll. It reads the key from the clipboard and clears it; it never writes or prints it.
 - `npm run behavior` runs the scenario suite against a running app and writes `reports/behavior_<stamp>.md`. Read docs/BEHAVIOR.md before running it against a real model, because it spends money. `--compare anthropic:claude-opus-5,openai:gpt-5` runs every scenario once per performer and writes them side by side (the vessel test).
 
 ## The screens
 
-- Chat: talk to her. Her reply arrives as bubbles with human timing (the Human timing switch in the header turns that off). Her photos appear under her messages with Approve, Reject and Regenerate. A song she sends shows as a card with an Open in Spotify link. A voice note shows as a play button under her text. The paperclip sends her up to three photos; the mic button records a voice message (hold to talk). Together / Texting sets whether you are in the same place or apart. Let her start asks her to open the conversation herself. The Photos button opens the camera roll of approved pictures. The why control on her message shows what the turn was built from. The Operator toggle turns the composer amber and sends your question to the technical channel instead of to her.
-- State: what is true right now. Now (relationship and scene, plus her mood and a cooling-off time), Life (her routines, events, people, places and arcs, with a weekly grid for routine blocks, and the life log), History, Facts (with an Opinions filter and each opinion's version chain), Unknowns, Inbox (the proposal queue, now including life and mood proposals), Rulebook, Export (the full JSON, the Character JSON and the Character bible) and Import.
-- Model: provider, model, effort, max tokens; Timing (instant or real reply delay, its cap in minutes, her timezone); Her first texts (per day, quiet hours, Send one now); Voice (provider, mode, ElevenLabs voice id, transcribe provider); the proposal pass; image settings; the two spending caps and the Weekly drift check switch; Notifications (the switch that subscribes this phone to her first texts); the last four drift reports with Run now; the last eight voiceprints with Run now; the usage meter.
-- Images: the five masters with their hashes and a Verify button, the candidate queue with Approve, Reject and Regenerate, approved scene images, the rejected list, and the Library tab (upload a clip, video or image she may send; list; delete).
+- Chat: talk to her. Her reply arrives as bubbles with human timing (the Human timing switch in the header turns that off). Her photos appear under her messages with Approve, Reject and Regenerate. A song she sends shows as a card with an Open in Spotify link. A voice note shows as a play button under her text. The paperclip sends her up to three photos; the mic button records a voice message (hold to talk). Together / Texting sets whether you are in the same place or apart. Let her start asks her to open the conversation herself. The Photos button opens the camera roll of approved pictures. The why control on her message shows what the turn was built from. The Operator toggle turns the composer amber and sends your question to the technical channel instead of to her. v3: Call rings her (the call sheet with captions, Mute and End; the transcript lands in the thread as a card); Taste sends the same message to two performers and shows Left and Right blind until you pick; under each of her messages a Note control (what sounded off, and your version, which can go straight into her voice bank) and a Keep / Drop toggle for the training set.
+- State: what is true right now. Now (relationship and scene, plus her mood, how many days it lingers, the phase chip and Clear mood), Life (her routines, events, people with their faces, places and arcs, with a weekly grid for routine blocks, the Today list of what she ate, wore and ran out for, and the life log), History, Facts (with an Opinions filter, each opinion's version chain, and a weight select), Unknowns, Inbox (the proposal queue, now including life, mood, want, ask, grounding and life-update proposals), Voice (the bank: approve or reject a line, a selection, a tag, or all of them; edit; add your own), Notes (the corrections ledger), Memory (weight, last touched, score and a Remind her button per row; the recalls list), Wants (her wants with progress, setbacks and asks), Rulebook, Export (the full JSON, the Character JSON and the Character bible) and Import.
+- Model: provider, model, effort, max tokens; Timing (instant or real reply delay, its cap in minutes, her timezone); Her first texts (per day, quiet hours, Send one now); Voice (provider, mode, ElevenLabs voice id, transcribe provider); the proposal pass; image settings (now with the clip settings); the two spending caps and the Weekly drift check switch; Notifications; the last four drift reports with Run now; the last eight voiceprints with Run now; the usage meter. v3 cards: Grounding (her city with a Find button, units, weather provider, the Now line), Calls (provider, model, voice, transcribe model, instructions mode, max minutes, the prices; the reserved ElevenLabs fields), Tastings (Enabled, the second performer, its daily cap, the ledger with Promote), Texter (the readiness meter, Leave him out of the state, Export training set, Export record, the model id and prices, Use, Back to Claude), Memory (the five numbers and the recall switch) and Text (texture cues, typo share).
+- Images: the five masters with their hashes and a Verify button, the candidate queue with Approve, Reject and Regenerate, approved scene images, the rejected list, the Library tab (upload a clip, video or image she may send; list; delete), and in v3 the Clips tab (a source, a motion line, Make clip, the player, Approve and Reject) and the Portraits tab (the faces of the people in her life, by person).
 - Timeline (timeline.html): one read-only scroll, newest at the bottom, of history entries, approved photos, media she sent, life log notes, relationship and scene versions and her first texts, each with a date chip and a link.
 
 ## What v2 adds, one line each
@@ -70,13 +72,26 @@ To run one of the cron jobs by hand on your machine: start the app with `npx wra
 - Y. Voiceprint: a weekly table of how she writes (length, questions, his name, top words, flags) with two small sparklines.
 - Z. Export her: the Character JSON and the Character bible, no secrets inside.
 
+## What v3 adds, one line each
+
+- AA. A voice of her own: 150 seed lines drafted from her constitution, unapproved until you approve them; a handful that fit the moment are shown to her each turn as tone, never content; every note you give her ("that's AI", "too clever", your rewrite) is a standing note she reads until you retire it.
+- BB. Human memory: every fact, history entry, person and want carries a weight and a last-touched time; small old things fade out of the prompt and come back the moment they are touched; a half-remembered detail is a switch that ships off (`provisionalRecallEvery` 0) until the behavior scenario reads as a person.
+- CC. Wants and stakes: things she wants over weeks with progress and setbacks she brings up herself; small asks, once, never a debt; a no she holds; a mood that fades on a clock, never on you.
+- DD. Grounding: she lives in Portland, Maine (your call), knows the weather and the time of day, what she is wearing from her last approved photo, what she ate; the people in her life get faces you approve and short arcs that move.
+- EE. Calls: she picks up; the call runs in your browser straight to the realtime provider, the Worker only mints the token, meters the minutes from what the session bills, and stores the transcript as messages.
+- FF. Clips: short clips of her from a master or an approved photo through Runway, owner-triggered from the Images page, candidates until you approve; off without a key (there is none today).
+- GG. Imperfection: she texts like a person, not a writer (one word, a fragment, lowercase, two bubbles, a typo she fixes herself); prompt-driven, never post-processed; the scheduled typo cue ships off (`typoCueShare` 0).
+- HH. Tastings: the same turn on two performers, shown blind, you pick, a ledger keeps score, a winner can be promoted with one click.
+- II. The texter: every exchange you Keep, every rewrite, every tasting pick is an approved exchange; export them as fine-tuning data, train on the Mac with your own key, paste the model id into the panel; judgment (proposals, checks, the operator) stays on Claude.
+- Not in v3, by his word: a day engine. Nothing makes her unavailable, late on purpose or silent. She always answers.
+
 ## The cron jobs
 
 Four jobs run inside the Worker on Cloudflare's clock (UTC). They deploy with the Worker; nothing to set up.
 
 | When (UTC) | Eastern | Job |
 |---|---|---|
-| every day 07:00 | 3am EDT / 2am EST | backup: the full export to R2 `backups/avelie-<YYYY-MM-DD>.json`, the last 30 kept |
+| every day 07:00 | 3am EDT / 2am EST | backup: the full export to R2 `backups/avelie-<YYYY-MM-DD>.json`, the last 30 kept; then the v3 maintenance pass (stale weather cache, asks let go after `askLetGoDays`, tastings expired after 30 minutes, dead calls) |
 | Monday 13:00 | 9am EDT / 8am EST | drift check: five scenarios on the current performer, only when the Weekly drift check switch is on |
 | every 20 minutes | | her first texts: one decision per tick (off at 0 per day) |
 | Monday 14:00 | 10am EDT / 9am EST | voiceprint: the week's numbers |
@@ -92,13 +107,18 @@ src/                the Worker (index.ts entry with fetch and scheduled, auth, a
                     checks, proposals, budget, images, state, export/import, operator, providers/)
                     v2: markers, life, callbacks, provenance, drift, backup, herfirst, push, voice,
                     vision, media, timeline, voiceprint, exportCharacter
+                    v3: voicebank, corrections, imperfection, memory, wants, grounding, weather,
+                    portraits, maintenance, calls, video, tastings, finetune, providers/runway
 src/generated/      constitution.ts, built from canon/ by npm run build:canon; never hand-edit
 public/             the pages (index, state, model, images, timeline), css/, js/, images/masters/,
                     icons/, manifest.webmanifest, sw.js
 migrations/         0001_init.sql (schema), 0002_seed.sql (generated from canon/seed),
-                    0003_messages_seq_unique.sql, 0004_life.sql, 0004b_push.sql, 0004c_voiceprint.sql
+                    0003_messages_seq_unique.sql, 0004_life.sql, 0004b_push.sql, 0004c_voiceprint.sql,
+                    0004d_media.sql, 0005_v3.sql (hand-written), 0005b_voicebank_seed.sql (generated
+                    from canon/seed/voicebank.json by scripts/build_voicebank.mjs)
 canon/              the frozen constitution, the seed JSON, the asset manifest, the reference docs
-scripts/            build_constitution, build_seed, check_typography, verify_assets, gen_vapid
+scripts/            build_constitution, build_seed, build_voicebank, check_typography, verify_assets,
+                    check_deploy, gen_vapid, finetune_run (Mac-side)
 tests/              unit (node:test), integration (boots wrangler dev), behavior (scenarios + runner)
 docs/               COSTS.md, BEHAVIOR.md, ARCHITECTURE.md, workflows/
 ```

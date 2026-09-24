@@ -1,9 +1,14 @@
 // The operator channel: the one place technical truth is spoken. Deterministic facts first
 // (systemInfo), then an optional model call that never speaks in her voice. Operator
 // messages are stored with channel "operator" and are never read by story context assembly.
+//
+// v3 (SPEC_V3 II): the console is a judgment job and runs on the proposal performer
+// (settings.proposalProvider and proposalModel), never on her performer, so judgment stays
+// on Claude while a fine-tuned texter is live. The counts gain the v3 tables.
 import { CONSTITUTION_VERSION } from "./generated/constitution";
 import { PROMPT_VERSION, operatorSystemPrompt } from "./prompt";
 import { assertBudget, costMicro, estimateUsd, usageSummary } from "./budget";
+import { finetuneStatus } from "./finetune";
 import { getTextProvider, providerConfigured } from "./providers/index";
 import { boundMessages } from "./context";
 import { ApiHttpError } from "./errors";
@@ -30,18 +35,32 @@ export async function systemInfo(env: Env, db: D1Database, settings: Settings): 
     "SELECT COUNT(*) AS n FROM proposals WHERE status = 'pending'",
     "SELECT COUNT(*) AS n FROM visual_assets WHERE approval_status = 'candidate'",
   ];
-  const [counts, spend, rel, scene] = await Promise.all([
+  // v3 counts, in their own batch: a database behind migration 0005 answers zeros here
+  // instead of failing the whole read.
+  const v3Sql = [
+    "SELECT COUNT(*) AS n FROM voice_lines WHERE status = 'unapproved'",
+    "SELECT COUNT(*) AS n FROM voice_lines WHERE status = 'approved'",
+    "SELECT COUNT(*) AS n FROM corrections WHERE status = 'active'",
+    "SELECT COUNT(*) AS n FROM wants WHERE status = 'active'",
+    "SELECT COUNT(*) AS n FROM asks WHERE status = 'open'",
+    "SELECT COUNT(*) AS n FROM calls WHERE started_at >= ?1",
+    "SELECT COUNT(*) AS n FROM tastings WHERE status = 'pending'",
+  ];
+  const [counts, spend, rel, scene, v3Counts, finetune] = await Promise.all([
     db.batch<{ n: number }>(countSql.map((s) => db.prepare(s))),
     usageSummary(db, settings),
     getCurrentState<RelationshipState>(db, "relationship"),
     getCurrentState<SceneState>(db, "scene"),
+    db.batch<{ n: number }>(v3Sql.map((s) => (s.includes("?1") ? db.prepare(s).bind(dayKey()) : db.prepare(s)))).catch(() => null),
+    finetuneStatus(db, settings).catch(() => null),
   ]);
   const n = (i: number): number => Number(counts[i]?.results[0]?.n ?? 0);
+  const v = (i: number): number => Number(v3Counts?.[i]?.results[0]?.n ?? 0);
   return {
     constitutionVersion: CONSTITUTION_VERSION,
     promptVersion: PROMPT_VERSION,
     settings: { ...settings },
-    providerKeys: { anthropic: !!env.ANTHROPIC_API_KEY, openai: !!env.OPENAI_API_KEY },
+    providerKeys: { anthropic: !!env.ANTHROPIC_API_KEY, openai: !!env.OPENAI_API_KEY, runway: !!env.RUNWAY_API_KEY },
     counts: {
       conversations: n(0),
       messages: n(1),
@@ -50,6 +69,15 @@ export async function systemInfo(env: Env, db: D1Database, settings: Settings): 
       unknowns: n(4),
       pendingProposals: n(5),
       candidates: n(6),
+      // v3 (SPEC_V3 "Routes added")
+      voiceLinesUnapproved: v(0),
+      voiceLinesApproved: v(1),
+      correctionsActive: v(2),
+      wantsActive: v(3),
+      asksOpen: v(4),
+      callsToday: v(5),
+      tastingsPending: v(6),
+      finetuneApproved: finetune ? finetune.approved : 0,
     },
     spend: {
       todayUsd: spend.todayUsd,
@@ -112,15 +140,17 @@ export async function operatorTurn(
   }
 
   const info = await systemInfo(env, db, settings);
-  const useModel = settings.provider !== "stub" && providerConfigured(env, settings.provider);
+  // The judgment performer (v3): the console never runs on her performer.
+  const judgeProvider = settings.proposalProvider;
+  const useModel = judgeProvider !== "stub" && providerConfigured(env, judgeProvider);
 
   let reply: string;
   let run: ModelRunRow | null = null;
   let usage: D1PreparedStatement | null = null;
 
   if (useModel) {
-    const provider = getTextProvider(settings.provider);
-    const model = settings.model;
+    const provider = getTextProvider(judgeProvider);
+    const model = settings.proposalModel;
     const system = operatorSystemPrompt(info);
     const prior = conversationId ? await operatorHistory(db, conversationId) : [];
     const messages = boundMessages([...prior, { role: "user", content: text }], OPERATOR_MAX_CHARS);
@@ -132,7 +162,7 @@ export async function operatorTurn(
       id: newId("r"),
       conversation_id: conversationId,
       kind: "operator",
-      provider: settings.provider,
+      provider: judgeProvider,
       model,
       prompt_version: PROMPT_VERSION,
       input_tokens: 0,
@@ -172,13 +202,13 @@ export async function operatorTurn(
       try {
         await db.batch([
           insertModelRunStmt(db, runRow(withTokens, "refused", "refusal", started)),
-          usageStmt(db, dayKey(), settings.provider, model, result.inputTokens, result.outputTokens, cost.micro),
+          usageStmt(db, dayKey(), judgeProvider, model, result.inputTokens, result.outputTokens, cost.micro),
         ]);
       } catch { /* best effort */ }
       throw new ApiHttpError(502, "provider_refused", "the model refused", false);
     }
     run = runRow(withTokens, "ok", null, started);
-    usage = usageStmt(db, dayKey(), settings.provider, model, result.inputTokens, result.outputTokens, cost.micro);
+    usage = usageStmt(db, dayKey(), judgeProvider, model, result.inputTokens, result.outputTokens, cost.micro);
     reply = tidy(result.text);
     if (!reply) reply = JSON.stringify(info, null, 2);
   } else {

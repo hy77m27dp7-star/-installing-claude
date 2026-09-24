@@ -216,6 +216,33 @@ export async function loadMasterBytes(env: Env, db: D1Database): Promise<Array<{
   }));
 }
 
+// One asset's bytes for a derived picture (v3, SPEC_V3 FF: the source of a clip). A
+// master is fetched from ASSETS and verified against its recorded hash, exactly as a
+// reference set is; an approved scene photo comes from R2. Anything else is not a source.
+export async function loadSourceBytes(env: Env, row: VisualAssetRow): Promise<ArrayBuffer> {
+  const role = roleOf(row);
+  if (role === "master") {
+    if (row.approval_status !== "approved") throw new ApiHttpError(404, "not_found", "master is not approved");
+    if (!row.sha256) throw new ProviderError("assets", "config", "master image has no recorded hash: " + row.file, 503, false);
+    const cacheKey = row.file + "|" + row.sha256;
+    const cached = masterCache.get(cacheKey);
+    if (cached) return cached.slice(0);
+    const res = await env.ASSETS.fetch(new Request(assetUrl(row.file)));
+    if (!res.ok) throw new ProviderError("assets", "config", "master image missing: " + row.file, 503, false);
+    const bytes = await res.arrayBuffer();
+    const actual = await sha256Hex(bytes);
+    if (actual !== row.sha256) throw new ProviderError("assets", "config", "master image hash mismatch: " + row.file, 503, false);
+    masterCache.set(cacheKey, bytes.slice(0));
+    return bytes;
+  }
+  if (role === "scene" && row.approval_status === "approved") {
+    const obj = await env.MEDIA.get(row.file);
+    if (!obj) throw new ApiHttpError(404, "not_found", "the photo's file is missing");
+    return obj.arrayBuffer();
+  }
+  throw new ApiHttpError(404, "not_found", "the source must be a master or an approved photo");
+}
+
 export async function verifyMasters(env: Env, db: D1Database): Promise<{
   results: Array<{ id: string; file: string; expected: string | null; actual: string; ok: boolean }>;
   allOk: boolean;
@@ -409,6 +436,45 @@ export async function generateCandidate(
 
 // ------------------------------------------------------------------ decisions
 
+// v3 (SPEC_V3 DD, FF): the rows of a portrait and a clip. VisualAssetRow.role in
+// ../types is the pipeline lane's; these two roles are read through this view until it
+// carries them (0001_init.sql has no CHECK on the column, so they insert as they are).
+export type AssetRole = VisualAssetRow["role"] | "portrait" | "video";
+export const PORTRAIT_PREFIX = "portraits/";
+export const VIDEO_PREFIX = "videos/";
+// A portrait row names its person in notes, while pending and after (SPEC_V3 DD).
+const PERSON_NOTE = "person:";
+
+export function roleOf(row: VisualAssetRow): AssetRole {
+  return row.role as AssetRole;
+}
+
+// The thread id a portrait row was made for, from its notes ("person:<threadId>", which
+// may be followed by a claim note or a decision note after " | ").
+export function portraitThreadId(notes: string | null | undefined): string | null {
+  if (typeof notes !== "string" || !notes.startsWith(PERSON_NOTE)) return null;
+  const id = notes.slice(PERSON_NOTE.length).split("|")[0]?.trim() ?? "";
+  return id && id.length <= 120 ? id : null;
+}
+
+// The current head of a life thread, whichever version id names it: the newest row in
+// the chain that is not superseded (a dropped head is still the head).
+async function threadHead(db: D1Database, threadId: string): Promise<{ id: string; portrait_asset_id: string | null } | null> {
+  const r = await db.prepare(
+    `WITH RECURSIVE up(id, sup, depth) AS (
+       SELECT id, supersedes_id, 0 FROM life_threads WHERE id = ?1
+       UNION ALL
+       SELECT t.id, t.supersedes_id, up.depth + 1 FROM life_threads t JOIN up ON t.id = up.sup WHERE up.depth < 500
+     ), down(id, depth) AS (
+       SELECT (SELECT id FROM up WHERE sup IS NULL LIMIT 1), 0
+       UNION ALL
+       SELECT t.id, down.depth + 1 FROM life_threads t JOIN down ON t.supersedes_id = down.id WHERE down.depth < 500
+     ) SELECT t.id AS id, t.portrait_asset_id AS portrait_asset_id FROM life_threads t JOIN down ON t.id = down.id
+       WHERE t.status != 'superseded' ORDER BY t.version DESC LIMIT 1`,
+  ).bind(threadId).first<{ id: string; portrait_asset_id: string | null }>();
+  return r ?? null;
+}
+
 export async function decideImage(
   env: Env,
   db: D1Database,
@@ -419,23 +485,42 @@ export async function decideImage(
 ): Promise<VisualAssetRow> {
   const row = await getAsset(db, id);
   if (!row) throw new ApiHttpError(404, "not_found", "asset not found");
-  if (row.role === "master") throw new ApiHttpError(403, "fixed_canon", "master images are not decided here");
-  if (row.role !== "candidate" && row.role !== "scene") throw new ApiHttpError(409, "not_decidable", "asset role is " + row.role);
-  if (isRequestStatus(row.approval_status)) throw new ApiHttpError(409, "not_ready", "the photo has not been generated");
+  const role = roleOf(row);
+  if (role === "master") throw new ApiHttpError(403, "fixed_canon", "master images are not decided here");
+  if (role !== "candidate" && role !== "scene" && role !== "portrait" && role !== "video") {
+    throw new ApiHttpError(409, "not_decidable", "asset role is " + row.role);
+  }
+  if (isRequestStatus(row.approval_status)) throw new ApiHttpError(409, "not_ready", "the picture has not been generated");
   if (decision !== "approve" && decision !== "reject") throw new ApiHttpError(400, "validation", "decision must be approve or reject");
 
   const t = nowIso();
   const trimmedNote = typeof note === "string" ? note.trim() : "";
   const notes = trimmedNote ? (row.notes ? row.notes + " | " + trimmedNote : trimmedNote) : row.notes;
   const stmts: D1PreparedStatement[] = [];
+  // A photo becomes a scene on approval; a portrait and a clip keep their role.
+  const approvedRole: string = role === "candidate" ? "scene" : row.role;
 
   if (decision === "approve") {
     if (row.approval_status === "rejected") {
       throw new ApiHttpError(409, "already_rejected", "a rejected image cannot be approved; its file is gone");
     }
     stmts.push(db
-      .prepare("UPDATE visual_assets SET approval_status = 'approved', role = 'scene', decided_at = ?1, notes = ?2 WHERE id = ?3")
-      .bind(t, notes, id));
+      .prepare("UPDATE visual_assets SET approval_status = 'approved', role = ?4, decided_at = ?1, notes = ?2 WHERE id = ?3")
+      .bind(t, notes, id, approvedRole));
+    // A portrait approval (SPEC_V3 DD): the person's current head gets the face, and the
+    // earlier approved portrait of that person, if any, goes to the archive. One face per person.
+    if (role === "portrait") {
+      const threadId = portraitThreadId(row.notes);
+      const head = threadId ? await threadHead(db, threadId) : null;
+      if (head) {
+        if (head.portrait_asset_id && head.portrait_asset_id !== id) {
+          stmts.push(db
+            .prepare("UPDATE visual_assets SET approval_status = 'archive', decided_at = ?2 WHERE id = ?1 AND role = 'portrait' AND approval_status = 'approved'")
+            .bind(head.portrait_asset_id, t));
+        }
+        stmts.push(db.prepare("UPDATE life_threads SET portrait_asset_id = ?1 WHERE id = ?2").bind(id, head.id));
+      }
+    }
   } else {
     if (row.approval_status !== "rejected") {
       // The row and its hash stay; only the bytes go.
@@ -454,7 +539,7 @@ export async function decideImage(
   }
 
   const after: VisualAssetRow = decision === "approve"
-    ? { ...row, approval_status: "approved", role: "scene", decided_at: t, notes }
+    ? { ...row, approval_status: "approved", role: approvedRole as VisualAssetRow["role"], decided_at: t, notes }
     : { ...row, approval_status: "rejected", decided_at: t, notes };
   stmts.push(auditStmt(db, actor, "image." + decision, "visual_asset", id, row, after));
   await db.batch(stmts);
@@ -465,13 +550,18 @@ export async function decideImage(
 
 // ------------------------------------------------------------------ serving
 
-export async function serveMedia(env: Env, db: D1Database, id: string): Promise<Response> {
+// v1: a photo (candidate or scene) as image/png. v3 (SPEC_V3 DD, FF): a portrait as
+// image/png and a clip (role video) as video/mp4 with Range support, so <video> can seek.
+export async function serveMedia(env: Env, db: D1Database, id: string, range: string | null = null): Promise<Response> {
   if (!id || id.length > 80) return notFound();
   const row = await getAsset(db, id);
   if (!row) return notFound();
+  const role = roleOf(row);
   const statusOk = row.approval_status === "candidate" || row.approval_status === "approved";
-  const roleOk = row.role === "candidate" || row.role === "scene";
+  const roleOk = role === "candidate" || role === "scene" || role === "portrait" || role === "video";
   if (!statusOk || !roleOk) return notFound();
+  if (role === "video") return streamObject(env, row.file, "video/mp4", range);
+  if (role === "portrait") return streamObject(env, row.file, "image/png", range);
 
   const obj = await env.MEDIA.get(row.file);
   if (!obj) return notFound();

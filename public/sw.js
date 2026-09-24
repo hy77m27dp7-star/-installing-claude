@@ -1,7 +1,7 @@
 // The phone shell. Caches the pages and scripts so the app opens offline; never caches
 // /api or /media. Push: fetch her latest first text and show it; a tap opens the thread.
-const CACHE = "avelie-shell-v1";
-const SHELL = ["/", "/css/app.css", "/js/api.js", "/js/nav.js", "/js/chat.js", "/js/bubbles.js", "/manifest.webmanifest", "/icons/icon-192.png"];
+const CACHE = "avelie-shell-v2";
+const SHELL = ["/", "/css/app.css", "/js/api.js", "/js/nav.js", "/js/chat.js", "/js/bubbles.js", "/js/call.js", "/manifest.webmanifest", "/icons/icon-192.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
