@@ -13,6 +13,7 @@ import {
 } from "./db";
 import { ApiHttpError } from "./errors";
 import { ProviderError } from "./types";
+import { safeErrorMessage } from "./providers/types";
 import type {
   ChatMessage, CheckContext, CheckResult, Env, Flag, GenerateRequest, GenerateResult, MessageRow, ModelRunRow, PromptState, Settings,
   TextProvider, TurnResponse, VisualAssetRow,
@@ -99,6 +100,8 @@ async function callModel(provider: TextProvider, env: Env, req: GenerateRequest)
     return { ok: true, result, latencyMs };
   } catch (e) {
     const retryable = e instanceof ProviderError ? e.retryable : true;
+    // Class plus the provider's redacted words, so a failed call can be diagnosed from the logs.
+    console.warn("provider call failed", req.model, errorClass(e), safeErrorMessage(e, 200));
     return { ok: false, status: "failed", errorClass: errorClass(e), retryable, result: null, latencyMs: Date.now() - started };
   }
 }
