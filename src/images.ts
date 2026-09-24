@@ -1,7 +1,16 @@
-// Photos: marker parsing, candidate generation into R2, approve/reject, serving, and
-// master verification. A candidate is never canon; the owner decides. Rejected hashes
-// stay on file so the same picture can never come back.
-import { auditStmt, dayKey, getAsset, insertAssetStmt, insertModelRunStmt, newId, nowIso, sha256Hex, usageStmt } from "./db";
+// Photos: marker parsing, photo requests, candidate generation into R2, approve/reject,
+// serving, and master verification. A candidate is never canon; the owner decides.
+// Rejected hashes stay on file so the same picture can never come back.
+//
+// Why the browser asks for the picture: a Worker may keep working for at most 30 seconds
+// after its response is sent (ctx.waitUntil is cancelled after that), and an image edit
+// with five reference photos takes longer. So the turn only records the request (a
+// visual_assets row with status pending and the description as its prompt) and the page
+// calls POST /api/images/generate, a request it holds open for as long as the call takes.
+// A claim on the row keeps two tabs from paying for the same picture twice.
+import {
+  auditStmt, dayKey, getAsset, getMessage, insertAssetStmt, insertModelRunStmt, newId, nowIso, sha256Hex, usageStmt,
+} from "./db";
 import { ApiHttpError, json } from "./errors";
 import { imageIdentityPrompt } from "./prompt";
 import { assertBudget } from "./budget";
@@ -14,6 +23,14 @@ const MARKER_LINE = /^\[photo:\s*(.+)\]\s*$/i;
 const CANDIDATE_PREFIX = "candidates/";
 const ASSETS_ORIGIN = "https://assets.local/";
 const MICRO = 1_000_000;
+
+// A claim older than this is treated as dead (the page that held the request is gone).
+// Longer than the longest provider call (openai.ts waits up to 180 s).
+const CLAIM_LEASE_MS = 4 * 60 * 1000;
+const CLAIM_NOTE = "generating since ";
+
+type RequestStatus = "pending" | "generating" | "failed";
+const REQUEST_STATUSES: ReadonlySet<string> = new Set<RequestStatus>(["pending", "generating", "failed"]);
 
 // ------------------------------------------------------------------ marker
 
@@ -72,6 +89,111 @@ function notFound(): Response {
   return json({ error: "not found", code: "not_found" }, 404);
 }
 
+function isRequestStatus(s: string): s is RequestStatus {
+  return REQUEST_STATUSES.has(s);
+}
+
+function claimExpired(notes: string | null, now: number): boolean {
+  if (!notes || !notes.startsWith(CLAIM_NOTE)) return true;
+  const since = Date.parse(notes.slice(CLAIM_NOTE.length));
+  return !Number.isFinite(since) || now - since > CLAIM_LEASE_MS;
+}
+
+// ------------------------------------------------------------------ requests
+
+// The row that records a requested photo before any bytes exist. chat.ts puts it in the
+// turn's batch (status pending) so the description outlives the response; the owner
+// route opens one already claimed (status generating).
+export function photoRequestRow(
+  conversationId: string,
+  messageId: string | null,
+  description: string,
+  provider: string,
+  model: string,
+  status: "pending" | "generating" = "pending",
+): VisualAssetRow {
+  const id = newId("img");
+  const t = nowIso();
+  return {
+    id,
+    file: CANDIDATE_PREFIX + id + ".png",
+    role: "candidate",
+    sha256: null,
+    bytes: null,
+    approval_status: status,
+    conversation_id: conversationId,
+    message_id: messageId,
+    prompt: description,
+    provider,
+    model,
+    notes: status === "generating" ? CLAIM_NOTE + t : null,
+    created_at: t,
+    decided_at: null,
+  };
+}
+
+// Finds or opens the request and claims it. With a description: a new request (the owner
+// asked, or the owner overrides the message's request). Without one: the message's own
+// request is resumed. A live claim by another request answers 409 in_progress; a finished
+// photo answers 409 already_generated.
+async function claimRequest(
+  db: D1Database,
+  conversationId: string,
+  messageId: string | null,
+  description: string | null | undefined,
+  provider: string,
+  model: string,
+): Promise<VisualAssetRow> {
+  const text = typeof description === "string" ? description.trim() : "";
+  let row: VisualAssetRow | null = null;
+
+  if (messageId) {
+    const m = await getMessage(db, messageId);
+    if (!m || m.conversation_id !== conversationId) {
+      throw new ApiHttpError(404, "not_found", "message not found in this conversation");
+    }
+    if (!text) {
+      if (!m.image_id) throw new ApiHttpError(404, "not_found", "no photo request on this message");
+      row = await getAsset(db, m.image_id);
+      if (!row) throw new ApiHttpError(404, "not_found", "photo request not found");
+    }
+  }
+  if (!text && !row) throw new ApiHttpError(400, "validation", "description is required");
+
+  const t = nowIso();
+  const note = CLAIM_NOTE + t;
+
+  if (row) {
+    if (row.role !== "candidate" || !isRequestStatus(row.approval_status)) {
+      if (row.approval_status === "candidate" || row.approval_status === "approved" || row.approval_status === "rejected") {
+        throw new ApiHttpError(409, "already_generated", "this photo already exists");
+      }
+      throw new ApiHttpError(409, "not_a_request", "asset is not a photo request");
+    }
+    if (row.approval_status === "generating" && !claimExpired(row.notes, Date.now())) {
+      throw new ApiHttpError(409, "in_progress", "the photo is being generated");
+    }
+    // Compare-and-set on the status and the claim note so two requests never both win.
+    const res = await db
+      .prepare("UPDATE visual_assets SET approval_status = 'generating', notes = ?2 WHERE id = ?1 AND approval_status = ?3 AND notes IS ?4")
+      .bind(row.id, note, row.approval_status, row.notes)
+      .run();
+    if (!res.meta.changes) throw new ApiHttpError(409, "in_progress", "the photo is being generated");
+    if (row.message_id) {
+      await db.prepare("UPDATE messages SET image_status = 'pending' WHERE id = ?1").bind(row.message_id).run();
+    }
+    return { ...row, approval_status: "generating", notes: note };
+  }
+
+  const fresh = photoRequestRow(conversationId, messageId, text, provider, model, "generating");
+  const stmts: D1PreparedStatement[] = [insertAssetStmt(db, fresh)];
+  if (messageId) {
+    stmts.push(db.prepare("UPDATE messages SET image_id = ?1, image_status = 'pending' WHERE id = ?2").bind(fresh.id, messageId));
+  }
+  await db.batch(stmts);
+  return fresh;
+}
+
 // ------------------------------------------------------------------ masters
 
 export async function loadMasterBytes(env: Env, db: D1Database): Promise<Array<{ name: string; bytes: ArrayBuffer }>> {
@@ -117,6 +239,7 @@ export async function verifyMasters(env: Env, db: D1Database): Promise<{
 interface FailureRecord {
   conversationId: string;
   messageId: string | null;
+  assetId: string;
   provider: string;
   model: string;
   latencyMs: number;
@@ -124,7 +247,9 @@ interface FailureRecord {
   message: string;
 }
 
+// The request row stays (status failed, the reason in notes) so the owner can retry it.
 async function recordFailure(db: D1Database, f: FailureRecord): Promise<void> {
+  const reason = f.kind + (f.message ? ": " + f.message : "");
   const run: ModelRunRow = {
     id: newId("run"),
     conversation_id: f.conversationId,
@@ -137,11 +262,15 @@ async function recordFailure(db: D1Database, f: FailureRecord): Promise<void> {
     cost_usd_micro: 0,
     latency_ms: f.latencyMs,
     status: "failed",
-    error: f.kind + (f.message ? ": " + f.message : ""),
+    error: reason,
     flags_json: null,
     created_at: nowIso(),
   };
-  const stmts: D1PreparedStatement[] = [insertModelRunStmt(db, run)];
+  const stmts: D1PreparedStatement[] = [
+    insertModelRunStmt(db, run),
+    db.prepare("UPDATE visual_assets SET approval_status = 'failed', notes = ?2 WHERE id = ?1 AND approval_status = 'generating'")
+      .bind(f.assetId, reason.slice(0, 300)),
+  ];
   if (f.messageId) stmts.push(db.prepare("UPDATE messages SET image_status = 'failed' WHERE id = ?1").bind(f.messageId));
   try {
     await db.batch(stmts);
@@ -154,13 +283,17 @@ export async function generateCandidate(
   env: Env,
   db: D1Database,
   settings: Settings,
-  args: { conversationId: string; messageId: string | null; description: string; actor: string },
+  args: { conversationId: string; messageId: string | null; description?: string | null; actor: string },
 ): Promise<VisualAssetRow> {
   const { conversationId, messageId, actor } = args;
   const providerName = settings.imageProvider;
   const model = settings.imageModel;
-  const description = (args.description ?? "").trim();
   const started = Date.now();
+
+  // 1. the request: resumed from the message, or opened for the owner. Claimed either way.
+  const request = await claimRequest(db, conversationId, messageId, args.description, providerName, model);
+  const description = (request.prompt ?? "").trim();
+  const requestMessageId = request.message_id;
 
   try {
     if (!description) throw new ApiHttpError(400, "validation", "description is required");
@@ -169,8 +302,7 @@ export async function generateCandidate(
     }
     await assertBudget(db, settings, settings.imageCostUsd);
 
-    if (messageId) await db.prepare("UPDATE messages SET image_status = 'pending' WHERE id = ?1").bind(messageId).run();
-
+    // 2. generate
     const provider = getImageProvider(providerName);
     const references = await loadMasterBytes(env, db);
     const result = await provider.generate(env, {
@@ -183,6 +315,7 @@ export async function generateCandidate(
     });
     const latencyMs = Date.now() - started;
 
+    // 3. blacklist
     const sha = await sha256Hex(result.png);
     const hit = await db
       .prepare("SELECT id FROM visual_assets WHERE approval_status = 'rejected' AND sha256 = ?1 LIMIT 1")
@@ -190,26 +323,21 @@ export async function generateCandidate(
       .first<{ id: string }>();
     if (hit) throw new ApiHttpError(422, "blacklisted", "candidate matches a rejected image", false, hit.id);
 
-    const id = newId("img");
+    // 4. store: bytes to R2, then the row becomes a candidate in one batch
+    const id = request.id;
     const key = CANDIDATE_PREFIX + id + ".png";
     const t = nowIso();
     await env.MEDIA.put(key, result.png, { httpMetadata: { contentType: "image/png" } });
 
     const row: VisualAssetRow = {
-      id,
+      ...request,
       file: key,
-      role: "candidate",
       sha256: sha,
       bytes: result.png.byteLength,
       approval_status: "candidate",
-      conversation_id: conversationId,
-      message_id: messageId,
-      prompt: description,
       provider: providerName,
       model: result.model,
       notes: null,
-      created_at: t,
-      decided_at: null,
     };
     const costMicro = Math.max(0, Math.round((Number.isFinite(settings.imageCostUsd) ? settings.imageCostUsd : 0) * MICRO));
     const run: ModelRunRow = {
@@ -230,15 +358,16 @@ export async function generateCandidate(
     };
 
     const stmts: D1PreparedStatement[] = [
-      insertAssetStmt(db, row),
+      db.prepare("UPDATE visual_assets SET file = ?2, sha256 = ?3, bytes = ?4, approval_status = 'candidate', provider = ?5, model = ?6, notes = NULL WHERE id = ?1")
+        .bind(id, key, sha, row.bytes, providerName, row.model),
       insertModelRunStmt(db, run),
       usageStmt(db, dayKey(), providerName, model, 0, 0, costMicro),
       auditStmt(db, actor, "image.generate", "visual_asset", id, null, {
-        file: key, sha256: sha, bytes: row.bytes, conversation_id: conversationId, message_id: messageId, provider: providerName, model,
+        file: key, sha256: sha, bytes: row.bytes, conversation_id: conversationId, message_id: requestMessageId, provider: providerName, model,
       }),
     ];
-    if (messageId) {
-      stmts.push(db.prepare("UPDATE messages SET image_id = ?1, image_status = 'ready' WHERE id = ?2").bind(id, messageId));
+    if (requestMessageId) {
+      stmts.push(db.prepare("UPDATE messages SET image_id = ?1, image_status = 'ready' WHERE id = ?2").bind(id, requestMessageId));
     }
     await db.batch(stmts);
     return row;
@@ -246,7 +375,10 @@ export async function generateCandidate(
     const kind = errorKind(e);
     const message = safeErrorMessage(e, 200);
     console.warn("image generation failed", kind, message);
-    await recordFailure(db, { conversationId, messageId, provider: providerName, model, latencyMs: Date.now() - started, kind, message });
+    await recordFailure(db, {
+      conversationId, messageId: requestMessageId, assetId: request.id, provider: providerName, model,
+      latencyMs: Date.now() - started, kind, message,
+    });
     throw toApiError(e);
   }
 }
@@ -265,6 +397,7 @@ export async function decideImage(
   if (!row) throw new ApiHttpError(404, "not_found", "asset not found");
   if (row.role === "master") throw new ApiHttpError(403, "fixed_canon", "master images are not decided here");
   if (row.role !== "candidate" && row.role !== "scene") throw new ApiHttpError(409, "not_decidable", "asset role is " + row.role);
+  if (isRequestStatus(row.approval_status)) throw new ApiHttpError(409, "not_ready", "the photo has not been generated");
   if (decision !== "approve" && decision !== "reject") throw new ApiHttpError(400, "validation", "decision must be approve or reject");
 
   const t = nowIso();

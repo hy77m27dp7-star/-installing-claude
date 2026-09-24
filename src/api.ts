@@ -535,21 +535,23 @@ route("GET", "/api/assets", async (c) => {
 
 route("POST", "/api/assets/verify", async (c) => json(await verifyMasters(c.env, c.db)));
 
+// With a description: the owner asks for a picture (attached to messageId when given).
+// With messageId alone: the page resumes the photo request her message recorded; the
+// request is held open for as long as the image call takes.
 route("POST", "/api/images/generate", async (c) => {
   const body = await readBody(c.request);
   const conversationId = reqString(body, "conversationId", 120).trim();
-  const description = reqString(body, "description", 2000).trim();
+  const description = optString(body, "description", 2000);
   const messageId = optString(body, "messageId", 120);
+  const messageIdClean = messageId && messageId.trim() ? messageId.trim() : null;
+  const descriptionClean = description && description.trim() ? description.trim() : null;
+  if (!messageIdClean && !descriptionClean) throw invalid("description is required");
   const conv = await getConversation(c.db, conversationId);
   if (!conv) throw new ApiHttpError(404, "not_found", "conversation not found");
-  let messageIdClean: string | null = null;
-  if (messageId) {
-    const m = await getMessage(c.db, messageId.trim());
-    if (!m || m.conversation_id !== conversationId) throw new ApiHttpError(404, "not_found", "message not found in this conversation");
-    messageIdClean = m.id;
-  }
   const settings = await loadSettings(c);
-  const asset = await generateCandidate(c.env, c.db, settings, { conversationId, messageId: messageIdClean, description, actor: c.actor });
+  const asset = await generateCandidate(c.env, c.db, settings, {
+    conversationId, messageId: messageIdClean, description: descriptionClean, actor: c.actor,
+  });
   return json({ asset });
 });
 

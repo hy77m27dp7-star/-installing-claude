@@ -144,29 +144,73 @@ async function scenarios(report) {
     assert.ok(stored.json.content.trim().length > 0);
   });
 
+  // The photo path as the Chat page drives it: the turn records the request (message
+  // image_status pending, image_id = the request row), then the page holds open one
+  // POST /api/images/generate { conversationId, messageId } until the picture exists.
   let imageId = null;
   let photoMessageId = null;
-  await report.check("[[PHOTO]] -> imagePending, image_status pending then ready; /media/:id serves image/png", async () => {
+  await report.check("[[PHOTO]] -> imagePending, request recorded (pending, not served, not a candidate yet)", async () => {
     const r = await turn(conversationId, "[[PHOTO]] show me", key("photo"));
     assert.equal(r.status, 200, r.text);
     assert.equal(r.json.imagePending, true);
     assert.equal(r.json.assistantMessage.image_status, "pending");
+    assert.equal(typeof r.json.assistantMessage.image_id, "string", "the request row id rides on the message");
     assert.ok(!r.json.assistantMessage.content.includes("[photo:"), "marker must be stripped from the stored text");
     photoMessageId = r.json.assistantMessage.id;
-    const ready = await waitFor("image_status ready", async () => {
-      const m = await api("GET", `/api/messages/${photoMessageId}`);
-      if (m.json && m.json.image_status === "failed") throw new Error("image_status failed");
-      return m.json && m.json.image_status === "ready" ? m.json : null;
-    }, 30_000);
-    assert.equal(typeof ready.image_id, "string");
-    imageId = ready.image_id;
+    imageId = r.json.assistantMessage.image_id;
+    const media = await fetchBytes(`/media/${imageId}`);
+    assert.equal(media.status, 404, "a pending request has no bytes to serve");
+    const assets = await api("GET", "/api/assets");
+    assert.equal(assets.status, 200, assets.text);
+    assert.ok(!assets.json.candidates.some((a) => a.id === imageId), "a pending request is not a candidate");
+    const decide = await api("POST", `/api/images/${imageId}/decide`, { decision: "approve" });
+    assert.equal(decide.status, 409, decide.text);
+    assert.equal(decide.json.code, "not_ready");
+  });
+
+  await report.check("POST /api/images/generate {conversationId, messageId} -> candidate; message ready; /media/:id serves image/png; second call 409", async () => {
+    assert.ok(photoMessageId, "no photo message from the previous check");
+    const gen = await api("POST", "/api/images/generate", { conversationId, messageId: photoMessageId });
+    assert.equal(gen.status, 200, gen.text);
+    assert.equal(gen.json.asset.id, imageId, "the request row becomes the candidate");
+    assert.equal(gen.json.asset.approval_status, "candidate");
+    assert.equal(gen.json.asset.role, "candidate");
+    assert.equal(gen.json.asset.prompt, "mirror selfie in a black hoodie, messy bun, lamp light, half smile");
+    assert.equal(typeof gen.json.asset.sha256, "string");
+    assert.equal(gen.json.asset.notes, null);
+    const m = await api("GET", `/api/messages/${photoMessageId}`);
+    assert.equal(m.json.image_status, "ready");
+    assert.equal(m.json.image_id, imageId);
     const media = await fetchBytes(`/media/${imageId}`);
     assert.equal(media.status, 200);
     assert.ok(media.contentType.startsWith("image/png"), "content-type: " + media.contentType);
     assert.ok(media.bytes.length > 1000, "png should have bytes");
     // PNG signature
     assert.deepEqual(Array.from(media.bytes.slice(0, 4)), [0x89, 0x50, 0x4e, 0x47]);
+    const assets = await api("GET", "/api/assets");
+    assert.ok(assets.json.candidates.some((a) => a.id === imageId), "listed as a candidate");
+    // Asking again for a finished picture regenerates nothing.
+    const again = await api("POST", "/api/images/generate", { conversationId, messageId: photoMessageId });
+    assert.equal(again.status, 409, again.text);
+    assert.equal(again.json.code, "already_generated");
     return `image ${imageId}, ${media.bytes.length} bytes`;
+  });
+
+  let ownerImageId = null;
+  await report.check("owner-triggered POST /api/images/generate with a description -> candidate, approve -> scene, still served", async () => {
+    const gen = await api("POST", "/api/images/generate", { conversationId, description: "integration: owner asked, lamp light" });
+    assert.equal(gen.status, 200, gen.text);
+    assert.equal(gen.json.asset.approval_status, "candidate");
+    assert.equal(gen.json.asset.message_id, null);
+    ownerImageId = gen.json.asset.id;
+    const ok = await api("POST", `/api/images/${ownerImageId}/decide`, { decision: "approve" });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(ok.json.asset.approval_status, "approved");
+    assert.equal(ok.json.asset.role, "scene");
+    const media = await fetchBytes(`/media/${ownerImageId}`);
+    assert.equal(media.status, 200);
+    const assets = await api("GET", "/api/assets");
+    assert.ok(assets.json.scenes.some((a) => a.id === ownerImageId), "listed as a scene");
   });
 
   await report.check("reject the candidate -> /media/:id 404, message image_status rejected", async () => {
@@ -181,6 +225,27 @@ async function scenarios(report) {
     const assets = await api("GET", "/api/assets");
     assert.equal(assets.status, 200, assets.text);
     assert.ok(assets.json.rejected.some((a) => a.id === imageId), "rejected row keeps its hash for the blacklist");
+  });
+
+  await report.check("second [[PHOTO]] -> generate 422 blacklisted (stub repeats master 03); message failed; retry allowed, fails the same way", async () => {
+    const r = await turn(conversationId, "[[PHOTO]] one more", key("photo2"));
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.assistantMessage.image_status, "pending");
+    const mid = r.json.assistantMessage.id;
+    const gen = await api("POST", "/api/images/generate", { conversationId, messageId: mid });
+    assert.equal(gen.status, 422, gen.text);
+    assert.equal(gen.json.code, "blacklisted");
+    const m = await api("GET", `/api/messages/${mid}`);
+    assert.equal(m.json.image_status, "failed");
+    const media = await fetchBytes(`/media/${m.json.image_id}`);
+    assert.equal(media.status, 404);
+    const assets = await api("GET", "/api/assets");
+    assert.ok(!assets.json.candidates.some((a) => a.id === m.json.image_id), "a failed request is not a candidate");
+    // The Retry control re-claims the failed request; the stub can only fail the same way.
+    const retry = await api("POST", "/api/images/generate", { conversationId, messageId: mid });
+    assert.equal(retry.status, 422, retry.text);
+    const after = await api("GET", `/api/messages/${mid}`);
+    assert.equal(after.json.image_status, "failed");
   });
 
   let proposalId = null;

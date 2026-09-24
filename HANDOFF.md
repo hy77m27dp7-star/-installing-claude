@@ -9,7 +9,7 @@ The runtime is written end to end in this repository: the Worker entry with the 
 - `src/index.ts`: the fetch entry. Owner gate first for every path, then `/api/*`, `/media/:id`, and static assets.
 - `src/auth.ts`: Cloudflare Access JWT verification against the team JWKS (issuer, audience, expiry, email). Local dev actor only on localhost with ACCESS_AUD empty.
 - `src/api.ts`: the route table from API.md. One JSON error shape. Settings validation. Local provider overlay from `.dev.vars`.
-- `src/chat.ts`: the turn. Validate, idempotency replay, budget, context, generate, photo marker, checks, one retry, one atomic commit, then the photo and proposal passes after the response.
+- `src/chat.ts`: the turn. Validate, idempotency replay, budget, context, generate, photo marker, checks, one retry, one atomic commit (which records a requested photo as a pending `visual_assets` row), then the proposal pass after the response. The photo itself is made by the Chat page's own `POST /api/images/generate` request, because a Worker's background work is cut off 30 seconds after the response and an image call takes longer.
 - `src/context.ts`: bounded context assembly. Approved state, relevant history, recent story messages only.
 - `src/prompt.ts`: the system prompt. A byte-stable constitution prefix (cacheable) followed by the state sections. Also the operator prompt, the proposal prompt, and the image identity block.
 - `src/checks.ts`: the post-generation checks (the Archivist). Pure, unit-tested. Mechanical repairs only.
