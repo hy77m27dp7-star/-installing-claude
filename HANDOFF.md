@@ -32,7 +32,7 @@ The six laws she is built on: agency (she starts beats, decides, goes quiet), co
 
 ## What exists (all pushed to the branch claude/modest-dijkstra-ju73pw)
 
-Status at handoff: v1 is written end to end, typechecks, passes `npm test` and `npm run test:integration` on the stub provider, and has NOT been deployed and NOT been run against a real model. A cloud session is finishing an adversarial review pass over v1 (security, pipeline) and will push any fixes to this same branch as commits that start with "review:" or "fix:". Before every deploy: `git pull` first. If the log shows nothing newer than 66290a0 yet, deploy anyway; a later pull plus `npm run deploy` picks the fixes up (DEPLOY.md section 10).
+Status at 4:30pm EDT: v1 is done and verified in the cloud. The adversarial pass (security, pipeline, character, ui, ops) produced 25 fixes, all landed in commit fd64d3d; the independent verifier then confirmed 92 guarded constitution edits, typography clean, all hashes matching, 0 type errors, 110/110 unit, 39/39 integration, a hand-driven stub conversation with no tech leaks, and the prompt free of "Justin", "24", the music list and any dash character. Not yet run against a real model (no keys in the cloud). The Mac session created the Access application and deploys; after every push here it runs DEPLOY.md section 10 (`git pull`, `npm run db:remote`, `npm run deploy`).
 
 Live in Cloudflare already (from the cloud session, through the Cloudflare connector): D1 `avelie` (id 2c14ef65-a599-414d-b0d1-3f71b27c377a) with migrations 0001 and 0002 applied, and R2 bucket `avelie-media`. Not yet: the Worker, the custom domain, the Access application, the two secrets.
 
