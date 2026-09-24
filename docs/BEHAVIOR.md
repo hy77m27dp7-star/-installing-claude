@@ -61,4 +61,4 @@ From the July archive, and it governs every change to her rules:
 3. Watch for recurrence. Keep the log across days and models. One bad line on a new model is a data point about the model, not about her.
 4. Patch only when a pattern exists. A pattern is the same class of failure showing up repeatedly under the same conditions. Then change one thing: a phrase in the overlay, a threshold in a check, a model setting. Rerun the suite. Compare.
 
-Do not redesign after one bad line. The July history is a list of versions that were rewritten after a single bad evening and got worse. Her rules are versioned, her state is versioned, and the suite is repeatable, so there is no need to guess.
+Do not redesign after one bad line. The July history is a run of versions and emergency patches that each answered the last regression and were all frozen as failed branches. Her rules are versioned, her state is versioned, and the suite is repeatable, so there is no need to guess.

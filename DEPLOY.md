@@ -16,7 +16,7 @@ Before step 1, run `npm test` once on your machine so the canon is built and the
 | 8 | Paste the AUD tag from 7g into wrangler.jsonc as `vars.ACCESS_AUD`, then run `npm run deploy` again. | Can paste and deploy once you give it the tag. |
 | 9 | Run the two proofs below this table. | Can run them and read the result to you. |
 | 10 | Open `https://<host>/` in a browser, type your email, type the code that arrives by email, send her one message, watch the reply land. | Nothing. The code arrives in your inbox. |
-| 11 | Backups: run `npm run export:remote` for a SQL dump into `backups/`, and use State > Export > Export JSON in the app for the JSON that Import accepts. | Can run the SQL export. |
+| 11 | Backups: run `mkdir -p backups` once, then `npm run export:remote` for a SQL dump into `backups/` (git ignores that folder), and use State > Export > Export JSON in the app for the JSON that Import accepts. | Can run the SQL export. |
 | 12 | Rollback: run `npx wrangler rollback` and pick the previous deployment at the prompt. | Can run it. |
 
 ## Step 7 in detail: the Access application

@@ -1,0 +1,476 @@
+#!/usr/bin/env node
+// Integration runner. Boots wrangler dev on a fresh local state directory with the stub
+// providers (no keys), then drives the API end to end with plain fetch. Prints PASS/FAIL
+// per check with timings and exits non-zero on any failure.
+//
+//   node tests/integration/run.mjs
+//
+// The Worker sees no process environment variables; what reaches it is .dev.vars plus the
+// --var flags below, so the stub configuration is passed both ways and the settings table
+// is switched to the stubs as the first request after boot.
+import assert from "node:assert/strict";
+import {
+  BASE, DEV_ACTOR_EMAIL, EM_DASH, BAD_TYPOGRAPHY, PORT, STATE_DIR, api, fetchBytes, rawRequest, waitFor, Report, removeDir,
+  ensureDevVars, runCommand, startWrangler, stopWrangler,
+} from "./helpers.mjs";
+
+const BOOT_TIMEOUT_MS = 90_000;
+const STATE_ARG = "tests/integration/.state";
+const STUB_ENV = { DEV_ACTOR_EMAIL, DEFAULT_PROVIDER: "stub", DEFAULT_IMAGE_PROVIDER: "stub" };
+
+const stamp = Date.now().toString(36);
+let keyCounter = 0;
+const key = (label) => `it-${stamp}-${label}-${(keyCounter++).toString().padStart(3, "0")}`;
+
+async function turn(conversationId, content, idempotencyKey) {
+  return api("POST", `/api/conversations/${conversationId}/turn`, { content, idempotencyKey });
+}
+
+async function messageCount(conversationId, channel) {
+  const r = await api("GET", `/api/conversations/${conversationId}/messages` + (channel ? `?channel=${channel}` : ""));
+  assert.equal(r.status, 200, "messages list: " + r.text);
+  return r.json.length;
+}
+
+async function state() {
+  const r = await api("GET", "/api/state");
+  assert.equal(r.status, 200, "state: " + r.text);
+  return r.json;
+}
+
+const factTexts = (bundle) => [...bundle.facts.fixed, ...bundle.facts.avelie, ...bundle.facts.justin].map((f) => f.fact);
+
+// ------------------------------------------------------------------ scenarios
+
+async function scenarios(report) {
+  let conversationId = null;
+
+  await report.check("GET /api/me -> 200 with the dev actor email", async () => {
+    const r = await api("GET", "/api/me");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.email, DEV_ACTOR_EMAIL);
+  });
+
+  await report.check("PUT /api/settings -> stub providers, proposals on (no keys needed)", async () => {
+    const r = await api("PUT", "/api/settings", { provider: "stub", proposalProvider: "stub", imageProvider: "stub", proposalsEnabled: true });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.provider, "stub");
+    assert.equal(r.json.proposalProvider, "stub");
+    assert.equal(r.json.imageProvider, "stub");
+    assert.equal(r.json.proposalsEnabled, true);
+  });
+
+  await report.check("GET /api/state -> fresh start: hasSharedHistory false, facts.justin empty", async () => {
+    const s = await state();
+    assert.equal(s.hasSharedHistory, false);
+    assert.deepEqual(s.facts.justin, []);
+    assert.equal(s.history.length, 0);
+    assert.equal(s.relationship.state.his_name, null);
+    assert.ok(s.facts.fixed.length > 0, "fixed canon should be seeded");
+  });
+
+  await report.check("POST /api/conversations -> 201", async () => {
+    const r = await api("POST", "/api/conversations", { title: "integration" });
+    assert.equal(r.status, 201, r.text);
+    assert.equal(typeof r.json.id, "string");
+    assert.equal(r.json.status, "active");
+    conversationId = r.json.id;
+  });
+
+  await report.check("POST turn 'hey' -> 200 pair, non-empty reply, clean typography, stub run", async () => {
+    const r = await turn(conversationId, "hey", key("hey"));
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.replayed, false);
+    assert.equal(r.json.userMessage.content, "hey");
+    assert.equal(r.json.userMessage.role, "user");
+    assert.equal(r.json.assistantMessage.role, "assistant");
+    assert.ok(r.json.assistantMessage.content.trim().length > 0, "assistant reply should not be empty");
+    assert.ok(!r.json.assistantMessage.content.includes(EM_DASH));
+    assert.equal(r.json.run.provider, "stub");
+    assert.equal(r.json.assistantMessage.reply_to_id, r.json.userMessage.id);
+    assert.equal(r.json.userMessage.channel, "story");
+  });
+
+  await report.check("same idempotency key again -> replayed true, message count unchanged", async () => {
+    const k = key("replay");
+    const first = await turn(conversationId, "still here", k);
+    assert.equal(first.status, 200, first.text);
+    const before = await messageCount(conversationId);
+    const again = await turn(conversationId, "still here", k);
+    assert.equal(again.status, 200, again.text);
+    assert.equal(again.json.replayed, true);
+    assert.equal(again.json.assistantMessage.id, first.json.assistantMessage.id);
+    assert.equal(again.json.userMessage.id, first.json.userMessage.id);
+    assert.equal(await messageCount(conversationId), before);
+  });
+
+  await report.check("[[FAIL]] -> 502 provider_failed, no messages written", async () => {
+    const before = await messageCount(conversationId);
+    const r = await turn(conversationId, "[[FAIL]] say anything", key("fail"));
+    assert.equal(r.status, 502, r.text);
+    assert.equal(r.json.code, "provider_failed");
+    assert.equal(typeof r.json.retryable, "boolean");
+    assert.equal(await messageCount(conversationId), before);
+  });
+
+  await report.check("[[REFUSE]] -> 502 provider_refused, no messages written", async () => {
+    const before = await messageCount(conversationId);
+    const r = await turn(conversationId, "[[REFUSE]] say anything", key("refuse"));
+    assert.equal(r.status, 502, r.text);
+    assert.equal(r.json.code, "provider_refused");
+    assert.equal(r.json.retryable, false);
+    assert.equal(await messageCount(conversationId), before);
+  });
+
+  await report.check("[[EMDASH]] -> em_dash flag, stored reply has no U+2014", async () => {
+    const r = await turn(conversationId, "[[EMDASH]] go on", key("emdash"));
+    assert.equal(r.status, 200, r.text);
+    assert.ok(r.json.flags.some((f) => f.code === "em_dash"), "flags: " + JSON.stringify(r.json.flags));
+    assert.ok(!r.json.assistantMessage.content.includes(EM_DASH));
+    const stored = await api("GET", `/api/messages/${r.json.assistantMessage.id}`);
+    assert.equal(stored.status, 200, stored.text);
+    assert.ok(!stored.json.content.includes(EM_DASH), "stored: " + stored.json.content);
+    assert.ok(!BAD_TYPOGRAPHY.test(stored.json.content));
+  });
+
+  await report.check("[[LIST]] -> markdown_structure flag, no stored line starts with '- '", async () => {
+    const r = await turn(conversationId, "[[LIST]] what is the plan", key("list"));
+    assert.equal(r.status, 200, r.text);
+    assert.ok(r.json.flags.some((f) => f.code === "markdown_structure"), "flags: " + JSON.stringify(r.json.flags));
+    const stored = await api("GET", `/api/messages/${r.json.assistantMessage.id}`);
+    assert.equal(stored.status, 200, stored.text);
+    const lines = stored.json.content.split("\n");
+    assert.ok(!lines.some((l) => l.startsWith("- ")), "stored: " + JSON.stringify(stored.json.content));
+    assert.ok(stored.json.content.trim().length > 0);
+  });
+
+  let imageId = null;
+  let photoMessageId = null;
+  await report.check("[[PHOTO]] -> imagePending, image_status pending then ready; /media/:id serves image/png", async () => {
+    const r = await turn(conversationId, "[[PHOTO]] show me", key("photo"));
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.imagePending, true);
+    assert.equal(r.json.assistantMessage.image_status, "pending");
+    assert.ok(!r.json.assistantMessage.content.includes("[photo:"), "marker must be stripped from the stored text");
+    photoMessageId = r.json.assistantMessage.id;
+    const ready = await waitFor("image_status ready", async () => {
+      const m = await api("GET", `/api/messages/${photoMessageId}`);
+      if (m.json && m.json.image_status === "failed") throw new Error("image_status failed");
+      return m.json && m.json.image_status === "ready" ? m.json : null;
+    }, 30_000);
+    assert.equal(typeof ready.image_id, "string");
+    imageId = ready.image_id;
+    const media = await fetchBytes(`/media/${imageId}`);
+    assert.equal(media.status, 200);
+    assert.ok(media.contentType.startsWith("image/png"), "content-type: " + media.contentType);
+    assert.ok(media.bytes.length > 1000, "png should have bytes");
+    // PNG signature
+    assert.deepEqual(Array.from(media.bytes.slice(0, 4)), [0x89, 0x50, 0x4e, 0x47]);
+    return `image ${imageId}, ${media.bytes.length} bytes`;
+  });
+
+  await report.check("reject the candidate -> /media/:id 404, message image_status rejected", async () => {
+    assert.ok(imageId, "no image from the previous check");
+    const r = await api("POST", `/api/images/${imageId}/decide`, { decision: "reject", note: "integration" });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.asset.approval_status, "rejected");
+    const media = await fetchBytes(`/media/${imageId}`);
+    assert.equal(media.status, 404);
+    const m = await api("GET", `/api/messages/${photoMessageId}`);
+    assert.equal(m.json.image_status, "rejected");
+    const assets = await api("GET", "/api/assets");
+    assert.equal(assets.status, 200, assets.text);
+    assert.ok(assets.json.rejected.some((a) => a.id === imageId), "rejected row keeps its hash for the blacklist");
+  });
+
+  let proposalId = null;
+  await report.check("[[FACT:she hates cilantro]] -> pending proposal within 10s", async () => {
+    const r = await turn(conversationId, "[[FACT:she hates cilantro]] noted", key("fact"));
+    assert.equal(r.status, 200, r.text);
+    const found = await waitFor("pending proposal", async () => {
+      const p = await api("GET", "/api/proposals?status=pending");
+      return p.json && p.json.find((x) => x.proposal === "she hates cilantro");
+    }, 10_000);
+    assert.equal(found.kind, "avelie_fact");
+    assert.equal(found.status, "pending");
+    proposalId = found.id;
+  });
+
+  await report.check("approve the proposal -> facts.avelie contains it with disclosed 1", async () => {
+    assert.ok(proposalId, "no proposal from the previous check");
+    const r = await api("POST", `/api/proposals/${proposalId}/decide`, { decision: "approve" });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.proposal.status, "approved");
+    assert.equal(typeof r.json.promotedId, "string");
+    const s = await state();
+    const fact = s.facts.avelie.find((f) => f.fact === "she hates cilantro");
+    assert.ok(fact, "fact not found in facts.avelie");
+    assert.equal(fact.disclosed, 1);
+    const pending = await api("GET", "/api/proposals?status=pending");
+    assert.ok(!pending.json.some((p) => p.id === proposalId));
+  });
+
+  await report.check("operator turn -> reply with runtime facts, stored only in the operator channel", async () => {
+    const storyBefore = await messageCount(conversationId, "story");
+    const r = await api("POST", "/api/operator", { content: "which model", conversationId });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(typeof r.json.reply, "string");
+    // With the stub provider the operator answers with the deterministic facts as text
+    // (no model call). A model-backed reply from the stub starts with "operator:".
+    assert.ok(r.json.reply.includes("operator:") || r.json.reply.includes("constitutionVersion"), "reply: " + r.json.reply.slice(0, 200));
+    assert.equal(typeof r.json.info.constitutionVersion, "string");
+    const story = await api("GET", `/api/conversations/${conversationId}/messages?channel=story`);
+    assert.ok(!story.json.some((m) => m.content === "which model"), "operator text leaked into the story channel");
+    assert.equal(story.json.length, storyBefore);
+    const operator = await api("GET", `/api/conversations/${conversationId}/messages?channel=operator`);
+    assert.ok(operator.json.some((m) => m.role === "user" && m.content === "which model"));
+    assert.ok(operator.json.some((m) => m.role === "assistant" && m.channel === "operator"));
+    return r.json.reply.includes("operator:") ? "model-backed reply" : "facts-as-text reply (stub)";
+  });
+
+  await report.check("GET /api/system -> runtime facts without a model call", async () => {
+    const r = await api("GET", "/api/system");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(typeof r.json.constitutionVersion, "string");
+    assert.equal(typeof r.json.promptVersion, "string");
+    assert.equal(typeof r.json.counts.messages, "number");
+    assert.equal(typeof r.json.providerKeys.anthropic, "boolean");
+    assert.ok(!JSON.stringify(r.json).includes("sk-"), "no key material in the system panel");
+  });
+
+  await report.check("PUT relationship state -> version +1; restore first version -> version +2 with his_name null", async () => {
+    const s = await state();
+    const v0 = s.relationship.version;
+    const put = await api("PUT", "/api/state/relationship", { state: { ...s.relationship.state, his_name: "Justin" }, note: "integration: versioning check, restored right after" });
+    assert.equal(put.status, 200, put.text);
+    assert.equal(put.json.version, v0 + 1);
+    assert.equal(put.json.state.his_name, "Justin");
+    const restore = await api("POST", "/api/state/restore", { entity: "relationship", version: v0 });
+    assert.equal(restore.status, 200, restore.text);
+    assert.equal(restore.json.version, v0 + 2);
+    assert.equal(restore.json.state.his_name, null);
+    const versions = await api("GET", "/api/state/versions/relationship");
+    assert.equal(versions.status, 200, versions.text);
+    assert.equal(versions.json[0].version, v0 + 2);
+    assert.ok(versions.json.length >= 3);
+    const after = await state();
+    assert.equal(after.relationship.state.his_name, null);
+    return `versions ${v0} -> ${v0 + 1} -> ${v0 + 2}`;
+  });
+
+  await report.check("facts CRUD: create, update (new version), versions, delete, restore", async () => {
+    const text = "integration: she keeps a plant alive out of spite";
+    const created = await api("POST", "/api/facts", { scope: "avelie", fact: text, disclosed: false });
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.json.version, 1);
+    assert.equal(created.json.disclosed, 0);
+    const updated = await api("PUT", `/api/facts/${created.json.id}`, { fact: text + " (updated)", disclosed: true });
+    assert.equal(updated.status, 200, updated.text);
+    assert.notEqual(updated.json.id, created.json.id);
+    assert.equal(updated.json.version, 2);
+    assert.equal(updated.json.supersedes_id, created.json.id);
+    assert.equal(updated.json.disclosed, 1);
+    const versions = await api("GET", `/api/facts/${updated.json.id}/versions`);
+    assert.equal(versions.status, 200, versions.text);
+    assert.equal(versions.json.length, 2);
+    const deleted = await api("DELETE", `/api/facts/${updated.json.id}`);
+    assert.equal(deleted.status, 200, deleted.text);
+    assert.equal(deleted.json.ok, true);
+    let s = await state();
+    assert.ok(!s.facts.avelie.some((f) => f.fact.startsWith(text)), "deleted fact still listed");
+    const restored = await api("POST", `/api/facts/${updated.json.id}/restore`);
+    assert.equal(restored.status, 200, restored.text);
+    assert.equal(restored.json.status, "approved");
+    s = await state();
+    assert.ok(s.facts.avelie.some((f) => f.fact === text + " (updated)"), "restored fact missing");
+  });
+
+  await report.check("fixed canon is read-only: POST scope fixed -> 403 fixed_canon", async () => {
+    const r = await api("POST", "/api/facts", { scope: "fixed", fact: "integration: this must be refused" });
+    assert.equal(r.status, 403, r.text);
+    assert.equal(r.json.code, "fixed_canon");
+  });
+
+  await report.check("history create -> hasSharedHistory true; delete -> false", async () => {
+    const created = await api("POST", "/api/history", { title: "integration test entry", body: "temporary entry written by the integration runner; deleted in the same run" });
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.json.seq >= 1, true);
+    let s = await state();
+    assert.equal(s.hasSharedHistory, true);
+    assert.ok(s.history.some((h) => h.id === created.json.id));
+    const deleted = await api("DELETE", `/api/history/${created.json.id}`);
+    assert.equal(deleted.status, 200, deleted.text);
+    s = await state();
+    assert.equal(s.hasSharedHistory, false);
+    assert.equal(s.history.length, 0);
+  });
+
+  await report.check("unknowns: create -> open; resolve -> resolved", async () => {
+    const created = await api("POST", "/api/unknowns", { topic: "integration: where she grew up", note: "never settled" });
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.json.status, "open");
+    const resolved = await api("PUT", `/api/unknowns/${created.json.id}`, { status: "resolved", resolution: "resolved by the integration runner" });
+    assert.equal(resolved.status, 200, resolved.text);
+    assert.equal(resolved.json.status, "resolved");
+    assert.equal(resolved.json.resolution, "resolved by the integration runner");
+    const s = await state();
+    const row = s.unknowns.find((u) => u.id === created.json.id);
+    assert.ok(row && row.status === "resolved");
+  });
+
+  await report.check("GET /api/export -> JSON with facts; POST /api/import roundtrip keeps the fact count", async () => {
+    const before = await state();
+    const exp = await api("GET", "/api/export");
+    assert.equal(exp.status, 200, exp.text);
+    assert.equal(exp.json.version, 1);
+    assert.ok(Array.isArray(exp.json.facts), "facts array missing");
+    assert.ok(Array.isArray(exp.json.history));
+    assert.ok(Array.isArray(exp.json.stateVersions));
+    assert.ok(exp.json.facts.length >= factTexts(before).length);
+    const imp = await api("POST", "/api/import", exp.json);
+    assert.equal(imp.status, 200, imp.text);
+    assert.equal(imp.json.ok, true);
+    assert.equal(typeof imp.json.snapshotId, "string");
+    assert.equal(typeof imp.json.counts.facts, "number");
+    const after = await state();
+    assert.equal(factTexts(after).length, factTexts(before).length);
+    assert.deepEqual(factTexts(after).sort(), factTexts(before).sort());
+    assert.equal(after.hasSharedHistory, before.hasSharedHistory);
+    assert.equal(after.relationship.version, before.relationship.version);
+    return `${imp.json.counts.facts} facts`;
+  });
+
+  await report.check("GET /api/export/transcript/:id -> text/plain, story channel only", async () => {
+    const r = await api("GET", `/api/export/transcript/${conversationId}`);
+    assert.equal(r.status, 200, r.text);
+    assert.ok((r.headers.get("content-type") || "").startsWith("text/plain"));
+    assert.ok(r.text.includes("hey"));
+    assert.ok(!r.text.includes("which model"), "operator text in the transcript");
+  });
+
+  await report.check("POST /api/assets/verify -> allOk true for the five masters", async () => {
+    const r = await api("POST", "/api/assets/verify");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.allOk, true, JSON.stringify(r.json.results.filter((x) => !x.ok)));
+    assert.equal(r.json.results.length, 5);
+  });
+
+  await report.check("dailyCapUsd 0 -> turn 402 budget_exceeded, nothing written; cap restored", async () => {
+    const current = await api("GET", "/api/settings");
+    const cap = current.json.dailyCapUsd;
+    const set = await api("PUT", "/api/settings", { dailyCapUsd: 0 });
+    assert.equal(set.status, 200, set.text);
+    try {
+      const before = await messageCount(conversationId);
+      const r = await turn(conversationId, "hey again", key("budget"));
+      assert.equal(r.status, 402, r.text);
+      assert.equal(r.json.code, "budget_exceeded");
+      assert.equal(await messageCount(conversationId), before);
+    } finally {
+      const back = await api("PUT", "/api/settings", { dailyCapUsd: cap });
+      assert.equal(back.status, 200, back.text);
+      assert.equal(back.json.dailyCapUsd, cap);
+    }
+    const ok = await turn(conversationId, "hey again", key("budget-after"));
+    assert.equal(ok.status, 200, ok.text);
+  });
+
+  await report.check("PUT /api/settings temperature 9 -> 400 validation", async () => {
+    const r = await api("PUT", "/api/settings", { temperature: 9 });
+    assert.equal(r.status, 400, r.text);
+    assert.equal(r.json.code, "validation");
+  });
+
+  await report.check("unknown route -> 404 JSON", async () => {
+    const r = await api("GET", "/api/nope");
+    assert.equal(r.status, 404, r.text);
+    assert.equal(r.json.code, "not_found");
+    assert.ok((r.headers.get("content-type") || "").includes("application/json"));
+  });
+
+  await report.check("garbage Access token on a local host -> 200 (dev actor wins while ACCESS_AUD is empty)", async () => {
+    const r = await api("GET", "/api/me", undefined, { "cf-access-jwt-assertion": "garbage" });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.email, DEV_ACTOR_EMAIL);
+  });
+
+  await report.check("Host: avelie.example without a token -> 503 or 401 (never authorized)", async () => {
+    const r = await rawRequest("/api/me", { Host: "avelie.example" });
+    assert.ok(r.status === 503 || r.status === 401, `status ${r.status}: ${r.text}`);
+    assert.ok(!r.text.includes(DEV_ACTOR_EMAIL), "dev actor must not be granted to a non-local host");
+    return `got ${r.status}` + (r.status === 503 ? " access_not_configured (ACCESS_AUD empty: fail closed)" : " unauthorized");
+  });
+
+  await report.check("email header from the client never grants identity on a non-local host", async () => {
+    const r = await rawRequest("/api/me", { Host: "avelie.example", "cf-access-authenticated-user-email": DEV_ACTOR_EMAIL });
+    assert.ok(r.status === 503 || r.status === 401, `status ${r.status}: ${r.text}`);
+  });
+}
+
+// ------------------------------------------------------------------ main
+
+async function main() {
+  const report = new Report();
+  const t0 = Date.now();
+  let wrangler = null;
+  let restoreDevVars = () => {};
+  let exitCode = 1;
+
+  const shutdown = async () => {
+    await stopWrangler(wrangler);
+    restoreDevVars();
+  };
+  process.on("SIGINT", () => { shutdown().finally(() => process.exit(130)); });
+  process.on("SIGTERM", () => { shutdown().finally(() => process.exit(143)); });
+
+  try {
+    console.log(`integration: fresh state at ${STATE_DIR}`);
+    removeDir(STATE_DIR);
+    restoreDevVars = ensureDevVars();
+
+    const tm = Date.now();
+    const migrate = await runCommand(["d1", "migrations", "apply", "avelie", "--local", "--persist-to", STATE_ARG], { env: { CI: "1" } });
+    if (migrate.code !== 0) {
+      console.log(migrate.output);
+      throw new Error("migrations failed with exit code " + migrate.code);
+    }
+    console.log(`migrations applied (${Date.now() - tm} ms)`);
+
+    // --local: remote bindings off (the AI binding would otherwise open a remote session
+    // that needs a Cloudflare API token). The three --var flags mirror .dev.vars so the run
+    // does not depend on what a developer keeps there.
+    const tb = Date.now();
+    wrangler = startWrangler([
+      "--port", String(PORT), "--local", "--persist-to", STATE_ARG,
+      "--var", "APP_ENV:test",
+      "--var", `DEV_ACTOR_EMAIL:${DEV_ACTOR_EMAIL}`,
+      "--var", "DEFAULT_PROVIDER:stub",
+      "--var", "DEFAULT_IMAGE_PROVIDER:stub",
+    ], STUB_ENV);
+
+    await waitFor("wrangler dev on " + BASE, async () => {
+      if (wrangler.hasExited()) throw new Error("wrangler dev exited before it was ready");
+      const r = await api("GET", "/api/me");
+      return r.status === 200;
+    }, BOOT_TIMEOUT_MS, 500).catch((e) => {
+      console.log("wrangler output (tail):");
+      console.log(wrangler.tail());
+      throw e;
+    });
+    console.log(`wrangler dev ready on ${BASE} (${Date.now() - tb} ms)\n`);
+
+    await scenarios(report);
+    report.summary();
+    exitCode = report.failed ? 1 : 0;
+  } catch (e) {
+    console.log("integration: aborted: " + (e instanceof Error ? e.message : String(e)));
+    report.summary();
+    exitCode = 1;
+  } finally {
+    await shutdown();
+    console.log(`total ${Date.now() - t0} ms, wrangler log: ${wrangler ? wrangler.logPath : "(not started)"}`);
+  }
+  process.exit(exitCode);
+}
+
+main();
