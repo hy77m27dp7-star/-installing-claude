@@ -7,6 +7,7 @@
 // and does its timezone math with Intl alone, so the unit suite can run it under Node.
 import { auditStmt, newId, nowIso } from "./db";
 import { ApiHttpError } from "./errors";
+import { carryStmt } from "./memory";
 
 export type ThreadKind = "routine" | "event" | "person" | "place" | "arc";
 export type ThreadStatus = "active" | "done" | "dropped" | "superseded";
@@ -24,6 +25,10 @@ export interface LifeThread {
   supersedes_id: string | null;
   created_at: string;
   updated_at: string;
+  // v3 (SPEC_V3 section DD, migration 0005): the approved portrait of a person, set by the
+  // image decision route and carried along the version chain. Optional in the type so v2
+  // fixtures and writers keep compiling; a row read from D1 carries it, null when unset.
+  portrait_asset_id?: string | null;
 }
 
 export interface LifeLog {
@@ -67,7 +72,9 @@ const MAX_BLOCKS = 21;
 const DEFAULT_EVENT_MINUTES = 120;
 const MAX_EVENT_MINUTES = 24 * 60;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+export const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+// v3: how many of a person's last notes the YOUR LIFE people list carries (section DD).
+const PERSON_NOTES = 2;
 const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const HHMM_RE = /^(\d{1,2}):(\d{2})$/;
 
@@ -370,7 +377,10 @@ export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz
     out.push("People in your life:\n" + people.map((t) => {
       const rel = t.relation ? ` (${t.relation})` : "";
       const d = firstLine(t.detail);
-      return `- ${t.title}${rel}${d ? ": " + d : ""}`;
+      // v3 (section DD): the person's last two notes with their ages, so the arc moves.
+      const arc = notes.filter((l) => l.thread_id === t.id).slice(0, PERSON_NOTES)
+        .map((l) => `${agoLabel(ageDays(new Date(l.occurred), now))}: ${firstLine(l.note, 160)}`);
+      return `- ${t.title}${rel}${d ? ": " + d : ""}${arc.length ? "; " + arc.join("; ") : ""}`;
     }).join("\n"));
   }
 
@@ -492,6 +502,21 @@ function supersedeStmt(db: D1Database, id: string, fromStatus: string, at: strin
   return db.prepare("UPDATE life_threads SET status = 'superseded', updated_at = ?3 WHERE id = ?1 AND status = ?2").bind(id, fromStatus, at);
 }
 
+// v3: the approved portrait follows the head. Written as its own statement, only when
+// there is one, so the twelve-column insert above stays what it was.
+function portraitCarryStmt(db: D1Database, id: string, portraitAssetId: string): D1PreparedStatement {
+  return db.prepare("UPDATE life_threads SET portrait_asset_id = ?2 WHERE id = ?1").bind(id, portraitAssetId);
+}
+
+// v3: the statements that make a new head inherit its portrait and its memory weight
+// (SPEC_V3 sections BB and DD). `fromIds` are the rows the weight may live on, first wins.
+function headCarryStmts(db: D1Database, row: LifeThread, fromIds: string[]): D1PreparedStatement[] {
+  const out: D1PreparedStatement[] = [];
+  if (typeof row.portrait_asset_id === "string" && row.portrait_asset_id) out.push(portraitCarryStmt(db, row.id, row.portrait_asset_id));
+  for (const from of fromIds) if (from && from !== row.id) out.push(carryStmt(db, "thread", from, row.id));
+  return out;
+}
+
 async function requireThread(db: D1Database, id: string): Promise<LifeThread> {
   if (typeof id !== "string" || !id) throw new ApiHttpError(400, "validation", "thread id is required");
   const row = await db.prepare("SELECT * FROM life_threads WHERE id = ?1").bind(id).first<LifeThread>();
@@ -583,6 +608,7 @@ export async function updateThread(
   await db.batch([
     supersedeStmt(db, old.id, old.status, t),
     insertThreadStmt(db, row),
+    ...headCarryStmts(db, row, [old.id]),
     auditStmt(db, actor, "life.thread.update", "life_thread", row.id, old, row),
   ]);
   return row;
@@ -598,6 +624,7 @@ export async function dropThread(db: D1Database, id: string, actor: string): Pro
   await db.batch([
     supersedeStmt(db, old.id, old.status, t),
     insertThreadStmt(db, row),
+    ...headCarryStmts(db, row, [old.id]),
     auditStmt(db, actor, "life.thread.drop", "life_thread", row.id, old, row),
   ]);
 }
@@ -610,9 +637,13 @@ export async function restoreThread(db: D1Database, id: string, actor: string): 
   if (target.status === "active" && latest.id === target.id) return target;
   const maxVersion = chain.reduce((m, r) => Math.max(m, r.version), target.version);
   const t = nowIso();
-  const row: LifeThread = { ...target, id: newId("lt"), status: "active", version: maxVersion + 1, supersedes_id: latest.id, updated_at: t };
+  // The portrait and the memory weight live on the latest head; an older version restored
+  // as the new head inherits them from there (then from itself, if it ever had them).
+  const portrait = latest.portrait_asset_id ?? target.portrait_asset_id ?? null;
+  const row: LifeThread = { ...target, id: newId("lt"), status: "active", version: maxVersion + 1, supersedes_id: latest.id, updated_at: t, portrait_asset_id: portrait };
   const stmts: D1PreparedStatement[] = chain.filter((r) => r.status !== "superseded").map((r) => supersedeStmt(db, r.id, r.status, t));
   stmts.push(insertThreadStmt(db, row));
+  stmts.push(...headCarryStmts(db, row, [latest.id, target.id]));
   stmts.push(auditStmt(db, actor, "life.thread.restore", "life_thread", row.id, { restoredFrom: target.id, latest: latest.id }, row));
   await db.batch(stmts);
   return row;

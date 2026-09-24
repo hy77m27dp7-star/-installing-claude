@@ -5,6 +5,18 @@
 // The source stays pure ASCII: every non-ASCII character it hunts is built from a code point.
 import type { CheckContext, CheckResult, Flag, FlagSeverity } from "./types";
 
+// v3 (SPEC_V3 sections AA, CC, GG): the context fields the v3 checks read. All optional, so
+// a v1/v2 CheckContext still satisfies runChecks; when types.ts carries the same fields the
+// two shapes are identical.
+export interface CheckContextV3 extends CheckContext {
+  // The voice-bank lines offered to her this turn (exemplar_verbatim).
+  exemplars?: string[];
+  // Open asks of hers and how often she has already brought each one up again (ask_nag).
+  openAsks?: Array<{ text: string; broughtUp: number }>;
+  // The signatures of her last replies, newest last (shape_uniform).
+  recentSignatures?: string[];
+}
+
 // ------------------------------------------------------------------ phrase tables (lowercase)
 
 export const BRAKING_PHRASES: string[] = ["slow down", "stay with me", "don't rush", "not so fast"];
@@ -36,6 +48,10 @@ export const TECH_LEAK_TERMS: string[] = [
   "generated image",
   "operator channel",
   "operator note",
+  // v3 (SPEC_V3 section AA): matched whole-word with an optional plural "s" by termRe, so
+  // "sounded like a bot" and "i'm not an ai" hit while "robot", "aim" and "said" never do.
+  "bot",
+  "ai",
 ];
 
 export const DEPENDENCY_PHRASES: string[] = [
@@ -149,6 +165,12 @@ function endsWithQuestion(text: string): boolean {
   return t.endsWith("?");
 }
 
+// Whole-word phrase search over any text, for modules that scan against the tables above
+// (the voice-bank seed and the owner's own lines, SPEC_V3 section AA).
+export function findPhrase(text: string, phrases: string[]): string | null {
+  return findAny(normalize(text), phrases);
+}
+
 export type LengthBand = "short" | "mid" | "long";
 
 export function lengthBand(text: string): LengthBand {
@@ -156,6 +178,20 @@ export function lengthBand(text: string): LengthBand {
   if (n < 80) return "short";
   if (n <= 300) return "mid";
   return "long";
+}
+
+// The shape of a reply (SPEC_V3 section GG): bubbles banded 1, 2, 3 (blank-line split, the
+// rule public/js/bubbles.js uses, without its size rule), the length band, lower or mixed
+// case, and whether it ends in a question. "2|short|lower|s".
+export function bubbleBand(text: string): 1 | 2 | 3 {
+  const parts = text.replace(/\r\n?/g, "\n").trim().split(/\n[ \t]*\n+/).map((p) => p.trim()).filter(Boolean);
+  return parts.length >= 3 ? 3 : parts.length === 2 ? 2 : 1;
+}
+
+export function signature(text: string): string {
+  const t = String(text ?? "").replace(/\r\n?/g, "\n").trim();
+  const caseWord = /\p{Lu}/u.test(t) ? "mixed" : "lower";
+  return `${bubbleBand(t)}|${lengthBand(t)}|${caseWord}|${endsWithQuestion(t) ? "q" : "s"}`;
 }
 
 function topicWords(topic: string): string[] {
@@ -303,10 +339,91 @@ export function runChecks(text: string, ctx: CheckContext): CheckResult {
     flags.push(flag("length_pattern", "flag", "four long replies in a row"));
   }
 
+  // v3 (SPEC_V3 sections AA, CC, GG)
+  runV3Checks(text, norm, sentences, ctx as CheckContextV3, flags);
+
   // action
   const needsRetry = flags.some((f) => f.severity === "retry");
   const needsRepair = flags.some((f) => REPAIR_CODES.has(f.code));
   const result: CheckResult = { flags, action: needsRetry ? "retry" : needsRepair ? "repair" : "accept" };
   if (needsRepair) result.repaired = repairText(text);
   return result;
+}
+
+// ------------------------------------------------------------------ v3 checks (SPEC_V3)
+
+// A "not X, but Y" / "not because X, because Y" / "it was not X; it was Y" contrast.
+const CONTRAST_RE = /\bnot\b[^.!?;\n]{1,80}?[,;]\s*(?:but|because|it (?:was|is)|rather)\b/i;
+// A sentence carrying three or more short comma-separated items ("my coffee, my phone, and my patience").
+const LIST_RE = /(?:^|[\s,])[^,.!?;]{1,40},\s*[^,.!?;]{1,40},\s*(?:and\s+|or\s+)?[^,.!?;]{1,40}/;
+const SENTENCE_START_RE = /^["'(]*\p{Lu}/u;
+const SENTENCE_END_RE = /[.!?]["')]*$/;
+const NORM_WS_RE = /\s+/g;
+
+// The normalised form the exemplar test compares: lowercase, straight quotes, single spaces.
+export function normalizeForMatch(text: string): string {
+  return normalize(String(text ?? "")).replace(NORM_WS_RE, " ").trim();
+}
+
+function askWords(text: string): string[] {
+  return topicWords(text);
+}
+
+// Every sentence capitalised and closed, three or more of them: the shape of writing, not texting.
+function isPolishedShape(sentences: string[]): boolean {
+  if (sentences.length < 3) return false;
+  return sentences.every((s) => SENTENCE_START_RE.test(s) && SENTENCE_END_RE.test(s));
+}
+
+function listInOneSentence(sentences: string[]): boolean {
+  return sentences.some((s) => (s.match(/,/g) ?? []).length >= 2 && LIST_RE.test(s));
+}
+
+function runV3Checks(text: string, norm: string, sentences: string[], ctx: CheckContextV3, flags: Flag[]): void {
+  // exemplar_verbatim (retry, section AA): a bank line sent as is. Lines under 12 characters
+  // ("no", "fine") are things anyone says and are never the reason for a retry.
+  const replyNorm = normalizeForMatch(text);
+  for (const ex of ctx.exemplars ?? []) {
+    if (typeof ex !== "string") continue;
+    const exNorm = normalizeForMatch(ex);
+    if (exNorm.length >= 12 && replyNorm.includes(exNorm)) {
+      flags.push(flag("exemplar_verbatim", "retry", `reply contains an offered example line verbatim: "${exNorm.slice(0, 60)}"`));
+      break;
+    }
+  }
+
+  // ask_nag (retry, section CC): an ask she has already brought up once more comes back again.
+  for (const ask of ctx.openAsks ?? []) {
+    if (!ask || typeof ask.text !== "string" || !(ask.broughtUp >= 1)) continue;
+    const words = askWords(ask.text);
+    const hits = words.filter((w) => termRe(w).test(norm)).length;
+    if (words.length >= 2 && hits >= 2) {
+      flags.push(flag("ask_nag", "retry", `open ask brought up again (${hits} of its words: "${ask.text.slice(0, 60)}")`));
+      break;
+    }
+  }
+
+  // shape_uniform (flag, section GG): the same shape three replies in a row.
+  const sigs = ctx.recentSignatures ?? [];
+  if (sigs.length >= 2) {
+    const here = signature(text);
+    const last = sigs[sigs.length - 1];
+    const before = sigs[sigs.length - 2];
+    if (here === last && here === before) {
+      flags.push(flag("shape_uniform", "flag", `same shape three replies in a row (${here})`));
+    }
+  }
+
+  // over_polish (flag, section GG): three or more capitalised, closed sentences plus one
+  // signal of writing: a semicolon, a tidy contrast, a list in one sentence, a caption
+  // close, or a built punchline (written_joke, which keeps its own code either way).
+  if (isPolishedShape(sentences)) {
+    const signals: string[] = [];
+    if (text.includes(";")) signals.push("semicolon");
+    if (CONTRAST_RE.test(text)) signals.push("contrast");
+    if (listInOneSentence(sentences)) signals.push("list");
+    if (flags.some((f) => f.code === "caption_tail")) signals.push("caption close");
+    if (flags.some((f) => f.code === "written_joke")) signals.push("punchline");
+    if (signals.length) flags.push(flag("over_polish", "flag", `polished paragraph (${signals.join(", ")})`));
+  }
 }
