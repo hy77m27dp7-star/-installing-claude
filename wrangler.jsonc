@@ -45,7 +45,7 @@
     // Cloudflare Access team domain for this account (from HQ MAP.md).
     "ACCESS_TEAM_DOMAIN": "still-leaf-20a0.cloudflareaccess.com",
     // AUD tag of the Access application that fronts this Worker. Empty = fail closed.
-    "ACCESS_AUD": "",
+    "ACCESS_AUD": "8c6fcde61406628c044accbd8b0222613cafe4cca237aebfd9c82646212b2ff7",
     "OWNER_EMAIL": "justin@newsomeprojects.com",
     "APP_ENV": "production"
   },
