@@ -13,17 +13,20 @@ Text is billed by token. The app multiplies the tokens each call reports by the 
 | claude-haiku-4-5 | 1.00 | 5.00 |
 | claude-opus-4-8 | 5.00 | 25.00 |
 | claude-fable-5-1 | 10.00 | 50.00 |
+| @cf/meta/llama-3.3-70b-instruct-fp8-fast (Workers AI fallback, DEPLOY.md section 8) | 0.29 | 2.25 |
+
+The last row is Cloudflare's list price as of the build and is nominal until confirmed on the Workers AI pricing page; correct it in the Model panel if it moved. The built-in table sits under the stored one: a price you set in the Model panel wins, and a model priced in the built-in table stays priced on a database seeded before that entry existed.
 
 Cost of one call = input tokens x input price / 1,000,000 + output tokens x output price / 1,000,000. The app stores it as a whole number of micro-dollars so rounding can never let a call slip under a cap.
 
-A model that is not in the table costs zero on the meter and the run carries a `price_unknown` flag. Add the model's prices in the Model panel before you switch to it.
+A model that is not in the table cannot be used. The Model page refuses to save it (400: no entry in prices), and a call on a model whose price is missing is refused with `402 price_unknown` before anything is spent, so an unpriced model can never run at zero on the meter and slip past the caps. Add the model's prices in the Model panel first, then switch to it. (The `price_unknown` flag on a run row is a fallback for a post-call lookup that misses; the gate makes it unreachable in practice.)
 
-Photos are billed per call, not per token. `imageCostUsd` (default 0.06 for gpt-image-1 at medium quality, 1024x1536) is added to the day's spend for every generated candidate, approved or not. Change it in the Model panel when OpenAI's price changes.
+Photos are billed per call, not per token. `imageCostUsd` (default 0.06 for gpt-image-1 at medium quality, 1024x1536) is added to the day's spend for every generated candidate, approved or not. Change it in the Model panel when OpenAI's price changes. It must be above 0 for a paid image provider: the Model page refuses 0 unless the image provider is keyless (the stub), and a photo on a paid provider at 0 is refused with `402 price_unknown`.
 
 Two more calls can happen around a turn:
 
-- The retry. When the checks reject a draft, the app asks the model once more with a short corrective note. That is a second full call at the same price, recorded as its own run.
-- The proposal pass. When proposals are on, each turn is followed by one small call on the proposal model (claude-sonnet-5 by default, at most 800 output tokens) that reads the exchange for durable facts.
+- The retry. When the checks reject a draft, the app asks the model once more with a short corrective note. That is a second full call at the same price, recorded as its own run. The Anthropic SDK itself never retries (a resend after a timeout or a 5xx could bill a generation the app never sees); a transport failure comes back as a retryable error and the page offers Retry.
+- The proposal pass. When proposals are on, each turn is followed by one small call on the proposal model (claude-sonnet-5 by default, at most 800 output tokens) that reads the exchange for durable facts. It is estimated and checked against the caps like any other call; when the caps or a missing price refuse it, the pass is skipped quietly (the turn is already answered) and the run log keeps a failed row with a `budget_skipped` flag.
 
 The operator channel is metered the same way as a turn when it calls a model.
 

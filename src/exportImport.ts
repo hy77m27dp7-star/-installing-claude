@@ -1,6 +1,8 @@
 // Full JSON export, plain-text transcript export, and import with a snapshot taken first.
 // Import replaces the story tables in one batch; settings and visual_assets are merged,
 // never dropped. Fixed canon facts and master images are never touched by a payload.
+// Every imported column is checked the way the API checks the same field: type, the
+// allowed values, the length cap, and for state a plain JSON object under the size cap.
 import { CONSTITUTION_VERSION } from "./generated/constitution";
 import { PROMPT_VERSION } from "./prompt";
 import { DEFAULT_SETTINGS, auditStmt, getSettings, listMessages, newId, nowIso, putSettings } from "./db";
@@ -77,6 +79,9 @@ interface Col {
   required?: boolean;
   default?: string | number | null;
   oneOf?: readonly string[];
+  // Longest accepted string (characters). Text columns carry the cap the API puts on the
+  // same field; a json column caps its serialized form. Unset: DEFAULT_TEXT_MAX.
+  max?: number;
 }
 
 interface TableSpec {
@@ -85,15 +90,24 @@ interface TableSpec {
   cols: Col[];
 }
 
+// The same ceilings the API enforces (api.ts, state.ts, chat.ts, proposals.ts).
+const DEFAULT_TEXT_MAX = 4000;
+const ID_MAX = 120;
+const TIME_MAX = 64;
+const MESSAGE_CONTENT_MAX = 20_000;
+const HISTORY_BODY_MAX = 20_000;
+const STATE_JSON_MAX = 100_000;
+const PROPOSAL_MAX = 1000;
+
 const CONVERSATIONS: TableSpec = {
   table: "conversations",
   key: "conversations",
   cols: [
-    { name: "id", type: "text", required: true },
-    { name: "title", type: "text" },
-    { name: "created_at", type: "time" },
-    { name: "last_message_at", type: "text" },
-    { name: "status", type: "text", default: "active" },
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "title", type: "text", max: 200 },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "last_message_at", type: "text", max: TIME_MAX },
+    { name: "status", type: "text", default: "active", oneOf: ["active", "deleted"] },
   ],
 };
 
@@ -101,19 +115,19 @@ const MESSAGES: TableSpec = {
   table: "messages",
   key: "messages",
   cols: [
-    { name: "id", type: "text", required: true },
-    { name: "conversation_id", type: "text", required: true },
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "conversation_id", type: "text", required: true, max: ID_MAX },
     { name: "channel", type: "text", default: "story", oneOf: ["story", "operator"] },
     { name: "role", type: "text", required: true, oneOf: ["user", "assistant"] },
-    { name: "content", type: "text", required: true },
-    { name: "created_at", type: "time" },
+    { name: "content", type: "text", required: true, max: MESSAGE_CONTENT_MAX },
+    { name: "created_at", type: "time", max: TIME_MAX },
     { name: "seq", type: "int", required: true },
-    { name: "idempotency_key", type: "text" },
-    { name: "reply_to_id", type: "text" },
-    { name: "model_run_id", type: "text" },
-    { name: "flags_json", type: "text" },
-    { name: "image_id", type: "text" },
-    { name: "image_status", type: "text" },
+    { name: "idempotency_key", type: "text", max: 200 },
+    { name: "reply_to_id", type: "text", max: ID_MAX },
+    { name: "model_run_id", type: "text", max: ID_MAX },
+    { name: "flags_json", type: "text", max: MESSAGE_CONTENT_MAX },
+    { name: "image_id", type: "text", max: ID_MAX },
+    { name: "image_status", type: "text", max: 40 },
   ],
 };
 
@@ -121,18 +135,18 @@ const FACTS: TableSpec = {
   table: "facts",
   key: "facts",
   cols: [
-    { name: "id", type: "text", required: true },
+    { name: "id", type: "text", required: true, max: ID_MAX },
     { name: "scope", type: "text", required: true, oneOf: ["fixed", "avelie", "justin", "shared"] },
-    { name: "subject", type: "text" },
-    { name: "fact", type: "text", required: true },
-    { name: "source", type: "text" },
+    { name: "subject", type: "text", max: 200 },
+    { name: "fact", type: "text", required: true, max: DEFAULT_TEXT_MAX },
+    { name: "source", type: "text", max: 500 },
     { name: "status", type: "text", default: "approved", oneOf: ["approved", "superseded", "rejected"] },
     { name: "disclosed", type: "int", default: 1 },
     { name: "provisional", type: "int", default: 0 },
     { name: "version", type: "int", default: 1 },
-    { name: "supersedes_id", type: "text" },
-    { name: "created_at", type: "time" },
-    { name: "updated_at", type: "time" },
+    { name: "supersedes_id", type: "text", max: ID_MAX },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
   ],
 };
 
@@ -140,19 +154,19 @@ const HISTORY: TableSpec = {
   table: "history",
   key: "history",
   cols: [
-    { name: "id", type: "text", required: true },
+    { name: "id", type: "text", required: true, max: ID_MAX },
     { name: "seq", type: "int", required: true },
-    { name: "title", type: "text", required: true },
-    { name: "occurred", type: "text" },
-    { name: "body", type: "text", required: true },
-    { name: "what_changed", type: "text" },
-    { name: "keep_consistent", type: "text" },
-    { name: "source", type: "text" },
+    { name: "title", type: "text", required: true, max: 300 },
+    { name: "occurred", type: "text", max: 200 },
+    { name: "body", type: "text", required: true, max: HISTORY_BODY_MAX },
+    { name: "what_changed", type: "text", max: DEFAULT_TEXT_MAX },
+    { name: "keep_consistent", type: "text", max: DEFAULT_TEXT_MAX },
+    { name: "source", type: "text", max: 500 },
     { name: "status", type: "text", default: "approved", oneOf: ["approved", "superseded", "rejected"] },
     { name: "version", type: "int", default: 1 },
-    { name: "supersedes_id", type: "text" },
-    { name: "created_at", type: "time" },
-    { name: "updated_at", type: "time" },
+    { name: "supersedes_id", type: "text", max: ID_MAX },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
   ],
 };
 
@@ -160,13 +174,13 @@ const UNKNOWNS: TableSpec = {
   table: "unknowns",
   key: "unknowns",
   cols: [
-    { name: "id", type: "text", required: true },
-    { name: "topic", type: "text", required: true },
-    { name: "note", type: "text" },
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "topic", type: "text", required: true, max: 500 },
+    { name: "note", type: "text", max: DEFAULT_TEXT_MAX },
     { name: "status", type: "text", default: "open", oneOf: ["open", "resolved"] },
-    { name: "resolution", type: "text" },
-    { name: "created_at", type: "time" },
-    { name: "updated_at", type: "time" },
+    { name: "resolution", type: "text", max: DEFAULT_TEXT_MAX },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
   ],
 };
 
@@ -174,13 +188,13 @@ const STATE_VERSIONS: TableSpec = {
   table: "state_versions",
   key: "stateVersions",
   cols: [
-    { name: "id", type: "text", required: true },
+    { name: "id", type: "text", required: true, max: ID_MAX },
     { name: "entity", type: "text", required: true, oneOf: ["relationship", "scene"] },
     { name: "version", type: "int", required: true },
-    { name: "state_json", type: "json", required: true },
-    { name: "source", type: "text" },
-    { name: "note", type: "text" },
-    { name: "created_at", type: "time" },
+    { name: "state_json", type: "json", required: true, max: STATE_JSON_MAX },
+    { name: "source", type: "text", max: 200 },
+    { name: "note", type: "text", max: 1000 },
+    { name: "created_at", type: "time", max: TIME_MAX },
   ],
 };
 
@@ -188,20 +202,20 @@ const PROPOSALS: TableSpec = {
   table: "proposals",
   key: "proposals",
   cols: [
-    { name: "id", type: "text", required: true },
-    { name: "conversation_id", type: "text" },
-    { name: "message_id", type: "text" },
-    { name: "kind", type: "text", required: true },
-    { name: "proposal", type: "text", required: true },
-    { name: "evidence", type: "text" },
-    { name: "confidence", type: "text" },
-    { name: "scope", type: "text" },
-    { name: "payload_json", type: "text" },
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "conversation_id", type: "text", max: ID_MAX },
+    { name: "message_id", type: "text", max: ID_MAX },
+    { name: "kind", type: "text", required: true, max: 40 },
+    { name: "proposal", type: "text", required: true, max: PROPOSAL_MAX },
+    { name: "evidence", type: "text", max: PROPOSAL_MAX },
+    { name: "confidence", type: "text", max: 20 },
+    { name: "scope", type: "text", max: 100 },
+    { name: "payload_json", type: "text", max: MESSAGE_CONTENT_MAX },
     { name: "status", type: "text", default: "pending", oneOf: ["pending", "approved", "rejected", "edited"] },
-    { name: "decision_note", type: "text" },
-    { name: "promoted_id", type: "text" },
-    { name: "created_at", type: "time" },
-    { name: "decided_at", type: "text" },
+    { name: "decision_note", type: "text", max: 1000 },
+    { name: "promoted_id", type: "text", max: 200 },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "decided_at", type: "text", max: TIME_MAX },
   ],
 };
 
@@ -215,20 +229,20 @@ const VISUAL_ASSETS: TableSpec = {
   table: "visual_assets",
   key: "visualAssets",
   cols: [
-    { name: "id", type: "text", required: true },
-    { name: "file", type: "text", required: true },
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "file", type: "text", required: true, max: 300 },
     { name: "role", type: "text", required: true, oneOf: RUNTIME_ASSET_ROLES },
-    { name: "sha256", type: "text" },
+    { name: "sha256", type: "text", max: 64 },
     { name: "bytes", type: "int" },
     { name: "approval_status", type: "text", required: true, oneOf: ASSET_STATUSES },
-    { name: "conversation_id", type: "text" },
-    { name: "message_id", type: "text" },
-    { name: "prompt", type: "text" },
-    { name: "provider", type: "text" },
-    { name: "model", type: "text" },
-    { name: "notes", type: "text" },
-    { name: "created_at", type: "time" },
-    { name: "decided_at", type: "text" },
+    { name: "conversation_id", type: "text", max: ID_MAX },
+    { name: "message_id", type: "text", max: ID_MAX },
+    { name: "prompt", type: "text", max: 2000 },
+    { name: "provider", type: "text", max: 40 },
+    { name: "model", type: "text", max: 200 },
+    { name: "notes", type: "text", max: 300 },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "decided_at", type: "text", max: TIME_MAX },
   ],
 };
 
@@ -238,6 +252,11 @@ function bad(where: string, msg: string): ApiHttpError {
   return new ApiHttpError(400, "validation", `${where}: ${msg}`);
 }
 
+// The same rule state.ts applies to a PUT: an object with named fields, nothing else.
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
+}
+
 function coerce(value: unknown, col: Col, where: string, at: string): Cell {
   if (value === undefined || value === null) {
     if (col.type === "time") return at;
@@ -245,28 +264,35 @@ function coerce(value: unknown, col: Col, where: string, at: string): Cell {
     if (col.required) throw bad(where, `${col.name} is required`);
     return null;
   }
+  const max = col.max ?? DEFAULT_TEXT_MAX;
   switch (col.type) {
     case "text":
     case "time": {
       if (typeof value !== "string") throw bad(where, `${col.name} must be a string`);
       if (col.oneOf && !col.oneOf.includes(value)) throw bad(where, `${col.name} must be one of ${col.oneOf.join(", ")}`);
+      if (value.length > max) throw bad(where, `${col.name} exceeds ${max} characters`);
       return value;
     }
     case "json": {
-      // State is read back as an object with named fields; "null" or an array is valid
-      // JSON that would break every turn after it.
+      // State is read back as an object with named fields; "null", an array or a bare
+      // value is valid JSON that would break every turn after it.
       let parsed: unknown;
+      let text: string;
       if (typeof value === "string") {
+        if (value.length > max) throw bad(where, `${col.name} exceeds ${max} characters`);
         try {
           parsed = JSON.parse(value);
         } catch {
           throw bad(where, `${col.name} must be valid JSON`);
         }
+        text = value;
       } else {
         parsed = value;
+        text = JSON.stringify(value);
+        if (text.length > max) throw bad(where, `${col.name} exceeds ${max} characters`);
       }
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw bad(where, `${col.name} must be a JSON object`);
-      return typeof value === "string" ? value : JSON.stringify(value);
+      if (!isPlainObject(parsed)) throw bad(where, `${col.name} must be a JSON object`);
+      return text;
     }
     case "int": {
       if (typeof value === "boolean") return value ? 1 : 0;
@@ -362,9 +388,17 @@ export async function importAll(
   const settings = settingsPatch(payload.settings);
 
   // Fixed canon is never imported: it changes through migrations only (403 fixed_canon
-  // everywhere else). Rows with that scope are dropped from the payload and counted.
+  // everywhere else). Rows with that scope are dropped from the payload and counted, the
+  // fixed rows on file stay, and no other row may take a fixed row's id (the insert would
+  // collide with it, or a later version would claim to supersede it).
   const facts = allFacts.filter((r) => r.get("scope") !== "fixed");
   const fixedIgnored = allFacts.length - facts.length;
+  const fixedIds = new Set((await all<{ id: string }>(db, "SELECT id FROM facts WHERE scope = 'fixed'")).map((r) => r.id));
+  for (const r of facts) {
+    if (fixedIds.has(String(r.get("id")))) throw bad("facts", `id ${String(r.get("id"))} belongs to fixed canon`);
+    const sup = r.get("supersedes_id");
+    if (sup !== null && fixedIds.has(String(sup))) throw bad("facts", `${String(r.get("id"))} cannot supersede fixed canon`);
+  }
 
   // A state entity present in the payload is replaced; one absent keeps its current versions.
   const entities = new Set<string>();

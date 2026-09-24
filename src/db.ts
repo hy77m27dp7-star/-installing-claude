@@ -33,14 +33,36 @@ export const DEFAULT_SETTINGS: Settings = {
   monthlyCapUsd: 30,
   contextRecentMessages: 40,
   contextMaxChars: 24000,
+  // USD per million tokens. A model that is not priced here or in the stored table cannot
+  // be selected or called (budget.ts), so every model the app can be pointed at is metered.
   prices: {
     "claude-opus-5": { inputPerMTok: 5, outputPerMTok: 25 },
     "claude-sonnet-5": { inputPerMTok: 2, outputPerMTok: 10 },
     "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5 },
     "claude-fable-5-1": { inputPerMTok: 10, outputPerMTok: 50 },
     "claude-opus-4-8": { inputPerMTok: 5, outputPerMTok: 25 },
+    // Workers AI fallback (DEPLOY.md section 8). Cloudflare list price, to confirm on the
+    // Workers AI pricing page; nominal until then.
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { inputPerMTok: 0.29, outputPerMTok: 2.25 },
   },
 };
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// The stored price table over the built-in one: a stored price always wins, and a model
+// priced in the defaults stays priced on a database seeded before that entry existed.
+export function mergedPrices(stored: unknown): Settings["prices"] {
+  const out: Settings["prices"] = { ...DEFAULT_SETTINGS.prices };
+  if (!isRecord(stored)) return out;
+  for (const [model, p] of Object.entries(stored)) {
+    if (isRecord(p) && typeof p.inputPerMTok === "number" && typeof p.outputPerMTok === "number") {
+      out[model] = { inputPerMTok: p.inputPerMTok, outputPerMTok: p.outputPerMTok };
+    }
+  }
+  return out;
+}
 
 // ------------------------------------------------------------------ settings
 
@@ -50,6 +72,7 @@ export async function getSettings(db: D1Database): Promise<Settings> {
   for (const r of rows.results) {
     try { out[r.key] = JSON.parse(r.value); } catch { out[r.key] = r.value; }
   }
+  out.prices = mergedPrices(out.prices);
   return out as unknown as Settings;
 }
 

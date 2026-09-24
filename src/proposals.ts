@@ -2,7 +2,7 @@
 // exchange and parks them as pending rows. Nothing here promotes on its own; the owner
 // decides, and promotion goes through the state helpers so every write is audited.
 import { getTextProvider, providerConfigured } from "./providers/index";
-import { costMicro } from "./budget";
+import { assertBudget, costMicro, estimateUsd } from "./budget";
 import { proposalSystemPrompt } from "./prompt";
 import {
   auditStmt, dayKey, getCurrentState, getProposal, insertModelRunStmt, insertProposalStmt, listFacts, listProposals,
@@ -21,6 +21,9 @@ export const PROPOSAL_KINDS: ProposalKind[] = [
 const CONFIDENCES = ["low", "medium", "high"] as const;
 const MAX_PROPOSALS_PER_EXCHANGE = 12;
 const MAX_PROPOSAL_CHARS = 1000;
+const PROPOSAL_MAX_TOKENS = 800;
+// The flag on a run row when the pass was skipped by the caps rather than run.
+export const BUDGET_SKIPPED_FLAG = "budget_skipped";
 
 export interface ParsedProposal {
   kind: ProposalKind;
@@ -120,6 +123,7 @@ export async function extractProposals(
   ]);
   const content = "EXCHANGE:\n" + exchangeText(recent, userMessage, assistantMessage) + "\n\nAPPROVED STATE:\n" + summary;
   const messages: ChatMessage[] = [{ role: "user", content }];
+  const system = proposalSystemPrompt();
 
   const started = Date.now();
   const runId = newId("r");
@@ -138,15 +142,29 @@ export async function extractProposals(
     created_at: nowIso(),
   };
 
+  // The pass is a paid call like any other, so it sits under the same caps and needs a
+  // priced model. A refusal skips the pass quietly: the turn is already answered, nothing
+  // is retried, and the run log keeps a flagged row saying why nothing was proposed.
+  try {
+    await assertBudget(db, settings, estimateUsd(settings, model, system.length + content.length, PROPOSAL_MAX_TOKENS));
+  } catch (e) {
+    if (!(e instanceof ApiHttpError && e.status === 402)) throw e;
+    const skipped: ModelRunRow = {
+      ...runBase, latency_ms: Date.now() - started, status: "failed", error: e.code, flags_json: JSON.stringify([BUDGET_SKIPPED_FLAG]),
+    };
+    try { await insertModelRunStmt(db, skipped).run(); } catch { /* the run log is best effort */ }
+    return 0;
+  }
+
   let text: string;
   let inputTokens = 0;
   let outputTokens = 0;
   try {
     const result = await provider.generate(env, {
-      system: proposalSystemPrompt(),
+      system,
       messages,
       model,
-      maxTokens: 800,
+      maxTokens: PROPOSAL_MAX_TOKENS,
       temperature: 0.2,
       effort: "low",
       cacheable: false,

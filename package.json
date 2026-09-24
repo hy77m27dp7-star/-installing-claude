@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "check:typography": "node scripts/check_typography.mjs",
     "check:assets": "node scripts/verify_assets.mjs",
+    "check:deploy": "node scripts/check_deploy.mjs",
     "test:unit": "node --experimental-strip-types --test \"tests/unit/*.test.mjs\"",
     "test": "npm run build:canon && npm run check:typography && npm run check:assets && npm run typecheck && npm run test:unit",
     "test:integration": "node tests/integration/run.mjs",
@@ -16,7 +17,7 @@
     "db:local": "wrangler d1 migrations apply avelie --local",
     "db:remote": "wrangler d1 migrations apply avelie --remote",
     "dev": "wrangler dev --port 8787",
-    "deploy": "npm test && wrangler deploy",
+    "deploy": "npm test && npm run check:deploy && wrangler deploy",
     "export:remote": "wrangler d1 export avelie --remote --output backups/avelie-export.sql"
   },
   "dependencies": {

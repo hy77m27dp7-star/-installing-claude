@@ -21,7 +21,9 @@ All routes require the owner (Cloudflare Access JWT, or the local dev actor). Re
 | GET | /api/messages/:id | | `MessageRow` (`image_status`: pending, ready, failed or rejected; `image_id` names the photo request / candidate row) |
 | POST | /api/operator | `{ content, conversationId? }` | `{ reply, info }` |
 
-Turn error codes: `validation` 400, `not_found` 404, `budget_exceeded` 402, `provider_failed` 502 (retryable true/false), `provider_refused` 502 (retryable false), `provider_not_configured` 503.
+Turn error codes: `validation` 400, `not_found` 404, `budget_exceeded` 402, `price_unknown` 402 (the model in use has no entry in `prices`, or a paid image provider has `imageCostUsd` 0; nothing is spent), `provider_failed` 502 (retryable true/false), `provider_refused` 502 (retryable false), `provider_not_configured` 503.
+
+Owner-gate errors carry no reason: a refused Access token is always `{ error: "forbidden", code: "forbidden" }` (403); why it failed goes to the Worker log only.
 
 ## State
 
@@ -58,7 +60,7 @@ Fixed-scope facts are read-only through the API (403 `fixed_canon`).
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | GET | /api/settings | | `Settings` |
-| PUT | /api/settings | partial `Settings` | `Settings` (validated: provider in set, effort in set, 0<=temperature<=2, 64<=maxTokens<=4000, caps >= 0) |
+| PUT | /api/settings | partial `Settings` | `Settings` (validated: provider in set, effort in set, 0<=temperature<=2, 64<=maxTokens<=4000, caps >= 0; `model` and `proposalModel` must have an entry in `prices` (the stored table over the built-in one), and `imageCostUsd` must be above 0 unless `imageProvider` is keyless (`stub`); otherwise 400 `validation`) |
 | GET | /api/usage | | `{ todayUsd, monthUsd, dailyCapUsd, monthlyCapUsd, byDay: [...] }` |
 | GET | /api/audit | `?limit=100` | `audit_events[]` (desc) |
 
