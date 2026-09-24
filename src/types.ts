@@ -196,7 +196,10 @@ export interface VisualAssetRow {
   role: "master" | "scene" | "candidate" | "legacy_archive" | "blacklisted" | "missing";
   sha256: string | null;
   bytes: number | null;
-  approval_status: "approved" | "candidate" | "rejected" | "archive" | "missing";
+  // pending / generating / failed: a requested photo before any bytes exist (role candidate).
+  // The browser drives the generation because a Worker's background work is cut off 30s
+  // after the response, and an image call takes longer than that.
+  approval_status: "approved" | "candidate" | "rejected" | "archive" | "missing" | "pending" | "generating" | "failed";
   conversation_id: string | null;
   message_id: string | null;
   prompt: string | null;
