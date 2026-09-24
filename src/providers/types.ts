@@ -52,7 +52,7 @@ export function approxTokens(text: string): number {
 // Provider error bodies sometimes echo a masked key ("Incorrect API key provided: sk-abc***").
 // Nothing that looks like key material leaves this layer in a message.
 const KEY_PATTERNS: RegExp[] = [
-  /sk-[A-Za-z0-9_*.-]{4,}/g,
+  /sk-[A-Za-z0-9_*-]{4,}/g,
   /Bearer\s+[A-Za-z0-9_.*-]{4,}/gi,
   /x-api-key\s*[:=]\s*\S+/gi,
 ];

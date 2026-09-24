@@ -72,9 +72,12 @@ async function operatorHistory(db: D1Database, conversationId: string): Promise<
   return r.results.reverse().map((m) => ({ role: m.role, content: m.content }));
 }
 
-// Owner typography for the console: " -- " and "..." only.
+// Owner typography for the console: " -- " and "..." only. The characters are built from
+// code points so this source stays pure ASCII.
+const ELLIPSIS_RE = new RegExp(String.fromCodePoint(0x2026), "g");
+const DASH_RE = new RegExp("\\s*[" + String.fromCodePoint(0x2014) + String.fromCodePoint(0x2013) + "]+\\s*", "g");
 function tidy(text: string): string {
-  return text.replace(/…/g, "...").replace(/\s*[—–]+\s*/g, " -- ").trim();
+  return text.replace(ELLIPSIS_RE, "...").replace(DASH_RE, " -- ").trim();
 }
 
 function errorClass(e: unknown): string {

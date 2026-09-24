@@ -61,8 +61,9 @@ function errorKind(e: unknown): string {
 function toApiError(e: unknown): ApiHttpError {
   if (e instanceof ApiHttpError) return e;
   if (e instanceof ProviderError) {
-    if (e.kind === "config") return new ApiHttpError(503, "provider_not_configured", e.message, false, e.provider);
-    return new ApiHttpError(502, "provider_failed", e.message, e.retryable, e.kind);
+    const message = safeErrorMessage(e);
+    if (e.kind === "config") return new ApiHttpError(503, "provider_not_configured", message, false, e.provider);
+    return new ApiHttpError(502, "provider_failed", message, e.retryable, e.kind);
   }
   return new ApiHttpError(500, "image_failed", safeErrorMessage(e), false);
 }

@@ -1,6 +1,8 @@
 // Post-generation checks (the Archivist). Pure: no D1, no env, no imports beyond types,
 // so unit tests can import it under plain Node. Checks never rewrite meaning; repairs are
 // mechanical only (dash characters, emoji code points, markdown markers).
+//
+// The source stays pure ASCII: every non-ASCII character it hunts is built from a code point.
 import type { CheckContext, CheckResult, Flag, FlagSeverity } from "./types";
 
 // ------------------------------------------------------------------ phrase tables (lowercase)
@@ -50,6 +52,10 @@ export const FIRST_MEETING_PHRASES: string[] = ["nice to meet you", "i'm avelie"
 
 const RESOLVE_CUES: string[] = ["because", "actually", "it was"];
 
+// Codes whose fix is mechanical. types.ts has no "repair" severity, so these carry
+// severity "flag" and the action is derived from this set.
+export const REPAIR_CODES: ReadonlySet<string> = new Set(["em_dash", "emoji", "markdown_structure"]);
+
 // Function words that appear in unknown topics but say nothing about the topic itself.
 const TOPIC_STOP = new Set([
   "what", "when", "where", "whether", "which", "while", "with", "without", "does", "doing", "done",
@@ -62,22 +68,38 @@ const TOPIC_STOP = new Set([
 
 // ------------------------------------------------------------------ character classes
 
-// Escapes only: the source file itself must stay free of the characters it hunts.
-const DASH_RE = /[—–]/;
-const ELLIPSIS_RE = /…/;
-const EMOJI_RE = /\p{Extended_Pictographic}/u;
-const EMOJI_STRIP_RE = /(?:\p{Extended_Pictographic}|[\u{1F1E6}-\u{1F1FF}]|[\u{1F3FB}-\u{1F3FF}]|‍|️|⃣)/gu;
-const FIRST_PERSON_RE = /\b(?:i|me|my|mine|myself|we|us|our|ours|ourselves)\b/;
+const cp = (code: number): string => String.fromCodePoint(code);
+const EM_DASH = cp(0x2014);
+const EN_DASH = cp(0x2013);
+const ELLIPSIS = cp(0x2026);
+const DASH_CLASS = "[" + EM_DASH + EN_DASH + "]";
 
+const DASH_RE = new RegExp(DASH_CLASS);
+const ELLIPSIS_RE = new RegExp(ELLIPSIS);
+const ELLIPSIS_ALL_RE = new RegExp(ELLIPSIS, "g");
+const TRAILING_DASH_RE = new RegExp("[ \\t]*" + DASH_CLASS + "+[ \\t]*$", "gm");
+const LEADING_DASH_RE = new RegExp("^[ \\t]*" + DASH_CLASS + "+[ \\t]*", "gm");
+const INNER_DASH_RE = new RegExp("[ \\t]*" + DASH_CLASS + "+[ \\t]*", "g");
+
+const EMOJI_RE = /\p{Extended_Pictographic}/u;
+// Pictographs plus the glue that travels with them: regional indicators, skin tones,
+// zero width joiner, variation selector 16 and the keycap combiner.
+const EMOJI_STRIP_RE = new RegExp(
+  "(?:\\p{Extended_Pictographic}|[" + cp(0x1f1e6) + "-" + cp(0x1f1ff) + "]|[" + cp(0x1f3fb) + "-" + cp(0x1f3ff) + "]|" +
+  cp(0x200d) + "|" + cp(0xfe0f) + "|" + cp(0x20e3) + ")",
+  "gu",
+);
+
+const SINGLE_QUOTES_RE = new RegExp("[" + cp(0x2018) + cp(0x2019) + cp(0x02bc) + "]", "g");
+const DOUBLE_QUOTES_RE = new RegExp("[" + cp(0x201c) + cp(0x201d) + "]", "g");
+
+const FIRST_PERSON_RE = /\b(?:i|me|my|mine|myself|we|us|our|ours|ourselves)\b/;
 const MD_LINE_RE = /^\s*(?:#|[-*]\s|\d+\.\s)/;
 
 // ------------------------------------------------------------------ helpers
 
 function normalize(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[‘’ʼ]/g, "'")
-    .replace(/[“”]/g, "\"");
+  return text.toLowerCase().replace(SINGLE_QUOTES_RE, "'").replace(DOUBLE_QUOTES_RE, "\"");
 }
 
 function escapeRe(s: string): string {
@@ -165,11 +187,11 @@ function flag(code: string, severity: FlagSeverity, detail: string): Flag {
 // ------------------------------------------------------------------ repair (mechanical only)
 
 export function repairText(text: string): string {
-  let out = text.replace(/…/g, "...");
+  let out = text.replace(ELLIPSIS_ALL_RE, "...");
   // A dash that closes a line reads as a trailing thought; one that opens a line is noise.
-  out = out.replace(/[ \t]*[—–]+[ \t]*$/gm, "...");
-  out = out.replace(/^[ \t]*[—–]+[ \t]*/gm, "");
-  out = out.replace(/[ \t]*[—–]+[ \t]*/g, ", ");
+  out = out.replace(TRAILING_DASH_RE, "...");
+  out = out.replace(LEADING_DASH_RE, "");
+  out = out.replace(INNER_DASH_RE, ", ");
   out = out.replace(EMOJI_STRIP_RE, "");
   out = stripMarkdown(out);
   out = out
@@ -188,15 +210,15 @@ export function runChecks(text: string, ctx: CheckContext): CheckResult {
   const recentNorm = recent.map(normalize);
   const sentences = splitSentences(text);
 
-  // repair
+  // repair (mechanical)
   if (DASH_RE.test(text) || ELLIPSIS_RE.test(text)) {
-    flags.push(flag("em_dash", "repair", "dash or ellipsis character present"));
+    flags.push(flag("em_dash", "flag", "dash or ellipsis character present"));
   }
   if (EMOJI_RE.test(text)) {
-    flags.push(flag("emoji", "repair", "emoji code point present"));
+    flags.push(flag("emoji", "flag", "emoji code point present"));
   }
   if (hasMarkdown(text)) {
-    flags.push(flag("markdown_structure", "repair", "markdown marker present"));
+    flags.push(flag("markdown_structure", "flag", "markdown marker present"));
   }
 
   // flag
@@ -277,7 +299,7 @@ export function runChecks(text: string, ctx: CheckContext): CheckResult {
 
   // action
   const needsRetry = flags.some((f) => f.severity === "retry");
-  const needsRepair = flags.some((f) => f.severity === "repair");
+  const needsRepair = flags.some((f) => REPAIR_CODES.has(f.code));
   const result: CheckResult = { flags, action: needsRetry ? "retry" : needsRepair ? "repair" : "accept" };
   if (needsRepair) result.repaired = repairText(text);
   return result;
