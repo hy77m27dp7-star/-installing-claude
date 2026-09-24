@@ -5,8 +5,12 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
-  // Keep the workers.dev address off until Cloudflare Access is in front (DEPLOY.md step 5).
+  // The workers.dev address stays off. She lives at avelie.bladepharoh.com (Justin, 2026-09-24),
+  // attached as a Worker custom domain; Cloudflare Access fronts that hostname (DEPLOY.md).
   "workers_dev": false,
+  "routes": [
+    { "pattern": "avelie.bladepharoh.com", "custom_domain": true }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
