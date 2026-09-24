@@ -1,0 +1,284 @@
+// Post-generation checks (the Archivist). Pure: no D1, no env, no imports beyond types,
+// so unit tests can import it under plain Node. Checks never rewrite meaning; repairs are
+// mechanical only (dash characters, emoji code points, markdown markers).
+import type { CheckContext, CheckResult, Flag, FlagSeverity } from "./types";
+
+// ------------------------------------------------------------------ phrase tables (lowercase)
+
+export const BRAKING_PHRASES: string[] = ["slow down", "stay with me", "don't rush", "not so fast"];
+
+export const THERAPY_PHRASES: string[] = [
+  "that sounds really hard",
+  "thank you for sharing",
+  "i hear you",
+  "it's valid to",
+  "your feelings are valid",
+  "i'm here for you",
+];
+
+export const TECH_LEAK_TERMS: string[] = [
+  "system prompt",
+  "prompt",
+  "language model",
+  "as an ai",
+  "as an assistant",
+  "chatgpt",
+  "openai",
+  "anthropic",
+  "claude",
+  "gpt",
+  "the app",
+  "file 07",
+  "token",
+  "image generation",
+  "generated image",
+];
+
+export const DEPENDENCY_PHRASES: string[] = [
+  "only i understand",
+  "nobody else understands you",
+  "don't leave me",
+  "promise you won't leave",
+  "i've been waiting for you",
+  "i was so lonely without you",
+  "you're all i have",
+];
+
+export const MENU_PHRASES: string[] = ["do you want me to", "i can either", "would you like me to", "option 1"];
+
+export const FIRST_MEETING_PHRASES: string[] = ["nice to meet you", "i'm avelie", "my name is avelie"];
+
+const RESOLVE_CUES: string[] = ["because", "actually", "it was"];
+
+// Function words that appear in unknown topics but say nothing about the topic itself.
+const TOPIC_STOP = new Set([
+  "what", "when", "where", "whether", "which", "while", "with", "without", "does", "doing", "done",
+  "have", "having", "that", "this", "these", "those", "there", "their", "them", "they", "then", "than",
+  "from", "into", "onto", "over", "under", "about", "after", "before", "some", "more", "most", "very",
+  "just", "like", "been", "being", "were", "will", "would", "should", "could", "still", "also", "really",
+  "something", "anything", "nothing", "everything", "someone", "anyone", "ever", "never", "already",
+  "avelie", "herself", "himself", "kind", "sort", "thing", "things",
+]);
+
+// ------------------------------------------------------------------ character classes
+
+// Escapes only: the source file itself must stay free of the characters it hunts.
+const DASH_RE = /[—–]/;
+const ELLIPSIS_RE = /…/;
+const EMOJI_RE = /\p{Extended_Pictographic}/u;
+const EMOJI_STRIP_RE = /(?:\p{Extended_Pictographic}|[\u{1F1E6}-\u{1F1FF}]|[\u{1F3FB}-\u{1F3FF}]|‍|️|⃣)/gu;
+const FIRST_PERSON_RE = /\b(?:i|me|my|mine|myself|we|us|our|ours|ourselves)\b/;
+
+const MD_LINE_RE = /^\s*(?:#|[-*]\s|\d+\.\s)/;
+
+// ------------------------------------------------------------------ helpers
+
+function normalize(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[‘’ʼ]/g, "'")
+    .replace(/[“”]/g, "\"");
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const reCache = new Map<string, RegExp>();
+
+// Whole-word match for a lowercase term; an optional plural "s" is allowed, nothing else
+// ("prompt" matches "prompt" and "prompts", never "prompted").
+function termRe(term: string): RegExp {
+  let re = reCache.get(term);
+  if (!re) {
+    const body = escapeRe(term.trim().toLowerCase()).replace(/\s+/g, "\\s+");
+    re = new RegExp("\\b" + body + "s?\\b", "i");
+    reCache.set(term, re);
+  }
+  return re;
+}
+
+function findAny(normText: string, phrases: string[]): string | null {
+  for (const p of phrases) if (termRe(p).test(normText)) return p;
+  return null;
+}
+
+function countWord(normText: string, word: string): number {
+  const body = escapeRe(word.trim().toLowerCase());
+  if (!body) return 0;
+  const m = normText.match(new RegExp("\\b" + body + "\\b", "g"));
+  return m ? m.length : 0;
+}
+
+export function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+function endsWithQuestion(text: string): boolean {
+  const t = text.trim().replace(/["')\]]+$/, "");
+  return t.endsWith("?");
+}
+
+export type LengthBand = "short" | "mid" | "long";
+
+export function lengthBand(text: string): LengthBand {
+  const n = text.trim().length;
+  if (n < 80) return "short";
+  if (n <= 300) return "mid";
+  return "long";
+}
+
+function topicWords(topic: string): string[] {
+  const out: string[] = [];
+  for (const raw of normalize(topic).split(/[^a-z0-9']+/)) {
+    const w = raw.replace(/^'+|'+$/g, "");
+    if (w.length >= 4 && !TOPIC_STOP.has(w) && !out.includes(w)) out.push(w);
+  }
+  return out;
+}
+
+function hasMarkdown(text: string): boolean {
+  if (text.includes("**")) return true;
+  return text.split("\n").some((line) => MD_LINE_RE.test(line));
+}
+
+function stripMarkdown(text: string): string {
+  return text
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/^\s*#{1,6}\s*/, "")
+        .replace(/^\s*[-*]\s+/, "")
+        .replace(/^\s*\d+\.\s+/, "")
+        .replace(/\*\*/g, ""),
+    )
+    .join("\n");
+}
+
+function flag(code: string, severity: FlagSeverity, detail: string): Flag {
+  return { code, severity, detail };
+}
+
+// ------------------------------------------------------------------ repair (mechanical only)
+
+export function repairText(text: string): string {
+  let out = text.replace(/…/g, "...");
+  // A dash that closes a line reads as a trailing thought; one that opens a line is noise.
+  out = out.replace(/[ \t]*[—–]+[ \t]*$/gm, "...");
+  out = out.replace(/^[ \t]*[—–]+[ \t]*/gm, "");
+  out = out.replace(/[ \t]*[—–]+[ \t]*/g, ", ");
+  out = out.replace(EMOJI_STRIP_RE, "");
+  out = stripMarkdown(out);
+  out = out
+    .split("\n")
+    .map((line) => line.replace(/[ \t]{2,}/g, " ").replace(/ +([,.!?;:])/g, "$1").trimEnd())
+    .join("\n");
+  return out.trim();
+}
+
+// ------------------------------------------------------------------ the checks
+
+export function runChecks(text: string, ctx: CheckContext): CheckResult {
+  const flags: Flag[] = [];
+  const norm = normalize(text);
+  const recent = ctx.recentAssistantTexts ?? [];
+  const recentNorm = recent.map(normalize);
+  const sentences = splitSentences(text);
+
+  // repair
+  if (DASH_RE.test(text) || ELLIPSIS_RE.test(text)) {
+    flags.push(flag("em_dash", "repair", "dash or ellipsis character present"));
+  }
+  if (EMOJI_RE.test(text)) {
+    flags.push(flag("emoji", "repair", "emoji code point present"));
+  }
+  if (hasMarkdown(text)) {
+    flags.push(flag("markdown_structure", "repair", "markdown marker present"));
+  }
+
+  // flag
+  if (/\b(?:lol|lmao)\b/.test(norm)) {
+    flags.push(flag("lol_lmao", "flag", "lol or lmao as a word"));
+  }
+
+  // retry
+  if (endsWithQuestion(text) && recentNorm.length >= 2 && recentNorm.slice(-2).every(endsWithQuestion)) {
+    flags.push(flag("question_chain", "retry", "third consecutive reply ending in a question"));
+  }
+
+  const name = ctx.knownName ? ctx.knownName.trim() : "";
+  if (name) {
+    const here = countWord(norm, name);
+    if (here >= 2) {
+      flags.push(flag("name_overuse", "retry", `name used ${here} times in one reply`));
+    } else if (here >= 1) {
+      const priorHits = recentNorm.slice(-4).filter((r) => countWord(r, name) >= 1).length;
+      if (priorHits >= 3) {
+        flags.push(flag("name_overuse", "retry", `name used in ${priorHits} of the last 4 replies plus this one`));
+      }
+    }
+  }
+
+  const brake = findAny(norm, BRAKING_PHRASES);
+  if (brake) {
+    const priorHits = recentNorm.slice(-3).filter((r) => findAny(r, BRAKING_PHRASES) !== null).length;
+    if (priorHits >= 2) {
+      flags.push(flag("braking_repeat", "retry", `braking phrase "${brake}" repeated across recent replies`));
+    }
+  }
+
+  const therapy = findAny(norm, THERAPY_PHRASES);
+  if (therapy) flags.push(flag("therapy_cadence", "retry", `therapy phrase "${therapy}"`));
+
+  const menu = findAny(norm, MENU_PHRASES);
+  if (menu) flags.push(flag("menu_offer", "retry", `menu phrase "${menu}"`));
+
+  if (ctx.channel === "story") {
+    const leak = findAny(norm, TECH_LEAK_TERMS);
+    if (leak) flags.push(flag("tech_leak", "retry", `technical term "${leak}" in the story channel`));
+  }
+
+  const hook = findAny(norm, DEPENDENCY_PHRASES);
+  if (hook) flags.push(flag("dependency_hook", "retry", `dependency phrase "${hook}"`));
+
+  if (ctx.hasSharedHistory) {
+    const replay = findAny(norm, FIRST_MEETING_PHRASES);
+    if (replay) flags.push(flag("first_meeting_replay", "retry", `first meeting line "${replay}" with shared history present`));
+  }
+
+  // flag
+  for (const topic of ctx.openUnknownTopics ?? []) {
+    const words = topicWords(topic);
+    if (!words.length) continue;
+    let hit: string | null = null;
+    for (const s of sentences) {
+      const sn = normalize(s);
+      if (!RESOLVE_CUES.some((c) => termRe(c).test(sn))) continue;
+      const w = words.find((x) => termRe(x).test(sn));
+      if (w) { hit = w; break; }
+    }
+    if (hit) flags.push(flag("unknown_resolved", "flag", `open unknown "${topic}" may have been resolved (word "${hit}")`));
+  }
+
+  if (sentences.length >= 3) {
+    const last = sentences[sentences.length - 1] ?? "";
+    const words = last.split(/\s+/).filter((w) => /[a-z0-9]/i.test(w));
+    if (words.length >= 3 && words.length <= 9 && !FIRST_PERSON_RE.test(normalize(last))) {
+      flags.push(flag("caption_tail", "flag", "closing sentence reads like a caption"));
+    }
+  }
+
+  if (lengthBand(text) === "long" && recent.length >= 3 && recent.slice(-3).every((r) => lengthBand(r) === "long")) {
+    flags.push(flag("length_pattern", "flag", "four long replies in a row"));
+  }
+
+  // action
+  const needsRetry = flags.some((f) => f.severity === "retry");
+  const needsRepair = flags.some((f) => f.severity === "repair");
+  const result: CheckResult = { flags, action: needsRetry ? "retry" : needsRepair ? "repair" : "accept" };
+  if (needsRepair) result.repaired = repairText(text);
+  return result;
+}
