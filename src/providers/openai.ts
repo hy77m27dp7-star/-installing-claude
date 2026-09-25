@@ -196,6 +196,8 @@ export const openaiImageProvider: ImageProviderV3 = {
     fd.append("prompt", req.identityPrompt + " Scene: " + req.prompt);
     fd.append("size", req.size);
     fd.append("quality", req.quality);
+    // High input fidelity: preserve her face and body from the references instead of a loose likeness.
+    fd.append("input_fidelity", "high");
     fd.append("n", "1");
     for (const r of req.references) {
       fd.append("image[]", new Blob([r.bytes], { type: "image/png" }), r.name);
