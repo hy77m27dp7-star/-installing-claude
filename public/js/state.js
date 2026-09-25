@@ -1,6 +1,6 @@
 // State: the approved record. Now, Life, Wants, History, Facts, Memory, Voice, Notes,
 // Unknowns, Inbox, Rulebook, Export.
-import { api, h, chip, clear, download, flash, flagCodes, fmtDate, fmtTime, fromLocalInput, parseJson, today, toLocalInput, ago, truncate } from "./api.js";
+import { api, apiForm, h, chip, clear, download, flash, flagCodes, fmtDate, fmtTime, fromLocalInput, parseJson, today, toLocalInput, ago, truncate } from "./api.js";
 
 const $ = (id) => document.getElementById(id);
 const TABS = ["now", "life", "wants", "history", "facts", "memory", "voice", "notes", "unknowns", "inbox", "rulebook", "export"];
@@ -1068,6 +1068,7 @@ $("factsAll").addEventListener("click", () => setFactsMode("all"));
 $("factsOpinions").addEventListener("click", () => setFactsMode("opinions"));
 
 async function loadFacts() {
+  loadHim();
   try {
     const [bundle, weights] = await Promise.all([api("GET", "/api/state"), loadWeightMap("fact")]);
     factWeights = weights;
@@ -1083,6 +1084,110 @@ async function loadFacts() {
     flash(status("facts"), e.code, "danger");
   }
 }
+
+// ------------------------------------------------------------------ what he looks like (v3.1, SPEC_V3 JJ)
+
+// His reference photos (at most hisFaceMax, served at /api/him/photos/:id, never on the
+// Images page) and the words on file. Describe fills the textarea only; Save writes it.
+let himLookLoaded = "";
+
+async function loadHim() {
+  const slot = $("himStatus");
+  try {
+    const r = await api("GET", "/api/him");
+    const photos = Array.isArray(r.photos) ? r.photos : [];
+    const max = r.settings && Number.isFinite(Number(r.settings.hisFaceMax)) ? Number(r.settings.hisFaceMax) : 3;
+    renderHimPhotos(photos, max);
+    const area = $("himLook");
+    // Keep an edit in progress; replace only what was loaded before.
+    if (area.value === himLookLoaded) area.value = r.look || "";
+    himLookLoaded = r.look || "";
+    $("himAdd").disabled = photos.length >= max;
+    $("himDescribe").disabled = photos.length === 0;
+  } catch (e) {
+    if (e.status === 404) { $("himCard").classList.add("hidden"); return; }
+    flash(slot, e.code, "danger");
+  }
+}
+
+function renderHimPhotos(photos, max) {
+  const box = $("himPhotos");
+  clear(box);
+  $("himCount").textContent = photos.length + " of " + max;
+  if (!photos.length) { box.append(h("div", { class: "chips" }, chip("no photo of him yet"))); return; }
+  for (const p of photos) {
+    const remove = h("button", {
+      type: "button", class: "btn small danger", text: "Remove",
+      onclick: async () => {
+        if (!confirmLabel("Remove this photo of him?")) return;
+        remove.disabled = true;
+        try {
+          await api("DELETE", "/api/him/photos/" + encode(p.id));
+          loadHim();
+        } catch (e) {
+          remove.disabled = false;
+          flash($("himStatus"), e.code, "danger");
+        }
+      },
+    });
+    box.append(h("figure", { class: "him-photo" },
+      h("img", { src: "/api/him/photos/" + encode(p.id), alt: "", loading: "lazy" }),
+      h("figcaption", { class: "row" }, h("span", { class: "muted small", text: fmtDate(p.created_at) }), remove)));
+  }
+}
+
+$("himAdd").addEventListener("click", async () => {
+  const input = $("himFile");
+  const file = input.files && input.files[0];
+  const slot = $("himStatus");
+  if (!file) { flash(slot, "pick a photo", "danger"); return; }
+  const btn = $("himAdd");
+  btn.disabled = true;
+  try {
+    const form = new FormData();
+    form.set("photo", file, file.name || "him");
+    await apiForm("POST", "/api/him/photos", form);
+    input.value = "";
+    flash(slot, "added", "ok");
+    loadHim();
+  } catch (e) {
+    flash(slot, e.code + (e.message && e.code !== e.message ? " " + e.message : ""), "danger wrap");
+    btn.disabled = false;
+  }
+});
+
+$("himDescribe").addEventListener("click", async () => {
+  const btn = $("himDescribe");
+  const slot = $("himStatus");
+  btn.disabled = true;
+  flash(slot, "looking", "");
+  try {
+    // A paid call on the performer; held open like a turn. Nothing is saved until Save.
+    const r = await api("POST", "/api/him/describe", {});
+    $("himLook").value = r.look || "";
+    flash(slot, "drafted, not saved", "amber");
+  } catch (e) {
+    flash(slot, e.code + (e.message && e.code !== e.message ? " " + e.message : ""), "danger wrap");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("himSave").addEventListener("click", async () => {
+  const slot = $("himStatus");
+  const btn = $("himSave");
+  btn.disabled = true;
+  try {
+    const r = await api("PUT", "/api/him/look", { look: $("himLook").value });
+    $("himLook").value = r.look || "";
+    himLookLoaded = r.look || "";
+    flash(slot, "saved", "ok");
+  } catch (e) {
+    flash(slot, e.code + (e.message && e.code !== e.message ? " " + e.message : ""), "danger wrap");
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 function renderFactColumn(box, rows, scope) {
   clear(box);

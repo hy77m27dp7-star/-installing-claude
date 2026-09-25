@@ -1535,6 +1535,21 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .portrait .controls { display: grid; gap: 6px; }
 .portrait .controls .row { gap: 6px; }
 
+/* ------------------------------------------------------------ state: what he looks like (v3.1) */
+
+.him-photos { display: flex; flex-wrap: wrap; gap: 10px; }
+.him-photo { margin: 0; display: grid; gap: 6px; justify-items: start; }
+.him-photo img {
+  width: 120px;
+  height: 120px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: var(--field);
+  border: 1px solid var(--line);
+}
+.him-photo figcaption { gap: 8px; }
+#himLook { min-height: 96px; }
+
 /* ------------------------------------------------------------ model: grounding, tastings, texter */
 
 .geo-results { display: grid; gap: 4px; }

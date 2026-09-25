@@ -120,4 +120,8 @@ INSERT INTO settings (key, value, updated_at) VALUES ('finetuneMinExamples', '20
 INSERT INTO settings (key, value, updated_at) VALUES ('finetuneSystemMode', '"compact"', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('texterModel', '""', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('texterPrevious', 'null', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('hisLookText', '""', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('hisFaceMax', '3', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('hisFaceInTogether', 'true', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('hisFaceApartEvery', '8', '2026-09-24T00:00:00.000Z');
 INSERT INTO audit_events (id, actor, action, entity, entity_id, before_json, after_json, created_at) VALUES ('seed-f17d143313c8a20b', 'system', 'seed', 'database', NULL, NULL, '{"facts":33,"assets":13,"note":"Fresh start at 22. Music anchor list removed per Justin 2026-09-24."}', '2026-09-24T00:00:00.000Z');

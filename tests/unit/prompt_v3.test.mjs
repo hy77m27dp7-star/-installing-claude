@@ -13,7 +13,8 @@ import { voiceLine, correctionRow, wantRow, wantLogRow, askRow, weatherNow, grou
 
 const prompt = await loadSrc("prompt");
 const { CONSTITUTION_VERSION } = await loadSrc("generated/constitution");
-const v3 = /-p5$/.test(prompt.PROMPT_VERSION);
+// -p5 landed the v3 sections; a later suffix (v3.1's -p6 adds WHAT HE LOOKS LIKE) keeps them.
+const v3 = /-p([5-9]|\d{2,})$/.test(prompt.PROMPT_VERSION);
 const t = v3 ? test : (name, fn) => test.skip(name + " [skipped: prompt.ts is not at -p5 yet]", fn);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -107,7 +108,7 @@ t("buildSystemPrompt: prefix equals stablePrefix() and prefix + separator + stat
   assert.equal(built.prefix, prompt.stablePrefix());
   assert.equal(built.prefix + "\n\n" + "=".repeat(60) + "\n\n" + built.state, built.system);
   assert.equal(built.promptVersion, prompt.PROMPT_VERSION);
-  assert.ok(built.promptVersion.startsWith(CONSTITUTION_VERSION + "-p5"));
+  assert.match(built.promptVersion, new RegExp("^" + CONSTITUTION_VERSION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-p([5-9]|\\d{2,})$"));
 });
 
 // ------------------------------------------------------------------ v3 fix pass

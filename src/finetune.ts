@@ -25,7 +25,8 @@ import type { Env, Flag, MessageRow, ProviderName, Settings } from "./types";
 // splits on it and re-joins with it so every other section stays byte-identical.
 const SECTION_SEP = "\n\n" + "-".repeat(60) + "\n\n";
 const PART_SEP = "\n\n";
-const STRIP_SECTIONS = ["WHAT YOU KNOW ABOUT HIM", "THINGS YOU HALF REMEMBER"];
+// v3.1 (JJ): WHAT HE LOOKS LIKE is about him too and goes with the other two by default.
+const STRIP_SECTIONS = ["WHAT YOU KNOW ABOUT HIM", "THINGS YOU HALF REMEMBER", "WHAT HE LOOKS LIKE"];
 const RELATIONSHIP_LINE = "Relationship: ";
 const STRIP_KEYS = ["his_name", "nicknames", "private_language", "summary"];
 // The opener cue chat.ts stores for no message of his (an opener has no user row at all).

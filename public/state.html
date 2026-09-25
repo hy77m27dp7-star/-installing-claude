@@ -167,6 +167,26 @@
       </div>
       <span class="chips" id="facts-status"></span>
     </div>
+    <div class="card stack" id="himCard">
+      <div class="row between">
+        <h2 class="section-title">What he looks like</h2>
+        <span class="chips" id="himStatus"></span>
+      </div>
+      <div class="him-photos" id="himPhotos"></div>
+      <div class="row">
+        <input type="file" id="himFile" accept="image/jpeg,image/png,image/webp" aria-label="Photo of him">
+        <button type="button" class="btn" id="himAdd">Add photo</button>
+        <span class="muted small" id="himCount"></span>
+      </div>
+      <label class="field">Description
+        <textarea id="himLook" maxlength="600" placeholder="Build, hair, beard, eyes, glasses, age impression, what anyone notices first"></textarea>
+      </label>
+      <div class="row">
+        <button type="button" class="btn" id="himDescribe">Describe from photo</button>
+        <button type="button" class="btn primary" id="himSave">Save</button>
+        <span class="muted small">She reads these words every turn; the photos ride along on the turns the Model page sets.</span>
+      </div>
+    </div>
     <div class="cols-3" id="factsColumns">
       <div class="stack">
         <h2 class="section-title">Fixed</h2>

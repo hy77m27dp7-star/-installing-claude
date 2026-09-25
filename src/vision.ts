@@ -24,6 +24,15 @@ export const MAX_IMAGE_MESSAGES = 6;
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 // The line a model that cannot see gets in place of the picture.
 export const UNSEEN_PHOTO_LINE = "(he sent a photo you could not open)";
+// v3.1 (SPEC_V3 section JJ): his reference photos live under this R2 prefix and ride on
+// the final user turn of a call only; they are never something he just sent, so the
+// "could not open" line never counts them and the stub never reads them as an inbox photo.
+export const HIM_PREFIX = "him/";
+
+export function isHimRef(ref: { key: string } | string): boolean {
+  const key = typeof ref === "string" ? ref : ref && typeof ref.key === "string" ? ref.key : "";
+  return key.startsWith(HIM_PREFIX);
+}
 
 // Workers AI model ids that take images in a chat call. Kept broad on purpose: a new
 // vision model should not silently fall back to the "could not open" line.
@@ -132,9 +141,11 @@ export function limitImageMessages(messages: ChatMessage[], max = MAX_IMAGE_MESS
 
 // The message with its pictures gone and the honest line in their place, for a model
 // that cannot look at them.
+// His own reference photos (v3.1) are not something he sent: with only those attached
+// the message goes as plain text and no line is added.
 export function withoutImages(m: ChatMessage): ChatMessage {
   const { images: _dropped, ...rest } = m;
-  if (!imagesOf(m).length) return rest;
+  if (!imagesOf(m).some((i) => !isHimRef(i))) return rest;
   const text = rest.content.trim();
   return { ...rest, content: text ? text + "\n" + UNSEEN_PHOTO_LINE : UNSEEN_PHOTO_LINE };
 }

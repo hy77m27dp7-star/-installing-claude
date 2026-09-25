@@ -224,7 +224,8 @@ async function runScenario(env: Env, db: D1Database, settings: Settings, runId: 
     for (let i = 0; i < s.turns.length; i++) {
       const content = s.turns[i]!;
       try {
-        const r = await runTurn(env, ctx, db, settings, conv.id, content, `drift-${runId}-${s.id}-${i}`, ACTOR);
+        // v3.1: no photo of him rides on a drift turn (a throwaway conversation measures her voice, not his face).
+        const r = await runTurn(env, ctx, db, settings, conv.id, content, `drift-${runId}-${s.id}-${i}`, ACTOR, { hisFace: false });
         exchanges.push({ user: content, reply: r.assistantMessage.content, flags: r.flags.map((f) => f.code) });
         costUsd += r.run.costUsd;
       } catch (e) {

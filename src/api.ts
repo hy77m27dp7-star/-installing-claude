@@ -22,7 +22,8 @@ import type { TurnOptions } from "./chat";
 import { operatorTurn, systemInfo } from "./operator";
 import { usageSummary } from "./budget";
 import { isKeylessImageProvider } from "./providers/index";
-import { decideImage, generateCandidate, regenerateImage, verifyMasters } from "./images";
+import { decideImage, generateCandidate, regenerateImage, serveHim, verifyMasters } from "./images";
+import { HIM_PREFIX, HIM_ROLE, HIS_FACE_APART_EVERY_LIMIT, HIS_FACE_MAX_LIMIT, LOOK_MAX_CHARS, cleanLookText, countHimPhotos, describeHim, hisFaceSettings, listHimPhotos } from "./hisFace";
 import type { InboxImage } from "./images";
 import { decideProposal } from "./proposals";
 import { exportAll, exportTranscript, importAll } from "./exportImport";
@@ -61,7 +62,7 @@ import { ADAPTATIONS, ALWAYS_ON, CONSTITUTION_VERSION, OVERLAY } from "./generat
 import { PROMPT_VERSION } from "./prompt";
 import { ProviderError } from "./types";
 import type {
-  Channel, Env, FactScope, ImageProviderName, MessageRow, ProposalKind, ProposalRow, ProviderName, Settings, TurnResponse,
+  Channel, Env, FactScope, ImageProviderName, MessageRow, ProposalKind, ProposalRow, ProviderName, Settings, TurnResponse, VisualAssetRow,
 } from "./types";
 
 // ------------------------------------------------------------------ router
@@ -416,6 +417,10 @@ const V3_EXTRA_KEYS: readonly string[] = [
   "tastingEnabled", "tastingProvider", "tastingModel", "tastingDailyCapUsd",
   "finetuneMinExamples", "finetuneSystemMode", "texterModel", "texterPrevious",
 ];
+// v3.1 (SPEC_V3 "JJ. What he looks like"). Validated here whether or not the stored table
+// carries them: the live settings table is not reseeded on deploy, so a missing key reads
+// as its default (hisFace.ts hisFaceSettings) until the owner saves it.
+const V31_EXTRA_KEYS: readonly string[] = ["hisLookText", "hisFaceMax", "hisFaceInTogether", "hisFaceApartEvery"];
 
 function validatePrices(v: unknown): Settings["prices"] {
   if (typeof v !== "object" || v === null || Array.isArray(v)) throw invalid("prices must be an object");
@@ -505,7 +510,7 @@ function validateTexterPrevious(v: unknown): { provider: ProviderName; model: st
 
 export function validateSettingsPatch(body: Body): Partial<Settings> {
   for (const key of Object.keys(body)) {
-    if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key) && !V2_EXTRA_KEYS.includes(key) && !V3_EXTRA_KEYS.includes(key)) throw invalid("unknown setting: " + key);
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key) && !V2_EXTRA_KEYS.includes(key) && !V3_EXTRA_KEYS.includes(key) && !V31_EXTRA_KEYS.includes(key)) throw invalid("unknown setting: " + key);
   }
   const p: Record<string, unknown> = {};
   const v = body;
@@ -622,7 +627,21 @@ export function validateSettingsPatch(body: Body): Partial<Settings> {
   if (v.finetuneSystemMode !== undefined) p.finetuneSystemMode = oneOf(v.finetuneSystemMode, SYSTEM_MODES, "finetuneSystemMode");
   if (v.texterModel !== undefined) p.texterModel = emptyableString(v, "texterModel", 200);
   if (v.texterPrevious !== undefined) p.texterPrevious = validateTexterPrevious(v.texterPrevious);
+  // v3.1 JJ: his face
+  if (v.hisLookText !== undefined) p.hisLookText = validLookText(v.hisLookText);
+  if (v.hisFaceMax !== undefined) p.hisFaceMax = int(v.hisFaceMax, "hisFaceMax", 1, HIS_FACE_MAX_LIMIT);
+  if (v.hisFaceInTogether !== undefined) boolSetting(v, "hisFaceInTogether", p);
+  if (v.hisFaceApartEvery !== undefined) p.hisFaceApartEvery = int(v.hisFaceApartEvery, "hisFaceApartEvery", 0, HIS_FACE_APART_EVERY_LIMIT);
   return p as Partial<Settings>;
+}
+
+// The description of him (v3.1): a string, trimmed, house typography, at most 600 characters
+// after cleaning (an empty string clears it).
+function validLookText(v: unknown): string {
+  if (typeof v !== "string") throw invalid("hisLookText must be a string");
+  const clean = cleanLookText(v);
+  if (clean.length > LOOK_MAX_CHARS) throw invalid(`hisLookText exceeds ${LOOK_MAX_CHARS} characters`);
+  return clean;
 }
 
 // Rules that need the stored settings next to the patch. A model in use must be priced
@@ -1219,7 +1238,8 @@ route("GET", "/api/audit", async (c) => {
 // ------------------------------------------------------------------ images
 
 route("GET", "/api/assets", async (c) => {
-  const rows = await listAssets(c.db);
+  // v3.1: his reference photos (role him) belong to the State page, never to the Images page.
+  const rows = (await listAssets(c.db)).filter((a) => a.role !== HIM_ROLE);
   return json({
     masters: rows.filter((a) => a.role === "master"),
     candidates: rows.filter((a) => a.approval_status === "candidate"),
@@ -1880,6 +1900,106 @@ route("POST", "/api/life/threads/:id/portrait", async (c) => {
   const settings = await loadSettings(c);
   const asset = await generatePortrait(c.env, c.db, settings, { threadId, description, actor: c.actor });
   return json({ asset });
+});
+
+// ------------------------------------------------------------------ what he looks like (v3.1, SPEC_V3 section JJ)
+
+// The row as the page sees it: never the storage key beyond the file name it already implies.
+function himPhotoView(a: VisualAssetRow): { id: string; file: string; bytes: number | null; sha256: string | null; created_at: string } {
+  return { id: a.id, file: a.file, bytes: a.bytes, sha256: a.sha256, created_at: a.created_at };
+}
+
+route("GET", "/api/him", async (c) => {
+  const settings = await loadSettings(c);
+  const s = hisFaceSettings(settings);
+  const photos = await listHimPhotos(c.db, HIS_FACE_MAX_LIMIT);
+  return json({
+    photos: photos.map(himPhotoView),
+    look: s.hisLookText,
+    settings: { hisFaceMax: s.hisFaceMax, hisFaceInTogether: s.hisFaceInTogether, hisFaceApartEvery: s.hisFaceApartEvery },
+  });
+});
+
+// One reference photo of him (multipart, field "photo"; jpeg, png or webp by its bytes, 8 MB
+// like his chat photos), approved at upload: it is his own picture, nothing was generated.
+// At most hisFaceMax on file; the next one answers 409 him_full until one is removed.
+route("POST", "/api/him/photos", async (c) => {
+  const form = await readForm(c.request, MAX_IMAGE_BYTES + FORM_SLACK);
+  const file = formFiles(form, "photo")[0];
+  if (!file) throw invalid("photo is required");
+  if (!file.size) throw invalid("photo is empty");
+  if (file.size > MAX_IMAGE_BYTES) throw tooLarge(MAX_IMAGE_BYTES);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const sniff = sniffImage(bytes);
+  if (!sniff) throw new ApiHttpError(415, "unsupported_media_type", "photo must be jpeg, png or webp");
+  const settings = await loadSettings(c);
+  const max = hisFaceSettings(settings).hisFaceMax;
+  const have = await countHimPhotos(c.db);
+  if (have >= max) throw new ApiHttpError(409, "him_full", `${max} photo${max === 1 ? "" : "s"} of him already on file; remove one first`, false);
+  const id = newId("him");
+  const key = HIM_PREFIX + id + "." + extFor(sniff.mime);
+  const t = nowIso();
+  const row: VisualAssetRow = {
+    id,
+    file: key,
+    role: HIM_ROLE,
+    sha256: await sha256Hex(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer),
+    bytes: bytes.byteLength,
+    approval_status: "approved",
+    conversation_id: null,
+    message_id: null,
+    prompt: null,
+    provider: null,
+    model: null,
+    notes: "him",
+    created_at: t,
+    decided_at: t,
+  };
+  await c.env.MEDIA.put(key, bytes, { httpMetadata: { contentType: sniff.mime } });
+  try {
+    await c.db.batch([
+      c.db.prepare("INSERT INTO visual_assets (id, file, role, sha256, bytes, approval_status, conversation_id, message_id, prompt, provider, model, notes, created_at, decided_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL, ?7, ?8, ?9)")
+        .bind(row.id, row.file, row.role, row.sha256, row.bytes, row.approval_status, row.notes, row.created_at, row.decided_at),
+      auditStmt(c.db, c.actor, "him.photo.add", "visual_asset", id, null, { sha256: row.sha256, bytes: row.bytes, mime: sniff.mime, width: sniff.width, height: sniff.height }),
+    ]);
+  } catch (e) {
+    await deleteKeys(c.env, [key]);
+    throw e;
+  }
+  return json(row, 201);
+});
+
+route("GET", "/api/him/photos/:id", async (c) => serveHim(c.env, c.db, idParam(c, "id")));
+
+// His own photo: the object and the row both go (a hard delete; nothing else points at it).
+route("DELETE", "/api/him/photos/:id", async (c) => {
+  const id = idParam(c, "id");
+  const row = await c.db.prepare("SELECT * FROM visual_assets WHERE id = ?1 AND role = ?2").bind(id, HIM_ROLE).first<VisualAssetRow>();
+  if (!row) throw new ApiHttpError(404, "not_found", "photo not found");
+  await deleteKeys(c.env, [row.file]);
+  await c.db.batch([
+    c.db.prepare("DELETE FROM visual_assets WHERE id = ?1 AND role = ?2").bind(id, HIM_ROLE),
+    auditStmt(c.db, c.actor, "him.photo.remove", "visual_asset", id, { sha256: row.sha256, bytes: row.bytes }, null),
+  ]);
+  return new Response(null, { status: 204 });
+});
+
+// The performer's own eyes on the photos on file: a paid call (kind describe, under the
+// caps like a proposal pass). Returns the words and saves nothing; PUT /api/him/look does.
+route("POST", "/api/him/describe", async (c) => {
+  const settings = await loadSettings(c);
+  const { look } = await describeHim(c.env, c.db, settings);
+  return json({ look });
+});
+
+route("PUT", "/api/him/look", async (c) => {
+  const body = await readBody(c.request);
+  if (typeof body.look !== "string") throw invalid("look must be a string");
+  const look = validLookText(body.look);
+  const before = hisFaceSettings(await getSettings(c.db)).hisLookText;
+  await putSettings(c.db, { hisLookText: look });
+  await auditStmt(c.db, c.actor, "him.look.save", "settings", "hisLookText", { hisLookText: before }, { hisLookText: look }).run();
+  return json({ look });
 });
 
 // ------------------------------------------------------------------ calls (SPEC_V3 section EE)

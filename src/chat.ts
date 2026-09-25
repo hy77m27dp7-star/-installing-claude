@@ -37,6 +37,7 @@ import { findTouchHits, recallStmt, touchStmts } from "./memory";
 import type { TouchCandidate } from "./memory";
 import { broughtUpStmts } from "./wants";
 import { signature } from "./imperfection";
+import { faceShownStmt } from "./hisFace";
 import {
   dayKey, findByIdempotencyKey, getConversation, insertAssetStmt, insertMessageStmt, insertModelRunStmt, newId, nextSeq, nowIso,
   touchConversationStmt, usageStmt,
@@ -100,6 +101,9 @@ export interface TurnOptions {
   // is generated, so the budget gate and the provider check are skipped, and a pending
   // row with this id never blocks.
   tastingPickId?: string;
+  // v3.1 (SPEC_V3 JJ): false keeps his reference photos off this turn's call (the drift
+  // cron); the WHAT HE LOOKS LIKE words still render. Default: the rule decides.
+  hisFace?: boolean;
 }
 
 // Who generates: the live performer by default, the tasting performer for side B.
@@ -517,7 +521,7 @@ export async function prepareTurn(
   // 4. context (read only), then 3. budget from the real prompt size; nothing is written yet
   const now = new Date();
   const pendingImages: ImageRef[] = !opener && opts && Array.isArray(opts.images) ? opts.images : [];
-  const assembled = await assembleContext(db, conversationId, settings, userText, existingUser ? existingUser.id : null, now, pendingImages, { opener, env });
+  const assembled = await assembleContext(db, conversationId, settings, userText, existingUser ? existingUser.id : null, now, pendingImages, { opener, env, hisFace: opts?.hisFace });
   const statePart = opener ? assembled.systemParts.state + SYSTEM_SEPARATOR + openerBlock(openerNote) : assembled.systemParts.state;
   const system = assembled.systemParts.prefix + SYSTEM_SEPARATOR + statePart;
   const inputChars = system.length + assembled.messages.reduce((n, m) => n + m.content.length, 0);
@@ -765,10 +769,13 @@ function provenance(args: {
   replyText: string;
   tasting: Record<string, unknown> | null;
   callId: string | null;
+  // v3.1 (JJ): how many of his reference photos rode on the call (0 = none).
+  hisFaceShown: number;
 }): Record<string, unknown> {
   const s = args.state;
   const recall = s.recall ?? null;
   const g = s.grounding;
+  const look = s.hisLook ?? null;
   const mood = moodPhase(s.relationship, args.now, s.moodDaysDefault, s.relationshipSince ?? null);
   return {
     promptVersion: args.promptVersion,
@@ -814,6 +821,12 @@ function provenance(args: {
     moodPhase: mood,
     tasting: args.tasting,
     callId: args.callId,
+    // v3.1 (JJ): whether the WHAT HE LOOKS LIKE section rendered and how many photos rode along.
+    hisFace: {
+      section: Boolean(look && (look.text.trim() || look.photos.length)),
+      shown: args.hisFaceShown > 0,
+      photos: Math.max(0, args.hisFaceShown),
+    },
   };
 }
 
@@ -1007,6 +1020,7 @@ export async function commitReply(
     replyText: chosen.text,
     tasting,
     callId: null,
+    hisFaceShown: assembled.hisFaceShown,
   });
 
   // v3: the exemplar uses (AA), the memory touches and the recall row (BB), the asks she
@@ -1074,6 +1088,17 @@ export async function commitReply(
       if (!isUniqueViolation(e2) || existingUser || opener) throw e2;
       await recordRuns(db, runs);
       throw new ApiHttpError(409, "idempotency_conflict", "idempotencyKey is in use by another request; retry with the same key once it settles", true);
+    }
+  }
+
+  // v3.1 (JJ): the cadence marker, after the batch and best effort: a database without
+  // migration 0007 costs nothing but the Apart cadence (the photos then ride on the first
+  // turn, on Together turns and whenever he mentions his looks, as before).
+  if (assembled.hisFaceShown > 0) {
+    try {
+      await faceShownStmt(db, conversationId, assistantRow.seq).run();
+    } catch (e) {
+      console.warn("his face cadence not recorded", errorClass(e));
     }
   }
 

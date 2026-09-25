@@ -8,7 +8,7 @@ import type {
 } from "../types";
 import { approxTokens, lastUserContent } from "./types";
 import type { ImageFromTextRequest, ImageProviderV3, VideoProvider, VideoStartRequest, VideoTaskStatus } from "./types";
-import { base64ToBytes, imagesOf } from "../vision";
+import { base64ToBytes, imagesOf, isHimRef } from "../vision";
 
 // Built at runtime so the typography scan of this file stays clean.
 const EM_DASH = String.fromCharCode(0x2014);
@@ -35,6 +35,10 @@ function previousUserContent(messages: GenerateRequest["messages"]): string {
   return "";
 }
 const OPERATOR_PREFIX = "You are the operator console";
+// v3.1 (SPEC_V3 JJ): the "Describe from photo" pass (hisFace.ts DESCRIBE_SYSTEM) answers a
+// fixed plausible description, so the route runs keyless in the integration suite.
+const DESCRIBE_PREFIX = "Describe this man";
+export const STUB_LOOK = "Medium build, a little over average height. Short dark hair, a close-cut beard with some grey in it, dark eyes, no glasses. Looks around forty. The first things anyone notices are the beard and the steady look.";
 // The tasting performer's model id (SPEC_V3 HH): its replies carry the "b: " prefix so
 // the two candidates differ, and [[BFAIL]] throws only on this side.
 export const STUB_B_MODEL = "stub-b";
@@ -176,11 +180,14 @@ function echoWords(text: string): [string, string] {
   return [distinct[0] ?? "hey", distinct[1] ?? "ok"];
 }
 
-function storyReply(last: string, withImages: boolean, model: string, system = ""): { text: string; stopReason: GenerateResult["stopReason"] } {
+function storyReply(last: string, withImages: boolean, model: string, system = "", hisRefs = 0): { text: string; stopReason: GenerateResult["stopReason"] } {
   if (last.includes("[[FAIL]]")) throw new ProviderError("stub", "server", "stub failure", 502, true);
   // v3 (HH): the tasting side fails alone, so the void rule can be exercised.
   if (last.includes("[[BFAIL]]") && model === STUB_B_MODEL) throw new ProviderError("stub", "server", "stub failure on side B", 502, true);
   if (last.includes("[[REFUSE]]")) return { text: "", stopReason: "refusal" };
+  // v3.1 (JJ): says how many of his reference photos rode on this call (the pipeline's
+  // prepend is the thing under test; the number is what the call actually received).
+  if (last.includes("[[HISFACE]]")) return { text: "i know your face. " + hisRefs + " on file", stopReason: "end" };
   if (withImages) return { text: PHOTO_IN_REPLY, stopReason: "end" };
   if (last.includes("[[VOICE]]")) return { text: VOICE_REPLY, stopReason: "end" };
   const media = MEDIA_MARKER.exec(last);
@@ -226,6 +233,8 @@ export const stubProvider: TextProvider = {
       text = proposalReply(req);
     } else if (req.system.startsWith(OPERATOR_PREFIX)) {
       text = "operator: " + last.slice(0, 200);
+    } else if (req.system.startsWith(DESCRIBE_PREFIX)) {
+      text = STUB_LOOK;
     } else {
       const lastMessage = [...req.messages].reverse().find((m) => m.role === "user");
       // A retry's last user turn is chat.ts's operator note. The stub answers the previous
@@ -233,7 +242,12 @@ export const stubProvider: TextProvider = {
       // note's own words would read as a tech leak and hide what the first draft raised).
       const retry = last.startsWith(RETRY_NOTE_PREFIX);
       const subject = retry ? stripStubMarkers(previousUserContent(req.messages)) : last;
-      const r = storyReply(subject, lastMessage ? imagesOf(lastMessage).length > 0 : false, req.model, req.system);
+      // v3.1: his reference photos (him/ keys) are not a photo he sent; only his own count.
+      // On a retry the real message is the one before the note, and its pictures too.
+      const pictured = retry ? [...req.messages].reverse().filter((m) => m.role === "user")[1] : lastMessage;
+      const refs = pictured ? imagesOf(pictured) : [];
+      const hisRefs = refs.filter((i) => isHimRef(i)).length;
+      const r = storyReply(subject, refs.length - hisRefs > 0, req.model, req.system, hisRefs);
       text = r.text;
       stopReason = r.stopReason;
       // v3 (HH): the tasting performer's replies are told apart by a prefix.

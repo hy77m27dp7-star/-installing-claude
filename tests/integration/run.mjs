@@ -2438,6 +2438,263 @@ async function scenariosV3(report) {
 // branch of requireOwner is covered by tests/unit/auth.test.mjs.)
 // ------------------------------------------------------------------ photos on Runway, no key (2026-09-25)
 
+// ------------------------------------------------------------------ v3.1 scenarios (SPEC_V3 section JJ: what he looks like)
+
+// The same phase-1 server (stub performer). His reference photos are uploaded as tiny
+// PNGs, the stub's [[HISFACE]] reply says how many him/ refs the call actually carried,
+// and the provenance row says whether the section rendered and the photos rode along.
+async function scenariosV31(report) {
+  const probe = await api("GET", "/api/him");
+  if (probe.status === 404) {
+    console.log("v3.1: GET /api/him -> 404 on this server; skipping the v3.1 block");
+    return;
+  }
+  const original = (await api("GET", "/api/settings")).json;
+  const sceneBefore = (await state()).scene.state;
+  const restore = {
+    dailyCapUsd: original.dailyCapUsd, monthlyCapUsd: original.monthlyCapUsd,
+    hisFaceMax: original.hisFaceMax, hisFaceInTogether: original.hisFaceInTogether, hisFaceApartEvery: original.hisFaceApartEvery, hisLookText: original.hisLookText,
+  };
+  const ids = [];
+  const setScene = async (status, location) => {
+    const put = await api("PUT", "/api/state/scene", { state: { ...sceneBefore, status, location }, note: "v3.1 " + status });
+    assert.equal(put.status, 200, put.text);
+  };
+  const shownIn = (reply) => {
+    const m = /(\d+) on file/.exec(reply.json.assistantMessage.content);
+    assert.ok(m, "stub reply: " + reply.json.assistantMessage.content);
+    return Number(m[1]);
+  };
+  const conversationId = await newConversation("integration v3.1");
+
+  await report.check("v3.1: GET /api/him -> no photos, no words, the three defaults; settings carry the four keys", async () => {
+    assert.equal(probe.status, 200, probe.text);
+    assert.deepEqual(probe.json.photos, []);
+    assert.equal(probe.json.look, "");
+    assert.deepEqual(probe.json.settings, { hisFaceMax: 3, hisFaceInTogether: true, hisFaceApartEvery: 8 });
+    assert.equal(original.hisLookText, "");
+    assert.equal(original.hisFaceMax, 3);
+    assert.equal(original.hisFaceInTogether, true);
+    assert.equal(original.hisFaceApartEvery, 8);
+    await settingsPut({ dailyCapUsd: 200, monthlyCapUsd: 500 });
+  });
+
+  await report.check("v3.1: PUT /api/settings refuses hisFaceMax 4 and 0, hisFaceApartEvery 51, hisFaceInTogether 'yes', hisLookText over 600; a good patch round-trips", async () => {
+    for (const patch of [{ hisFaceMax: 4 }, { hisFaceMax: 0 }, { hisFaceApartEvery: 51 }, { hisFaceApartEvery: -1 }, { hisFaceInTogether: "yes" }, { hisLookText: "x".repeat(601) }]) {
+      const r = await api("PUT", "/api/settings", patch);
+      assert.equal(r.status, 400, JSON.stringify(patch) + " -> " + r.text);
+      assert.equal(r.json.code, "validation");
+    }
+    const ok = await settingsPut({ hisFaceMax: 2, hisFaceApartEvery: 3, hisFaceInTogether: false });
+    assert.equal(ok.hisFaceMax, 2);
+    assert.equal(ok.hisFaceApartEvery, 3);
+    assert.equal(ok.hisFaceInTogether, false);
+    const him = await api("GET", "/api/him");
+    assert.deepEqual(him.json.settings, { hisFaceMax: 2, hisFaceInTogether: false, hisFaceApartEvery: 3 });
+    await settingsPut({ hisFaceMax: 3, hisFaceApartEvery: 8, hisFaceInTogether: true });
+  });
+
+  await report.check("v3.1: POST /api/him/photos x3 -> 201 role him approved under him/; the 4th -> 409 him_full; not an image -> 415; no file -> 400", async () => {
+    for (let n = 0; n < 3; n++) {
+      const form = new FormData();
+      form.set("photo", new Blob([tinyPng()], { type: "image/png" }), "him" + n + ".png");
+      const r = await apiForm("POST", "/api/him/photos", form);
+      assert.equal(r.status, 201, r.text);
+      assert.equal(r.json.role, "him");
+      assert.equal(r.json.approval_status, "approved");
+      assert.ok(r.json.file.startsWith("him/") && r.json.file.endsWith(".png"), r.json.file);
+      assert.match(r.json.sha256, /^[0-9a-f]{64}$/);
+      assert.equal(r.json.bytes, tinyPng().length);
+      assert.equal(r.json.conversation_id, null);
+      assert.equal(r.json.message_id, null);
+      assert.equal(r.json.prompt, null);
+      assert.equal(r.json.notes, "him");
+      ids.push(r.json.id);
+      await sleep(5);
+    }
+    const fourth = new FormData();
+    fourth.set("photo", new Blob([tinyPng()], { type: "image/png" }), "him3.png");
+    const full = await apiForm("POST", "/api/him/photos", fourth);
+    assert.equal(full.status, 409, full.text);
+    assert.equal(full.json.code, "him_full");
+    const bad = new FormData();
+    bad.set("photo", new Blob([Buffer.from("plain text, not a picture")], { type: "image/png" }), "fake.png");
+    const rejected = await apiForm("POST", "/api/him/photos", bad);
+    assert.equal(rejected.status, 415, rejected.text);
+    const empty = await apiForm("POST", "/api/him/photos", new FormData());
+    assert.equal(empty.status, 400, empty.text);
+    const list = await api("GET", "/api/him");
+    assert.equal(list.json.photos.length, 3);
+    assert.deepEqual(list.json.photos.map((p) => p.id).sort(), ids.slice().sort());
+    for (const p of list.json.photos) assert.deepEqual(Object.keys(p).sort(), ["bytes", "created_at", "file", "id", "sha256"]);
+    const audit = (await auditRows(50)).filter((e) => e.action === "him.photo.add");
+    assert.ok(audit.length >= 3, "audited");
+    assert.ok(!JSON.stringify(audit).includes("him/"), "the audit row carries no storage key");
+  });
+
+  await report.check("v3.1: GET /api/him/photos/:id serves the png; an unknown id 404; /media/:id never serves a photo of him", async () => {
+    const r = await fetchBytes(`/api/him/photos/${ids[0]}`);
+    assert.equal(r.status, 200);
+    assert.ok(r.contentType.startsWith("image/png"), r.contentType);
+    assert.deepEqual(Array.from(r.bytes.slice(0, 4)), [0x89, 0x50, 0x4e, 0x47]);
+    assert.equal(r.bytes.length, tinyPng().length);
+    const none = await fetchBytes("/api/him/photos/him_nothing");
+    assert.equal(none.status, 404);
+    const media = await fetchBytes(`/media/${ids[0]}`);
+    assert.equal(media.status, 404, "a photo of him is not hers to serve");
+  });
+
+  await report.check("v3.1: GET /api/assets lists no photo of him anywhere; decide on one -> 409", async () => {
+    const a = await api("GET", "/api/assets");
+    assert.equal(a.status, 200, a.text);
+    const all = Object.values(a.json).flat().filter((x) => x && typeof x === "object");
+    for (const id of ids) assert.ok(!all.some((x) => x.id === id), id + " listed on the Images page");
+    assert.ok(!JSON.stringify(a.json).includes("him/"));
+    const decide = await api("POST", `/api/images/${ids[0]}/decide`, { decision: "reject" });
+    assert.equal(decide.status, 409, decide.text);
+    const still = await fetchBytes(`/api/him/photos/${ids[0]}`);
+    assert.equal(still.status, 200, "the decision route touched nothing");
+  });
+
+  await report.check("v3.1: POST /api/him/describe -> the stub's words, a describe run with usage, nothing saved; PUT /api/him/look saves them, cleaned; over 600 -> 400", async () => {
+    const usageBefore = (await api("GET", "/api/usage")).json.todayUsd;
+    const d = await api("POST", "/api/him/describe", {});
+    assert.equal(d.status, 200, d.text);
+    assert.ok(d.json.look.startsWith("Medium build"), d.json.look);
+    assert.ok(!BAD_TYPOGRAPHY.test(d.json.look));
+    const notSaved = await api("GET", "/api/him");
+    assert.equal(notSaved.json.look, "", "describe saves nothing");
+    assert.equal((await api("GET", "/api/settings")).json.hisLookText, "");
+    const usageAfter = (await api("GET", "/api/usage")).json;
+    assert.ok(usageAfter.todayUsd > usageBefore, "the describe call is on the meter");
+    assert.ok(usageAfter.byDay.some((r) => r.provider === "stub"), "usage row for the stub");
+    const saved = await api("PUT", "/api/him/look", { look: "  " + d.json.look + " " + EM_DASH + " glasses sometimes " });
+    assert.equal(saved.status, 200, saved.text);
+    assert.ok(saved.json.look.endsWith("-- glasses sometimes"), saved.json.look);
+    assert.ok(!BAD_TYPOGRAPHY.test(saved.json.look));
+    const him = await api("GET", "/api/him");
+    assert.equal(him.json.look, saved.json.look);
+    assert.equal((await api("GET", "/api/settings")).json.hisLookText, saved.json.look);
+    const long = await api("PUT", "/api/him/look", { look: "x".repeat(601) });
+    assert.equal(long.status, 400, long.text);
+    const notString = await api("PUT", "/api/him/look", { look: 5 });
+    assert.equal(notString.status, 400, notString.text);
+    const audit = (await auditRows(20)).find((e) => e.action === "him.look.save");
+    assert.ok(audit, "audited");
+  });
+
+  await report.check("v3.1: the first turn of a conversation and every together turn -> the call carried all 3 photos; provenance hisFace shown true, photos 3, section true; his row carries none", async () => {
+    await setScene("together", "her kitchen");
+    const r = await turn(conversationId, "[[HISFACE]] hey", key("v31-together"));
+    assert.equal(r.status, 200, r.text);
+    assert.equal(shownIn(r), 3, "the first turn of the conversation");
+    assert.equal(r.json.userMessage.images_json ?? null, null, "nothing written to his row");
+    const his = await api("GET", `/api/messages/${r.json.userMessage.id}`);
+    assert.equal(his.json.images_json, null, "his stored message carries no picture");
+    const ctx = await contextOf(r.json.assistantMessage.id);
+    assert.deepEqual(ctx.hisFace, { section: true, shown: true, photos: 3 });
+    assert.equal(ctx.imageCount, 0, "his own photo count is untouched");
+    assert.equal(ctx.mode, "together");
+    const again = await turn(conversationId, "[[HISFACE]] and again", key("v31-together-2"));
+    assert.equal(again.status, 200, again.text);
+    assert.equal(shownIn(again), 3, "every together turn, whatever the cadence");
+    assert.equal((await contextOf(again.json.assistantMessage.id)).hisFace.shown, true);
+    const list = await api("GET", `/api/conversations/${conversationId}/messages`);
+    assert.ok(list.json.every((m) => !m.images_json), "no message in the thread carries a picture");
+  });
+
+  await report.check("v3.1: apart mode right after -> no photo rode along (1 turn since, cadence 8); a mention of his looks -> all 3 again", async () => {
+    await setScene("none", null);
+    const r = await turn(conversationId, "[[HISFACE]] home now", key("v31-apart"));
+    assert.equal(r.status, 200, r.text);
+    assert.equal(shownIn(r), 0);
+    const ctx = await contextOf(r.json.assistantMessage.id);
+    assert.deepEqual(ctx.hisFace, { section: true, shown: false, photos: 0 });
+    assert.equal(ctx.mode, "apart");
+    const mention = await turn(conversationId, "[[HISFACE]] do you like my beard", key("v31-mention"));
+    assert.equal(mention.status, 200, mention.text);
+    assert.equal(shownIn(mention), 3);
+    assert.equal((await contextOf(mention.json.assistantMessage.id)).hisFace.shown, true);
+  });
+
+  await report.check("v3.1: apart cadence 2 -> the 2nd turn after a showing, not the 1st; cadence 1 -> every turn; hisFaceMax 1 -> one photo rides; a new conversation's first turn shows it with the cadence at 0", async () => {
+    await settingsPut({ hisFaceApartEvery: 2 });
+    const skip = await turn(conversationId, "[[HISFACE]] not yet", key("v31-skip"));
+    assert.equal(shownIn(skip), 0, "1 turn since the mention turn");
+    const secondSince = await turn(conversationId, "[[HISFACE]] now", key("v31-second-turn"));
+    assert.equal(shownIn(secondSince), 3, "2 turns since");
+    await settingsPut({ hisFaceApartEvery: 1 });
+    const every = await turn(conversationId, "[[HISFACE]] still here", key("v31-every"));
+    assert.equal(shownIn(every), 3, "every turn");
+    await settingsPut({ hisFaceMax: 1 });
+    const one = await turn(conversationId, "[[HISFACE]] one more", key("v31-one"));
+    assert.equal(shownIn(one), 1);
+    assert.equal((await api("GET", "/api/him")).json.photos.length, 3, "the page still lists every photo on file; only hisFaceMax ride along");
+    await settingsPut({ hisFaceMax: 3, hisFaceApartEvery: 0, hisFaceInTogether: false });
+    const fresh = await newConversation("integration v3.1 first turn");
+    const first = await turn(fresh, "[[HISFACE]] hi", key("v31-first"));
+    assert.equal(shownIn(first), 3, "the first turn of a conversation");
+    const second = await turn(fresh, "[[HISFACE]] and again", key("v31-second"));
+    assert.equal(shownIn(second), 0, "cadence 0: never again in apart mode");
+    await setScene("together", "the bench");
+    const together = await turn(fresh, "[[HISFACE]] sit", key("v31-together-off"));
+    assert.equal(shownIn(together), 0, "together switch off");
+    await setScene("none", null);
+    await settingsPut({ hisFaceApartEvery: 8, hisFaceInTogether: true });
+  });
+
+  await report.check("v3.1: the character export carries no photo of him; the fine-tune export drops WHAT HE LOOKS LIKE with stripHim=1 and keeps it with 0", async () => {
+    const pkg = await api("GET", "/api/export/character");
+    assert.equal(pkg.status, 200, pkg.text.slice(0, 200));
+    assert.ok(!pkg.json.images.some((i) => i.role === "him"), "no role him image");
+    assert.ok(!pkg.text.includes("him/"), "no him/ key in the package");
+    const t = await turn(conversationId, "[[HISFACE]] keep this one", key("v31-keep"));
+    assert.equal(t.status, 200, t.text);
+    const keep = await api("POST", `/api/messages/${t.json.assistantMessage.id}/mark`, { mark: "keep" });
+    assert.equal(keep.status, 200, keep.text);
+    const mine = (text) => text.split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((line) => line.messages[1].content.includes("keep this one"));
+    const full = await (await fetch(BASE + "/api/finetune/export.jsonl?stripHim=0")).text();
+    const kept = mine(full);
+    assert.ok(kept, "the kept exchange is in the export");
+    assert.ok(kept.messages[0].content.includes("WHAT HE LOOKS LIKE"), "stripHim=0 keeps the section");
+    assert.ok(kept.messages[0].content.includes("Medium build"), "the words on file");
+    const stripped = mine(await (await fetch(BASE + "/api/finetune/export.jsonl?stripHim=1")).text());
+    assert.ok(stripped, "still exported with stripHim=1");
+    assert.ok(!stripped.messages[0].content.includes("WHAT HE LOOKS LIKE"), "stripHim=1 drops the section");
+    assert.ok(!stripped.messages[0].content.includes("Medium build"));
+    assert.ok(!stripped.messages[0].content.includes("him/"));
+  });
+
+  await report.check("v3.1: DELETE /api/him/photos/:id x3 -> 204, the bytes gone, GET /api/him empty; describe with no photo -> 409 no_photos; a turn then carries none", async () => {
+    for (const id of ids) {
+      const r = await api("DELETE", `/api/him/photos/${id}`);
+      assert.equal(r.status, 204, r.text);
+      assert.equal((await fetchBytes(`/api/him/photos/${id}`)).status, 404);
+    }
+    const again = await api("DELETE", `/api/him/photos/${ids[0]}`);
+    assert.equal(again.status, 404, again.text);
+    assert.equal((await api("GET", "/api/him")).json.photos.length, 0);
+    const d = await api("POST", "/api/him/describe", {});
+    assert.equal(d.status, 409, d.text);
+    assert.equal(d.json.code, "no_photos");
+    await setScene("together", "her kitchen");
+    const r = await turn(conversationId, "[[HISFACE]] gone", key("v31-gone"));
+    assert.equal(shownIn(r), 0);
+    const ctx = await contextOf(r.json.assistantMessage.id);
+    assert.deepEqual(ctx.hisFace, { section: true, shown: false, photos: 0 }, "the words are still on file, so the section stays");
+    await api("PUT", "/api/him/look", { look: "" });
+    const bare = await turn(conversationId, "[[HISFACE]] nothing on file", key("v31-bare"));
+    assert.deepEqual((await contextOf(bare.json.assistantMessage.id)).hisFace, { section: false, shown: false, photos: 0 }, "no words, no photo: no section");
+  });
+
+  await report.check("v3.1: the scene and the settings back to what the block found", async () => {
+    await setScene(sceneBefore.status, sceneBefore.location);
+    await settingsPut(restore);
+    const s = (await api("GET", "/api/settings")).json;
+    for (const k of Object.keys(restore)) assert.deepEqual(s[k], restore[k], k);
+  });
+}
+
 // Runs on a server whose local image-provider overlay is off (main() blanks
 // DEFAULT_IMAGE_PROVIDER for this phase; with it on, api.ts overlaySettings would turn
 // every stored image provider back into the stub). There is no RUNWAY_API_KEY in the test
@@ -2541,11 +2798,11 @@ async function gateScenarios(report) {
   });
 
   await report.check("ACCESS_AUD set: the v3 routes are gated too -> 401", async () => {
-    for (const path of ["/api/voicebank", "/api/corrections", "/api/memory", "/api/wants", "/api/grounding", "/api/calls", "/api/tastings/ledger", "/api/finetune/status", "/api/finetune/export.jsonl", "/api/finetune/export.json"]) {
+    for (const path of ["/api/voicebank", "/api/corrections", "/api/memory", "/api/wants", "/api/grounding", "/api/calls", "/api/tastings/ledger", "/api/finetune/status", "/api/finetune/export.jsonl", "/api/finetune/export.json", "/api/him", "/api/him/photos/him_nothing"]) {
       const r = await api("GET", path);
       assert.equal(r.status, 401, path + " -> " + r.status + " " + r.text.slice(0, 100));
     }
-    for (const path of ["/api/calls/start", "/api/video/generate", "/api/voicebank/decide", "/api/finetune/use", "/api/grounding/geocode"]) {
+    for (const path of ["/api/calls/start", "/api/video/generate", "/api/voicebank/decide", "/api/finetune/use", "/api/grounding/geocode", "/api/him/describe", "/api/him/photos"]) {
       const r = await api("POST", path, {});
       assert.equal(r.status, 401, path + " -> " + r.status + " " + r.text.slice(0, 100));
     }
@@ -2639,6 +2896,8 @@ async function main() {
     await scenariosV2(report, conversationId);
     console.log("");
     await scenariosV3(report);
+    console.log("");
+    await scenariosV31(report);
 
     // Second phase (2026-09-25), same port and state, with the local image-provider overlay
     // off: `--var DEFAULT_IMAGE_PROVIDER:` blanks it the way the dev script blanks

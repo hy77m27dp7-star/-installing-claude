@@ -1,0 +1,307 @@
+// What he looks like (v3.1, SPEC_V3 section JJ). Justin's words: "she needs to know what i
+// look like in her fucking code". Two things make that durable: his reference photos
+// (visual_assets rows with role "him", the bytes in R2 under him/, owner-uploaded and
+// approved at upload, never generated, at most hisFaceMax) and the description in words
+// (settings.hisLookText, at most 600 characters, written by him or drafted by the
+// performer's own eyes through describeHim and saved only when he says so).
+//
+// The prompt carries a WHAT HE LOOKS LIKE section whenever either exists (prompt.ts places
+// it right after WHAT YOU KNOW ABOUT HIM), and on the turns shouldShowFace says yes the
+// photos are prepended to the final user turn of the provider call only (context.ts): never
+// written to his message, never shown in the chat, never counted against the six-message
+// picture window. The pure rule lives at the top of this file so it unit-tests without a
+// database; the D1 and provider helpers follow.
+import { HIM_PREFIX, imageMime, isVisionModel } from "./vision";
+import type { ImageRef } from "./vision";
+import { assertBudget, costMicro, estimateUsd } from "./budget";
+import { getTextProvider, providerConfigured } from "./providers/index";
+import { safeErrorMessage } from "./providers/types";
+import { dayKey, insertModelRunStmt, newId, nowIso, usageStmt } from "./db";
+import { ApiHttpError } from "./errors";
+import { ProviderError } from "./types";
+import type { Env, HisLook, ModelRunRow, ProviderName, SceneMode, Settings, VisualAssetRow } from "./types";
+
+export { HIM_PREFIX } from "./vision";
+export const HIM_ROLE = "him";
+export const LOOK_MAX_CHARS = 600;
+export const HIS_FACE_MAX_LIMIT = 3;
+export const HIS_FACE_APART_EVERY_LIMIT = 50;
+export const HIS_FACE_DEFAULTS = { hisLookText: "", hisFaceMax: 3, hisFaceInTogether: true, hisFaceApartEvery: 8 } as const;
+
+// The section's first line, and the line that stands in for the words while none are on file.
+export const LOOK_SECTION_HEADER = "WHAT HE LOOKS LIKE (his face; you know it the way you know any face you have looked at, without narrating it)";
+export const LOOK_NO_WORDS_LINE = "- you have seen his face; no words on file yet";
+
+// The system prompt of the "Describe from photo" call. The stub provider recognises the
+// pass by its first words (DESCRIBE_PREFIX); keep them first.
+export const DESCRIBE_SYSTEM = "Describe this man for someone who will need to recognise him: build, hair, facial hair, eyes if visible, glasses, skin, age impression, the one or two things anyone notices first. Plain words, two to four sentences, no compliments, no guesses about his character.";
+export const DESCRIBE_PREFIX = "Describe this man";
+const DESCRIBE_USER = "These are photos of the same man. Describe him.";
+const DESCRIBE_MAX_TOKENS = 300;
+// Rough input cost of one photo for the pre-call estimate: about 1,600 tokens on Anthropic
+// for a 2000x2000 picture, at the estimator's four characters per token.
+export const IMAGE_ESTIMATE_CHARS = 1600 * 4;
+
+// His looks, mentioned: a small list, case-insensitive, whole words where sensible.
+const LOOKS_RE = /\b(?:looks? like|my face|my hair|my beard|my glasses|handsome|ugly|older|younger|selfies?|(?:picture|photo|pic) of me)\b/i;
+
+// Built from code points so this file passes the typography scan.
+const EM_DASH = String.fromCharCode(0x2014);
+const EN_DASH = String.fromCharCode(0x2013);
+const ELLIPSIS = String.fromCharCode(0x2026);
+const DASH_RE = new RegExp("\\s*[" + EM_DASH + EN_DASH + "]\\s*", "g");
+const ELLIPSIS_RE = new RegExp(ELLIPSIS, "g");
+
+// ------------------------------------------------------------------ pure
+
+export interface HisFaceSettings {
+  hisLookText: string;
+  hisFaceMax: number;
+  hisFaceInTogether: boolean;
+  hisFaceApartEvery: number;
+}
+
+function intIn(v: unknown, min: number, max: number, fallback: number): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(v)));
+}
+
+// The four settings as the code reads them: the defaults for a missing key (the live
+// settings table is not reseeded on deploy), the bounds for a stored value out of range.
+export function hisFaceSettings(settings: Partial<Settings> | Record<string, unknown> | null | undefined): HisFaceSettings {
+  const s = (settings ?? {}) as Record<string, unknown>;
+  return {
+    hisLookText: typeof s.hisLookText === "string" ? cleanLookText(s.hisLookText) : HIS_FACE_DEFAULTS.hisLookText,
+    hisFaceMax: intIn(s.hisFaceMax, 1, HIS_FACE_MAX_LIMIT, HIS_FACE_DEFAULTS.hisFaceMax),
+    hisFaceInTogether: typeof s.hisFaceInTogether === "boolean" ? s.hisFaceInTogether : HIS_FACE_DEFAULTS.hisFaceInTogether,
+    hisFaceApartEvery: intIn(s.hisFaceApartEvery, 0, HIS_FACE_APART_EVERY_LIMIT, HIS_FACE_DEFAULTS.hisFaceApartEvery),
+  };
+}
+
+// The description as stored: house typography (" -- " and "..."), single spaces, trimmed.
+// Length is the caller's to refuse (the route answers 400 over LOOK_MAX_CHARS; the
+// describe call cuts at the cap).
+export function cleanLookText(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw
+    .replace(DASH_RE, " -- ")
+    .replace(ELLIPSIS_RE, "...")
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n+ */g, "\n")
+    .trim();
+}
+
+export function mentionsHisLooks(text: unknown): boolean {
+  return typeof text === "string" && LOOKS_RE.test(text);
+}
+
+// Whether the performer can look at a picture at all. Anthropic and OpenAI chat models
+// see; the stub pretends to; a Workers AI model only when its id says vision.
+export function performerCanSee(provider: ProviderName | string, model: string): boolean {
+  switch (provider) {
+    case "anthropic":
+    case "openai":
+    case "stub":
+      return true;
+    case "workersai":
+      return isVisionModel(model);
+    default:
+      return false;
+  }
+}
+
+export interface ShowFaceArgs {
+  mode: SceneMode;
+  isFirstTurnOfConversation: boolean;
+  // Her replies since the photos last rode along in this conversation; Infinity when never.
+  turnsSinceLastShown: number;
+  userText: string;
+  settings: Partial<HisFaceSettings> | Settings | Record<string, unknown>;
+  // false when the performer cannot see (the section then carries no attached-photos line).
+  canSee?: boolean;
+}
+
+// The rule (SPEC_V3 JJ): never when the performer cannot see; the first user turn of a
+// conversation; any turn where he mentions his looks; every Together turn while
+// hisFaceInTogether is on; in Apart mode every hisFaceApartEvery-th turn (0 = never).
+export function shouldShowFace(args: ShowFaceArgs): boolean {
+  if (args.canSee === false) return false;
+  const s = hisFaceSettings(args.settings as Record<string, unknown>);
+  if (args.isFirstTurnOfConversation) return true;
+  if (mentionsHisLooks(args.userText)) return true;
+  if (args.mode === "together") return s.hisFaceInTogether;
+  if (args.mode === "apart") {
+    if (s.hisFaceApartEvery <= 0) return false;
+    const since = typeof args.turnsSinceLastShown === "number" && !Number.isNaN(args.turnsSinceLastShown) ? args.turnsSinceLastShown : Number.POSITIVE_INFINITY;
+    return since >= s.hisFaceApartEvery;
+  }
+  return false;
+}
+
+// The one line under the words when his photos ride on this turn.
+export function attachedLine(n: number): string {
+  if (n === 1) {
+    return "The first picture attached to his message is your reference photo of him, on file; it is not something he just sent. Never mention it, never thank him for it, never ask why he sent a picture of himself.";
+  }
+  return `The first ${n} pictures attached to his message are your reference photos of him, on file; they are not something he just sent. Never mention them, never thank him for them, never ask why he sent a picture of himself.`;
+}
+
+// The WHAT HE LOOKS LIKE section: present when the words exist or at least one photo is on
+// file, omitted entirely otherwise (the prompt bytes then equal a tree without this feature).
+export function hisLookSection(look: HisLook | null | undefined): string {
+  if (!look) return "";
+  const text = cleanLookText(look.text);
+  const photos = Array.isArray(look.photos) ? look.photos.length : 0;
+  if (!text && photos <= 0) return "";
+  const lines = [LOOK_SECTION_HEADER, text || LOOK_NO_WORDS_LINE];
+  const attached = typeof look.attached === "number" && Number.isFinite(look.attached) ? Math.max(0, Math.trunc(look.attached)) : 0;
+  if (attached > 0) lines.push(attachedLine(attached));
+  return lines.join("\n");
+}
+
+// The mime of a stored reference photo, from its key's extension (the bytes were sniffed
+// on upload, so the extension is the truth).
+export function mimeOfKey(key: string): string {
+  const ext = (key.split(".").pop() ?? "").toLowerCase();
+  if (ext === "png") return "image/png";
+  if (ext === "webp") return "image/webp";
+  return "image/jpeg";
+}
+
+// The refs the adapters load: the rows as given (newest first, already capped).
+export function himRefs(photos: Array<{ key: string; mime?: string }>): ImageRef[] {
+  return photos
+    .filter((p) => p && typeof p.key === "string" && p.key.startsWith(HIM_PREFIX))
+    .map((p) => ({ key: p.key, mime: imageMime(p.mime || mimeOfKey(p.key)) }));
+}
+
+// ------------------------------------------------------------------ D1
+
+// His reference photos, newest first, at most `max` (the setting's value when omitted).
+export async function listHimPhotos(db: D1Database, max = HIS_FACE_MAX_LIMIT): Promise<VisualAssetRow[]> {
+  const n = intIn(max, 1, HIS_FACE_MAX_LIMIT, HIS_FACE_MAX_LIMIT);
+  const r = await db
+    .prepare("SELECT * FROM visual_assets WHERE role = ?1 AND approval_status = 'approved' ORDER BY created_at DESC, id DESC LIMIT ?2")
+    .bind(HIM_ROLE, n)
+    .all<VisualAssetRow>();
+  return r.results;
+}
+
+export async function countHimPhotos(db: D1Database): Promise<number> {
+  const r = await db.prepare("SELECT COUNT(*) AS n FROM visual_assets WHERE role = ?1 AND approval_status = 'approved'").bind(HIM_ROLE).first<{ n: number }>();
+  return Number(r?.n ?? 0);
+}
+
+// Which turn since the photos last rode along this turn is, in this conversation: her
+// replies since that one plus this turn itself, so the turn right after a showing is 1 and
+// a cadence of N fires on every N-th turn (N = 1 is every turn). Infinity when never (or
+// when the column does not exist yet; a missing 0007 is a nicety, never a failed turn).
+export async function turnsSinceFaceShown(db: D1Database, conversationId: string): Promise<number> {
+  const row = await db.prepare("SELECT his_face_seq FROM conversations WHERE id = ?1").bind(conversationId).first<{ his_face_seq: number | null }>();
+  const seq = row && typeof row.his_face_seq === "number" && Number.isFinite(row.his_face_seq) ? row.his_face_seq : null;
+  if (seq === null) return Number.POSITIVE_INFINITY;
+  const r = await db
+    .prepare("SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?1 AND channel = 'story' AND role = 'assistant' AND seq > ?2")
+    .bind(conversationId, seq)
+    .first<{ n: number }>();
+  return Number(r?.n ?? 0) + 1;
+}
+
+// Records that the photos rode along on the turn her reply `seq` closed. Best effort by
+// the caller (after the turn's batch), so a database without 0007 costs nothing but the cadence.
+export function faceShownStmt(db: D1Database, conversationId: string, seq: number): D1PreparedStatement {
+  return db.prepare("UPDATE conversations SET his_face_seq = ?2 WHERE id = ?1").bind(conversationId, seq);
+}
+
+// The HisLook the prompt state carries: the words on file and the photos, none attached yet.
+export async function loadHisLook(db: D1Database, settings: Settings): Promise<HisLook> {
+  const s = hisFaceSettings(settings);
+  const rows = await listHimPhotos(db, s.hisFaceMax);
+  return {
+    text: s.hisLookText,
+    photos: rows.map((r) => ({ id: r.id, key: r.file, mime: mimeOfKey(r.file) })),
+    attached: 0,
+  };
+}
+
+// ------------------------------------------------------------------ describe (a paid call)
+
+function errorClass(e: unknown): string {
+  if (e instanceof ProviderError) return e.kind;
+  if (e instanceof Error) return e.name || "Error";
+  return "error";
+}
+
+// The performer's own eyes on his reference photos: one call on settings.provider and
+// settings.model with the photos as image blocks, charged through the same estimate,
+// caps and usage row as any call (kind describe). Returns the words; saves nothing.
+export async function describeHim(env: Env, db: D1Database, settings: Settings): Promise<{ look: string; run: ModelRunRow }> {
+  const providerName = settings.provider;
+  const model = settings.model;
+  if (!providerConfigured(env, providerName)) throw new ApiHttpError(503, "provider_not_configured", `${providerName} is not configured`, false);
+  if (!performerCanSee(providerName, model)) throw new ApiHttpError(409, "cannot_see", `${providerName} ${model} cannot look at a picture; switch the performer first`, false);
+  const s = hisFaceSettings(settings);
+  const rows = await listHimPhotos(db, s.hisFaceMax);
+  if (!rows.length) throw new ApiHttpError(409, "no_photos", "upload a photo of him first", false);
+  const refs = himRefs(rows.map((r) => ({ key: r.file })));
+
+  const inputChars = DESCRIBE_SYSTEM.length + DESCRIBE_USER.length + refs.length * IMAGE_ESTIMATE_CHARS;
+  await assertBudget(db, settings, estimateUsd(settings, model, inputChars, DESCRIBE_MAX_TOKENS));
+
+  const provider = getTextProvider(providerName);
+  const started = Date.now();
+  const runBase = {
+    id: newId("r"),
+    conversation_id: null,
+    kind: "describe" as const,
+    provider: providerName,
+    model,
+    prompt_version: null,
+    input_tokens: 0,
+    output_tokens: 0,
+    cost_usd_micro: 0,
+    latency_ms: null,
+    flags_json: null,
+    created_at: nowIso(),
+  };
+  let result: Awaited<ReturnType<typeof provider.generate>>;
+  try {
+    result = await provider.generate(env, {
+      system: DESCRIBE_SYSTEM,
+      messages: [{ role: "user", content: DESCRIBE_USER, images: refs }],
+      model,
+      maxTokens: DESCRIBE_MAX_TOKENS,
+      temperature: 0.2,
+      effort: "low",
+      cacheable: false,
+    });
+  } catch (e) {
+    const failed: ModelRunRow = { ...runBase, latency_ms: Date.now() - started, status: "failed", error: errorClass(e) };
+    try { await insertModelRunStmt(db, failed).run(); } catch { /* the run log is best effort */ }
+    console.warn("describe call failed", errorClass(e), safeErrorMessage(e, 200));
+    throw e;
+  }
+  const inputTokens = Math.max(0, result.inputTokens);
+  const outputTokens = Math.max(0, result.outputTokens);
+  const cost = costMicro(settings, model, inputTokens, outputTokens);
+  const refused = result.stopReason === "refusal";
+  const run: ModelRunRow = {
+    ...runBase,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cost_usd_micro: cost.micro,
+    latency_ms: Date.now() - started,
+    status: refused ? "refused" : "ok",
+    error: refused ? "refusal" : null,
+    flags_json: cost.priceKnown ? null : JSON.stringify([{ code: "price_unknown", severity: "flag", detail: "no price for model " + model }]),
+  };
+  try {
+    await db.batch([insertModelRunStmt(db, run), usageStmt(db, dayKey(), providerName, model, inputTokens, outputTokens, cost.micro)]);
+  } catch (e) {
+    console.warn("describe run not recorded", errorClass(e));
+  }
+  if (refused) throw new ApiHttpError(502, "provider_refused", "the model refused to describe the photo", false);
+  const look = cleanLookText(result.text).slice(0, LOOK_MAX_CHARS).trim();
+  if (!look) throw new ApiHttpError(502, "provider_failed", "the model answered nothing usable", true, "empty_reply");
+  return { look, run };
+}

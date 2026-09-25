@@ -119,6 +119,12 @@ export const DEFAULT_SETTINGS: Settings = {
   finetuneSystemMode: "compact",
   texterModel: "",
   texterPrevious: null,
+  // v3.1, section JJ: what he looks like. No words on file until he writes or describes
+  // them; up to three reference photos ride on every Together turn and every 8th Apart turn.
+  hisLookText: "",
+  hisFaceMax: 3,
+  hisFaceInTogether: true,
+  hisFaceApartEvery: 8,
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {

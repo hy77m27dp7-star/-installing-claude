@@ -358,6 +358,19 @@ Decisions go through `POST /api/images/:id/decide`. The `[clip:]` marker is v3.1
 
 What the export carries, said plainly: his approved facts, his recorded name and nicknames, the private language, the shared history and every other state section exactly as she saw them on each turn, unless `stripHim=1`, which removes WHAT YOU KNOW ABOUT HIM and THINGS YOU HALF REMEMBER and the four keys of the Relationship line. His own messages and her replies go as written either way. Never secrets, ids, the operator channel, call rows or the audit.
 
+## What he looks like (JJ, v3.1)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/him | | `{ photos: [{ id, file, bytes, sha256, created_at }], look, settings: { hisFaceMax, hisFaceInTogether, hisFaceApartEvery } }` |
+| POST | /api/him/photos | multipart, field `photo` (jpeg, png or webp by its bytes, 8 MB) | 201 the `visual_assets` row (role `him`, approved at upload, file `him/<id>.<ext>`); 409 `him_full` at `hisFaceMax`; 415 for anything else; 400 with no file |
+| GET | /api/him/photos/:id | | the photo's bytes, owner only (never on `/media/:id`, never on the Images page) |
+| DELETE | /api/him/photos/:id | | 204 (the object and the row go; 404 for anything that is not his photo) |
+| POST | /api/him/describe | | `{ look }`: the story performer's own description of the photos on file, cleaned and cut at 600 characters, not saved. A paid call (`model_runs` kind `describe`, under the caps: 402 over one, 503 with the performer not configured, 409 `cannot_see` on a performer that cannot look at a picture, 409 `no_photos` with none on file, 502 on a refusal) |
+| PUT | /api/him/look | `{ look }` | `{ look }` as stored (trimmed, " -- " and "..." typography, at most 600 characters; "" clears it; audited `him.look.save`) |
+
+The words reach every turn as the WHAT HE LOOKS LIKE section; the photos ride on the provider call (never on his stored message) on the first turn of a conversation, whenever he mentions his looks, on every Together turn while `hisFaceInTogether` is on, and every `hisFaceApartEvery` turns in Apart mode. `GET /api/messages/:id/context` carries `hisFace: { section, shown, photos }`. `GET /api/assets` never lists a role `him` row.
+
 ## Settings added in v3
 
 | Key | Default | Accepted |
@@ -408,6 +421,17 @@ What the export carries, said plainly: his approved facts, his recorded name and
 | texterPrevious | null | null or `{ provider, model }` (written by `/use`, read by `/revert`; not in the panel) |
 
 `prices` gains `gpt-4.1` (2 / 8), `gpt-4.1-mini` (0.4 / 1.6) and `gpt-4.1-mini-2025-04-14` (0.4 / 1.6).
+
+## Settings added in v3.1 (what he looks like, JJ)
+
+| Key | Default | Accepted |
+|---|---|---|
+| hisLookText | `""` | a string, at most 600 characters after cleaning (em and en dashes become " -- ", the ellipsis character "..."); `PUT /api/him/look` writes it too |
+| hisFaceMax | 3 | 1 to 3 (photos of him on file, and how many ride along) |
+| hisFaceInTogether | true | boolean (the photos on every Together turn) |
+| hisFaceApartEvery | 8 | 0 to 50 (Apart mode: every N of her replies; 0 = only the first turn of a conversation) |
+
+A database seeded before these keys existed reads them as the defaults; the deploy session inserts the four rows with INSERT OR IGNORE. Migration `0007_his_face.sql` adds `conversations.his_face_seq` (nullable; the Worker tolerates its absence).
 
 ## Secrets added in v3 (optional)
 

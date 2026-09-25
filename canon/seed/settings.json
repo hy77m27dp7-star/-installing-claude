@@ -81,5 +81,9 @@
   "finetuneMinExamples": 200,
   "finetuneSystemMode": "compact",
   "texterModel": "",
-  "texterPrevious": null
+  "texterPrevious": null,
+  "hisLookText": "",
+  "hisFaceMax": 3,
+  "hisFaceInTogether": true,
+  "hisFaceApartEvery": 8
 }

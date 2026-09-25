@@ -5,7 +5,7 @@
 // v3 (SPEC_V3): the prefix changes exactly once (the TEXTURE paragraph the constitution
 // build adds to the runtime OVERLAY); everything else v3 adds is a per-turn state section,
 // in the fixed order the spec header lists: FIXED CANON, THINGS TRUE ABOUT YOU, WHAT YOU
-// KNOW ABOUT HIM, THINGS YOU HALF REMEMBER, SHARED HISTORY, CURRENT STATE, MODE, RIGHT NOW,
+// KNOW ABOUT HIM, (WHAT HE LOOKS LIKE, v3.1), THINGS YOU HALF REMEMBER, SHARED HISTORY, CURRENT STATE, MODE, RIGHT NOW,
 // YOUR LIFE RIGHT NOW, WHAT YOU WANT, THINGS YOU COULD BRING UP, (THINGS ON YOUR PHONE),
 // HOW YOU TEXT, NOTES FROM HIM, OPEN UNKNOWNS, FIRST CONVERSATION, THIS MESSAGE. A section
 // with nothing to say is omitted. The v3 renderers live with their modules (voicebank,
@@ -23,11 +23,14 @@ import { halfRememberSection } from "./memory";
 import { moodLine as wantsMoodLine, moodNow, wantsSection } from "./wants";
 import { groundingSection } from "./grounding";
 import { cueSection } from "./imperfection";
+import { hisLookSection } from "./hisFace";
 import type { PromptState, FactRow, HistoryRow, MoodPhase, RelationshipState, SceneMode } from "./types";
 
 // p5: the v3 state sections (half-remember, RIGHT NOW, WHAT YOU WANT, HOW YOU TEXT, NOTES
 // FROM HIM, THIS MESSAGE), the phased mood line and the Relationship line without the mood keys.
-export const PROMPT_VERSION = `${CONSTITUTION_VERSION}-p5`;
+// p6 (v3.1, SPEC_V3 JJ): WHAT HE LOOKS LIKE after WHAT YOU KNOW ABOUT HIM, present only when
+// his words or a reference photo of him are on file (the bytes are unchanged otherwise).
+export const PROMPT_VERSION = `${CONSTITUTION_VERSION}-p6`;
 
 // What sits between the prefix and the state (buildSystemPrompt) and between the state
 // sections (stateSections). The Anthropic adapter splits the system text on the first;
@@ -203,6 +206,14 @@ export function stateSections(s: PromptState): string {
     "WHAT YOU KNOW ABOUT HIM (only what he told you in conversation; nothing else exists)\n" +
     (s.justinFacts.length ? s.justinFacts.map(factLine).join("\n") : "- nothing yet"),
   );
+
+  // His face (v3.1, SPEC_V3 section JJ): the words on file and, on the turns his reference
+  // photos ride along, the line that says what the attached pictures are. Omitted entirely
+  // with no words and no photo, so a record without the feature renders as before.
+  if (s.hisLook) {
+    const look = s.hisLook;
+    push(guarded("his look", () => hisLookSection(look)));
+  }
 
   // The one half-remembered detail (SPEC_V3 section BB); absent while the setting is 0.
   if (s.recall) {

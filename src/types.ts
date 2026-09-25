@@ -155,6 +155,13 @@ export interface Settings {
   finetuneSystemMode: SystemMode;
   texterModel: string;
   texterPrevious: { provider: ProviderName; model: string } | null;
+  // v3.1, section JJ: what he looks like. The description in words (max 600 chars), how
+  // many reference photos of him ride along (1..3), whether they ride on every Together
+  // turn, and every how many Apart turns (0 = only the first turn of a conversation).
+  hisLookText: string;
+  hisFaceMax: number;
+  hisFaceInTogether: boolean;
+  hisFaceApartEvery: number;
 }
 
 export interface ConversationRow {
@@ -163,6 +170,9 @@ export interface ConversationRow {
   created_at: string;
   last_message_at: string | null;
   status: string;
+  // v3.1 (migration 0007): the seq of her reply on the last turn his reference photos rode
+  // along, so the Apart cadence can count turns since. Null = never in this conversation.
+  his_face_seq?: number | null;
 }
 
 export interface MessageRow {
@@ -200,7 +210,9 @@ export interface ModelRunRow {
   conversation_id: string | null;
   kind: "turn" | "retry" | "proposal" | "operator" | "image" | "drift" | "voice" | "transcribe"
     // v3: a phone call (EE), a clip (FF), a tasting draft (HH), a portrait (DD).
-    | "call" | "video" | "tasting" | "portrait";
+    | "call" | "video" | "tasting" | "portrait"
+    // v3.1 (JJ): the owner's "Describe from photo" call on his reference photos.
+    | "describe";
   provider: string;
   model: string;
   prompt_version: string | null;
@@ -342,7 +354,10 @@ export interface VisualAssetRow {
   file: string;
   role: "master" | "scene" | "candidate" | "legacy_archive" | "blacklisted" | "missing"
     // v3: a person's face (DD) and a clip of her (FF); both walk the photo's approval states.
-    | "portrait" | "video";
+    | "portrait" | "video"
+    // v3.1 (JJ): a reference photo of him, owner-uploaded, approved at upload, never
+    // generated, never listed with her pictures, never exported.
+    | "him";
   sha256: string | null;
   bytes: number | null;
   // pending / generating / failed: a requested photo before any bytes exist (role candidate).
@@ -532,6 +547,15 @@ export interface PromptGrounding {
   today: GroundingRow[];
 }
 
+// What she knows of his face (v3.1, section JJ): the words on file, the reference photos
+// of him (newest first, at most hisFaceMax), and how many of them ride on this turn's
+// call (0 = none; the section then carries no attached-photos line).
+export interface HisLook {
+  text: string;
+  photos: Array<{ id: string; key: string; mime: string }>;
+  attached: number;
+}
+
 export interface PromptState {
   hasSharedHistory: boolean;
   fixedFacts: FactRow[];
@@ -578,6 +602,8 @@ export interface PromptState {
   moodDaysDefault?: number;
   wantsShown?: number;
   correctionsShown?: number;
+  // v3.1 (JJ): his face. Absent or null, or empty text with no photo, renders no section.
+  hisLook?: HisLook | null;
 }
 
 export interface AssembledContext {
@@ -592,6 +618,9 @@ export interface AssembledContext {
   // choice (exemplars, the shape cue) keys on it, so a retry rolls the same.
   turnKey: string;
   opener: boolean;
+  // v3.1 (JJ): how many of his reference photos were prepended to the final user turn for
+  // the provider call (0 = none rode along this turn).
+  hisFaceShown: number;
 }
 
 // ------------------------------------------------------------------ API shapes

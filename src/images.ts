@@ -718,6 +718,16 @@ export async function serveInbox(env: Env, db: D1Database, messageId: string, in
   return streamObject(env, img.key, img.mime, range);
 }
 
+// v3.1 (SPEC_V3 JJ): one of his reference photos (role him), for the State page's
+// thumbnails only, at GET /api/him/photos/:id. Never on /media/:id (serveMedia's role list
+// leaves him out on purpose), never on the Images page.
+export async function serveHim(env: Env, db: D1Database, id: string): Promise<Response> {
+  if (!id || id.length > 80) return notFound();
+  const row = await getAsset(db, id);
+  if (!row || row.role !== "him" || row.approval_status !== "approved") return notFound();
+  return streamObject(env, row.file, "", null);
+}
+
 export async function serveLibrary(env: Env, db: D1Database, id: string, range: string | null = null): Promise<Response> {
   if (!id || id.length > 80) return notFound();
   const row = await firstOrNull<LibraryRow>(db.prepare("SELECT id, key, mime, status FROM media_library WHERE id = ?1").bind(id));

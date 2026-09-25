@@ -21,6 +21,7 @@ const FIELDS = [
   "finetuneMinExamples", "finetuneSystemMode",
   "imageProvider", "imageModel", "imageQuality", "imageSize", "imageCostUsd", "portraitSize", "portraitCostUsd",
   "videoProvider", "videoModel", "videoSeconds", "videoRatio", "videoCostUsd",
+  "hisFaceInTogether", "hisFaceApartEvery", "hisFaceMax",
   "dailyCapUsd", "monthlyCapUsd", "driftCheckEnabled",
 ];
 const NUMERIC = new Set([
@@ -30,8 +31,9 @@ const NUMERIC = new Set([
   "wantsShown", "askLetGoDays", "moodDaysDefault",
   "callMaxMinutes", "callPricePerMinute", "elevenLabsCallPricePerMinute",
   "tastingDailyCapUsd", "finetuneMinExamples", "portraitCostUsd", "videoSeconds", "videoCostUsd",
+  "hisFaceApartEvery", "hisFaceMax",
 ]);
-const BOOL = new Set(["proposalsEnabled", "driftCheckEnabled", "textureCuesEnabled", "correctionRewriteToBank", "memoryDecayEnabled", "tastingEnabled"]);
+const BOOL = new Set(["proposalsEnabled", "driftCheckEnabled", "textureCuesEnabled", "correctionRewriteToBank", "memoryDecayEnabled", "tastingEnabled", "hisFaceInTogether"]);
 // The four call prices live in one settings object; the form shows them as four fields.
 const CALL_PRICE_KEYS = ["audioInPerMTok", "audioOutPerMTok", "textInPerMTok", "textOutPerMTok"];
 // Rough tokens per training example, for the two estimates the Texter card shows.

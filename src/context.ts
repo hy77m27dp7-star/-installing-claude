@@ -23,9 +23,10 @@ import { listAsks, listWantLogRecent, listWants } from "./wants";
 import { outfitNow, todayRows } from "./grounding";
 import { getWeather } from "./weather";
 import { shapeCue, signature } from "./imperfection";
+import { himRefs, loadHisLook, performerCanSee, shouldShowFace, turnsSinceFaceShown } from "./hisFace";
 import type { ImageRef } from "./vision";
 import type {
-  AssembledContext, AskRow, ChatMessage, Correction, Env, HistoryRow, MediaRow, OutfitNow, PromptCallback, PromptState, RecallPick,
+  AssembledContext, AskRow, ChatMessage, Correction, Env, HisLook, HistoryRow, MediaRow, OutfitNow, PromptCallback, PromptState, RecallPick,
   RelationshipState, SceneState, Settings, ShapeCue, SystemMode, VisualAssetRow, VoiceLine, WantLogRow, WantRow, WeatherNow,
 } from "./types";
 import type { LifeThread } from "./life";
@@ -191,7 +192,7 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
   const recallEvery = opts.recall === false ? 0 : intSetting(settings.provisionalRecallEvery, 0);
   const seed = callbackSeed(now, conversationId);
 
-  const [facts, historyAll, unknowns, rel, scene, threadsAll, log, media, approvedLines, usedIds, corrections, weights, wantsAll, asks, today, approvedAssets, recallCount] = await Promise.all([
+  const [facts, historyAll, unknowns, rel, scene, threadsAll, log, media, approvedLines, usedIds, corrections, weights, wantsAll, asks, today, approvedAssets, recallCount, hisLook] = await Promise.all([
     listFacts(db),
     listHistory(db),
     listUnknowns(db, "open"),
@@ -214,6 +215,8 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     nicety("grounding rows", todayRows(db, now, tz), [] as Awaited<ReturnType<typeof todayRows>>),
     nicety("approved assets", listAssets(db, "approved"), [] as VisualAssetRow[]),
     nicety("recall count", conversationId && recallEvery > 0 ? recentRecallCount(db, conversationId, recallEvery) : Promise.resolve(0), 0),
+    // v3.1 (JJ): the words on file and his reference photos; none attached until assembleContext decides.
+    nicety("his look", loadHisLook(db, settings), null as HisLook | null),
   ]);
 
   const recentKeywords = keywords(recentText);
@@ -269,6 +272,8 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
   const wantLog = wants.length ? await wantLogsFor(db, wants, wantsShown) : [];
 
   // v3 (DD): what she is wearing today, from today's approved photo or today's outfit row.
+  // Only her scene photos: a master, a portrait, a clip or (v3.1) a reference photo of him
+  // never says what she wore.
   const sceneAssets = approvedAssets.filter((a) => a.role === "scene");
   const outfit = attempt("outfitNow", () => outfitNow(sceneAssets, today, now, tz), null as unknown as OutfitNow);
   const grounding = {
@@ -333,6 +338,8 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     moodDaysDefault: numSetting(settings.moodDaysDefault, 3),
     wantsShown,
     correctionsShown,
+    // v3.1 (JJ)
+    hisLook,
   };
 }
 
@@ -363,6 +370,9 @@ export interface AssembleOptions {
   env?: Env;
   // false skips the shape cue (assembleSystemOnly uses it for calls).
   cues?: boolean;
+  // v3.1: false keeps his reference photos off the call (the drift cron's throwaway turns);
+  // the words still render.
+  hisFace?: boolean;
 }
 
 // pendingMessageId names a stored user row that pendingUserText repeats (an idempotent
@@ -381,10 +391,13 @@ export async function assembleContext(
   opts: AssembleOptions = {},
 ): Promise<AssembledContext> {
   const opener = opts.opener === true;
-  const [recentAll, seq, weather] = await Promise.all([
+  const [recentAll, seq, weather, sinceFace] = await Promise.all([
     listRecentStoryMessages(db, conversationId, settings.contextRecentMessages),
     pendingMessageId ? Promise.resolve(0) : nextSeq(db, conversationId),
     weatherFor(opts.env, db, settings, now),
+    // v3.1 (JJ): her replies since his photos last rode along here (Infinity when never, or
+    // when the column is not there yet).
+    nicety("his face cadence", turnsSinceFaceShown(db, conversationId), Number.POSITIVE_INFINITY),
   ]);
   const turnKey = pendingMessageId ?? "s" + seq;
   const recentRows = recentAll.filter((r) => r.content.trim().length > 0 && r.id !== pendingMessageId);
@@ -411,6 +424,32 @@ export async function assembleContext(
     env: opts.env,
     cues: opts.cues,
   });
+  // v3.1 (JJ): his reference photos ride on the final user turn of the provider call when
+  // the rule says so: prepended there only, after the six-message window was applied, so
+  // they are never written to his row, never shown in the chat, and never push one of his
+  // own photo messages out of the window. The section's attached-photos line follows.
+  let hisFaceShown = 0;
+  const look = state.hisLook;
+  if (look && look.photos.length && opts.hisFace !== false) {
+    const firstTurn = !opener && recentAll.every((r) => r.id === pendingMessageId);
+    const show = attempt("shouldShowFace", () => shouldShowFace({
+      mode: state.mode,
+      isFirstTurnOfConversation: firstTurn,
+      turnsSinceLastShown: sinceFace,
+      userText: opener ? "" : pendingUserText,
+      settings,
+      canSee: performerCanSee(settings.provider, settings.model),
+    }), false);
+    const last = messages[messages.length - 1];
+    if (show && last && last.role === "user") {
+      const refs = himRefs(look.photos);
+      if (refs.length) {
+        messages[messages.length - 1] = { ...last, images: [...refs, ...(last.images ?? [])] };
+        hisFaceShown = refs.length;
+        look.attached = refs.length;
+      }
+    }
+  }
   const built = buildSystemPrompt(state);
   return {
     state,
@@ -421,6 +460,7 @@ export async function assembleContext(
     recentAssistantTexts,
     turnKey,
     opener,
+    hisFaceShown,
   };
 }
 
