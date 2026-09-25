@@ -53,6 +53,7 @@ INSERT INTO settings (key, value, updated_at) VALUES ('effort', '"medium"', '202
 INSERT INTO settings (key, value, updated_at) VALUES ('temperature', '0.9', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('maxTokens', '700', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('proposalsEnabled', 'true', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('proposalsAutoApprove', 'false', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('proposalProvider', '"anthropic"', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('proposalModel', '"claude-sonnet-5"', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('imageProvider', '"openai"', '2026-09-24T00:00:00.000Z');

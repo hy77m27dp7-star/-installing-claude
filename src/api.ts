@@ -523,6 +523,10 @@ export function validateSettingsPatch(body: Body): Partial<Settings> {
     const b = optBool(v, "proposalsEnabled");
     if (b !== undefined) p.proposalsEnabled = b;
   }
+  if (v.proposalsAutoApprove !== undefined) {
+    const b = optBool(v, "proposalsAutoApprove");
+    if (b !== undefined) p.proposalsAutoApprove = b;
+  }
   if (v.proposalProvider !== undefined) p.proposalProvider = oneOf(v.proposalProvider, PROVIDERS, "proposalProvider");
   if (v.proposalModel !== undefined) p.proposalModel = reqString(v, "proposalModel", 200).trim();
   if (v.imageProvider !== undefined) p.imageProvider = oneOf(v.imageProvider, IMAGE_PROVIDERS, "imageProvider");

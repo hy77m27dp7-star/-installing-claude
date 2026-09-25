@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS: Settings = {
   temperature: 0.9,
   maxTokens: 700,
   proposalsEnabled: true,
+  proposalsAutoApprove: false,
   proposalProvider: "anthropic",
   proposalModel: "claude-sonnet-5",
   imageProvider: "openai",

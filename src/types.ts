@@ -74,6 +74,9 @@ export interface Settings {
   temperature: number;
   maxTokens: number;
   proposalsEnabled: boolean;
+  // v3.2: her memory keeps itself: every proposal is approved on the spot (duplicates rejected);
+  // the Inbox is where the owner removes, not a gate. Ships off; on for his live app.
+  proposalsAutoApprove: boolean;
   proposalProvider: ProviderName;
   proposalModel: string;
   imageProvider: ImageProviderName;

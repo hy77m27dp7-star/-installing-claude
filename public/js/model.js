@@ -16,7 +16,7 @@ const FIELDS = [
   "voiceProvider", "voiceMode", "elevenLabsVoiceId", "transcribeProvider",
   "callProvider", "callModel", "callVoice", "callTranscribeModel", "callSystemMode", "callMaxMinutes", "callPricePerMinute",
   "elevenLabsAgentId", "elevenLabsCallPricePerMinute",
-  "proposalsEnabled", "proposalProvider", "proposalModel",
+  "proposalsEnabled", "proposalsAutoApprove", "proposalProvider", "proposalModel",
   "tastingEnabled", "tastingProvider", "tastingModel", "tastingDailyCapUsd",
   "finetuneMinExamples", "finetuneSystemMode",
   "imageProvider", "imageModel", "imageQuality", "imageSize", "imageCostUsd", "portraitSize", "portraitCostUsd",
@@ -33,7 +33,7 @@ const NUMERIC = new Set([
   "tastingDailyCapUsd", "finetuneMinExamples", "portraitCostUsd", "videoSeconds", "videoCostUsd",
   "hisFaceApartEvery", "hisFaceMax",
 ]);
-const BOOL = new Set(["proposalsEnabled", "driftCheckEnabled", "textureCuesEnabled", "correctionRewriteToBank", "memoryDecayEnabled", "tastingEnabled", "hisFaceInTogether"]);
+const BOOL = new Set(["proposalsEnabled", "proposalsAutoApprove", "driftCheckEnabled", "textureCuesEnabled", "correctionRewriteToBank", "memoryDecayEnabled", "tastingEnabled", "hisFaceInTogether"]);
 // The four call prices live in one settings object; the form shows them as four fields.
 const CALL_PRICE_KEYS = ["audioInPerMTok", "audioOutPerMTok", "textInPerMTok", "textOutPerMTok"];
 // Rough tokens per training example, for the two estimates the Texter card shows.

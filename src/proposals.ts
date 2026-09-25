@@ -4,6 +4,7 @@
 import { getTextProvider, providerConfigured } from "./providers/index";
 import { assertBudget, costMicro, estimateUsd } from "./budget";
 import { proposalSystemPrompt } from "./prompt";
+import { saidKey, saidLine } from "./said";
 import {
   auditStmt, dayKey, getCurrentState, getProposal, insertModelRunStmt, insertProposalStmt, listFacts, listProposals,
   listRecentStoryMessages, newId, nowIso, usageStmt,
@@ -303,7 +304,45 @@ export async function extractProposals(
   stmts.push(insertModelRunStmt(db, run));
   stmts.push(usageStmt(db, dayKey(), providerName, model, inputTokens, outputTokens, cost.micro));
   await db.batch(stmts);
+  // v3.2: her memory keeps itself when the switch is on (the owner's Inbox is then the
+  // place to remove, not a gate). A failure here never costs the turn.
+  if (settings.proposalsAutoApprove === true && rows.length) {
+    try { await keepAutomatically(db, rows.map((r) => r.id)); } catch (e) { console.warn("auto keep skipped", errorClass(e)); }
+  }
   return rows.length;
+}
+
+// v3.2 "memory keeps itself": every proposal the extractor files is approved on the spot
+// unless an approved or edited proposal of the same kind already says the same thing (same
+// content words), in which case it is rejected as a duplicate. Oldest first, so the first
+// wording of a fact is the one kept.
+export function duplicateKey(kind: string, text: string): string {
+  return kind + "|" + saidKey(saidLine(text));
+}
+
+export async function keepAutomatically(db: D1Database, ids: readonly string[], actor = "auto"): Promise<{ kept: number; duplicates: number }> {
+  const [approved, edited] = await Promise.all([listProposals(db, "approved", 2000), listProposals(db, "edited", 2000)]);
+  const seen = new Set([...approved, ...edited].map((q) => duplicateKey(q.kind, q.proposal)));
+  let kept = 0;
+  let duplicates = 0;
+  for (const id of ids) {
+    try {
+      const q = await getProposal(db, id);
+      if (!q || q.status !== "pending") continue;
+      const key = duplicateKey(q.kind, q.proposal);
+      if (seen.has(key)) {
+        await decideProposal(db, id, "reject", actor, undefined, "duplicate: the same thing is already kept");
+        duplicates += 1;
+        continue;
+      }
+      await decideProposal(db, id, "approve", actor, undefined, "kept automatically");
+      seen.add(key);
+      kept += 1;
+    } catch (e) {
+      console.warn("auto keep: one proposal skipped", errorClass(e));
+    }
+  }
+  return { kept, duplicates };
 }
 
 // ------------------------------------------------------------------ decide / promote
