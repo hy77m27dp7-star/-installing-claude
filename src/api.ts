@@ -22,6 +22,7 @@ import type { TurnOptions } from "./chat";
 import { operatorTurn, systemInfo } from "./operator";
 import { usageSummary } from "./budget";
 import { isKeylessImageProvider } from "./providers/index";
+import { listSnapshots, restoreSnapshot, runSnapshot } from "./backup";
 import { decideImage, generateCandidate, regenerateImage, serveHim, verifyMasters } from "./images";
 import { HIM_PREFIX, HIM_ROLE, HIS_FACE_APART_EVERY_LIMIT, HIS_FACE_MAX_LIMIT, LOOK_MAX_CHARS, cleanLookText, countHimPhotos, describeHim, hisFaceSettings, listHimPhotos } from "./hisFace";
 import type { InboxImage } from "./images";
@@ -1507,6 +1508,22 @@ route("POST", "/api/import", async (c) => {
   const body = await readBody(c.request);
   const result = await importAll(c.db, body, c.actor);
   return json({ ok: true, ...result });
+});
+
+// v3.2: named snapshots of her whole memory, taken on demand and restorable (the same export
+// and import as above and as the nightly backup). Made for "try something in another chat,
+// then put her memory back the way it was".
+route("POST", "/api/snapshots", async (c) => {
+  const body = await readBody(c.request);
+  const label = optString(body, "label", 60) ?? "snapshot";
+  return json(await runSnapshot(c.env, c.db, label, c.actor), 201);
+});
+route("GET", "/api/snapshots", async (c) => json({ snapshots: await listSnapshots(c.env) }));
+route("POST", "/api/snapshots/restore", async (c) => {
+  const body = await readBody(c.request);
+  const key = reqString(body, "key", 200);
+  const result = await restoreSnapshot(c.env, c.db, key, c.actor);
+  return json({ ok: true, key, ...result });
 });
 
 // ================================================================== v3 (SPEC_V3)

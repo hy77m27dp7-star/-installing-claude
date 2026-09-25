@@ -260,6 +260,7 @@ Same rules as v1 and v2: owner only, JSON unless noted, the one error shape, UTC
 | GET /api/system | `counts` gain `voiceLinesUnapproved`, `voiceLinesApproved`, `correctionsActive`, `wantsActive`, `asksOpen`, `callsToday`, `tastingsPending`, `finetuneApproved`. |
 | PUT /api/settings | Validates every v3 setting (table below). Three consistency rules join the v2 ones: `tastingModel` must be priced before `tastingEnabled` can be true; `videoCostUsd` must be above 0 while `videoProvider` is `runway`; `portraitCostUsd` must be above 0 unless the image provider is keyless. |
 | GET /api/export, POST /api/import | The export carries every v3 table except `weather_cache`; the import takes them back with the same one-of rules the schema states. |
+| POST /api/snapshots `{ label? }`, GET /api/snapshots, POST /api/snapshots/restore `{ key }` | v3.2: a named snapshot is the same export written to R2 under `snapshots/avelie-<day>-<hhmm>-<slug>.json` (outside the nightly pruning); restore runs the same import (story tables replaced, settings and visual assets merged) from a snapshot or a nightly backup key. Made for trying something in another chat and putting her memory back. |
 | GET /api/export/character | Gains `voiceLines` (approved), `corrections` (active), `wants`, `asks`. |
 | GET /api/timeline | Gains calls, want log rows, asks, corrections and portrait approvals. |
 
