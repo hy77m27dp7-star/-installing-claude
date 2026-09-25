@@ -14,6 +14,12 @@ const KIND_LABEL = {
   relationship: "relationship",
   scene: "scene",
   first_text: "first text",
+  // v3
+  call: "call",
+  want: "want",
+  ask: "ask",
+  correction: "note",
+  portrait: "portrait",
 };
 const KIND_CHIP = {
   history: "accent",
@@ -23,6 +29,11 @@ const KIND_CHIP = {
   relationship: "amber",
   scene: "amber",
   first_text: "ok",
+  call: "accent",
+  want: "",
+  ask: "amber",
+  correction: "",
+  portrait: "",
 };
 
 const $ = (id) => document.getElementById(id);

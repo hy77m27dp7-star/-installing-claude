@@ -499,6 +499,9 @@ const TASTINGS: TableSpec = {
     { name: "cost_usd_micro", type: "int", default: 0 },
     { name: "created_at", type: "time", max: TIME_MAX },
     { name: "decided_at", type: "text", max: TIME_MAX },
+    // The state the candidates saw (migration 0006): the state text (at most 24,000
+    // characters), the exemplars offered and the recall pick, as one JSON object.
+    { name: "context_json", type: "json", max: STATE_JSON_MAX },
   ],
 };
 

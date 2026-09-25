@@ -144,3 +144,14 @@ test("the flag-only run on speech: retry-severity codes are stored, nothing is r
   // On a call the pipeline stores r.flags as flags_json and never acts on r.action.
   assert.equal(typeof r.action, "string");
 });
+
+test("mergeUsage: the stored usage never goes down (per-field maximum), and a missing side yields the other", (tc) => {
+  if (!calls || typeof calls.mergeUsage !== "function") { tc.skip("calls.ts exports no mergeUsage"); return; }
+  const stored = { audioIn: 2000, audioOut: 1000, textIn: 50, textOut: 10 };
+  const zeros = { audioIn: 0, audioOut: 0, textIn: 0, textOut: 0 };
+  assert.deepEqual(calls.mergeUsage(zeros, stored), stored, "a zero tick after real usage keeps the stored figures");
+  assert.deepEqual(calls.mergeUsage({ audioIn: 2500, audioOut: 900, textIn: 60, textOut: 10 }, stored), { audioIn: 2500, audioOut: 1000, textIn: 60, textOut: 10 });
+  assert.deepEqual(calls.mergeUsage(null, stored), stored);
+  assert.deepEqual(calls.mergeUsage(stored, null), stored);
+  assert.equal(calls.mergeUsage(null, null), null);
+});

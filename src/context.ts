@@ -112,6 +112,10 @@ export interface LoadOptions {
   weather?: WeatherNow | null;
   env?: Env;
   cues?: boolean;
+  // false skips the voice bank (no HOW YOU TEXT, no uses to record) and the half-remembered
+  // pick (no memory_recalls row): a call's instructions, where neither is checked or booked.
+  exemplars?: boolean;
+  recall?: boolean;
 }
 
 // Threads the prompt may know about: live ones and finished ones (a done event is still
@@ -180,11 +184,11 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
   const conversationId = opts.conversationId ?? null;
   const turnKey = opts.turnKey && opts.turnKey.trim() ? opts.turnKey.trim() : "s0";
   const opener = opts.opener === true;
-  const perTurn = Math.min(12, intSetting(settings.exemplarsPerTurn, 6));
+  const perTurn = opts.exemplars === false ? 0 : Math.min(12, intSetting(settings.exemplarsPerTurn, 6));
   const cooldownTurns = intSetting(settings.exemplarCooldownTurns, 30);
   const correctionsShown = Math.min(100, intSetting(settings.correctionsShown, 25));
   const wantsShown = Math.min(20, intSetting(settings.wantsShown, 5));
-  const recallEvery = intSetting(settings.provisionalRecallEvery, 0);
+  const recallEvery = opts.recall === false ? 0 : intSetting(settings.provisionalRecallEvery, 0);
   const seed = callbackSeed(now, conversationId);
 
   const [facts, historyAll, unknowns, rel, scene, threadsAll, log, media, approvedLines, usedIds, corrections, weights, wantsAll, asks, today, approvedAssets, recallCount] = await Promise.all([
@@ -441,7 +445,9 @@ export interface SystemOnly {
 // Her rules and her state with no pending user text (SPEC_V3 section EE): the instructions
 // of a phone call. `compact` is ALWAYS_ON + OVERLAY plus every state section; `full` is the
 // whole stable prefix plus the state. No shape cue (she speaks; nothing about bubbles
-// applies), no opener. The caller appends its own note after the state.
+// applies), no opener, no HOW YOU TEXT (bank lines are texting examples, and a call books
+// no uses and checks no verbatim), no half-remembered pick (a call writes no recall row).
+// The caller appends its own note after the state.
 export async function assembleSystemOnly(
   db: D1Database,
   conversationId: string,
@@ -471,6 +477,8 @@ export async function assembleSystemOnly(
     weather,
     env: opts.env,
     cues: false,
+    exemplars: false,
+    recall: false,
   });
   const state = stateSections(promptState);
   const prefix = mode === "full" ? stablePrefix() : compactPrefix();

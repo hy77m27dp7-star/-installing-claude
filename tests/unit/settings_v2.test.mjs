@@ -16,7 +16,9 @@ const V2_DEFAULTS = {
   timezone: "America/New_York",
 };
 const V2_MORE_DEFAULTS = {
-  herFirstTextsPerDay: 10,
+  // SPEC_V2 seeds 10; the shipped default is 0 (his word was opt-in: the v3 review fix
+  // pass set it, HANDOFF "v3: review fixes"), and 10 stays the ceiling.
+  herFirstTextsPerDay: 0,
   herFirstQuietHours: "23:30-08:30",
   voiceProvider: "workersai",
   voiceMode: "some",

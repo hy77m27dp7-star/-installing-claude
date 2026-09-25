@@ -79,7 +79,11 @@ const NAME_MARKER = /\[\[NAME:([^\]]+)\]\]/;
 const MEDIA_MARKER = /\[\[MEDIA:([^\]]+)\]\]/;
 // v3 story triggers (SPEC_V3 AA, CC).
 const EXEMPLAR_MARKER = /\[\[EXEMPLAR:([^\]]+)\]\]/;
-const NAG_MARKER = /\[\[NAG:([^\]]+)\]\]/;
+// [[NAG:x]] nags about x; the bare [[NAG]] nags about the open ask the system prompt shows
+// ("You asked him: ..."), so his own message carries none of the ask's words (an ask he
+// raises himself is answered, never nagged, checks.ts ask_nag).
+const NAG_MARKER = /\[\[NAG(?::([^\]]*))?\]\]/;
+const ASKED_LINE_RE = /You asked him: "([^"]+)"/;
 const ANY_MARKER = /\[\[[^\]]*\]\]/g;
 
 function numberOr(s: string, fallback: number): number {
@@ -172,7 +176,7 @@ function echoWords(text: string): [string, string] {
   return [distinct[0] ?? "hey", distinct[1] ?? "ok"];
 }
 
-function storyReply(last: string, withImages: boolean, model: string): { text: string; stopReason: GenerateResult["stopReason"] } {
+function storyReply(last: string, withImages: boolean, model: string, system = ""): { text: string; stopReason: GenerateResult["stopReason"] } {
   if (last.includes("[[FAIL]]")) throw new ProviderError("stub", "server", "stub failure", 502, true);
   // v3 (HH): the tasting side fails alone, so the void rule can be exercised.
   if (last.includes("[[BFAIL]]") && model === STUB_B_MODEL) throw new ProviderError("stub", "server", "stub failure on side B", 502, true);
@@ -198,7 +202,10 @@ function storyReply(last: string, withImages: boolean, model: string): { text: s
   if (exemplar && exemplar[1] && exemplar[1].trim()) return { text: exemplar[1].trim() + ", basically. anyway", stopReason: "end" };
   // v3 (CC): bringing an ask up again.
   const nag = NAG_MARKER.exec(last);
-  if (nag && nag[1] && nag[1].trim()) return { text: "so about " + nag[1].trim() + ". still there. just saying", stopReason: "end" };
+  if (nag) {
+    const x = (nag[1] ?? "").trim() || (ASKED_LINE_RE.exec(system)?.[1] ?? "").trim();
+    if (x) return { text: "so about " + x + ". still there. just saying", stopReason: "end" };
+  }
   const name = NAME_MARKER.exec(last);
   if (name && name[1]) {
     const x = name[1].trim();
@@ -226,7 +233,7 @@ export const stubProvider: TextProvider = {
       // note's own words would read as a tech leak and hide what the first draft raised).
       const retry = last.startsWith(RETRY_NOTE_PREFIX);
       const subject = retry ? stripStubMarkers(previousUserContent(req.messages)) : last;
-      const r = storyReply(subject, lastMessage ? imagesOf(lastMessage).length > 0 : false, req.model);
+      const r = storyReply(subject, lastMessage ? imagesOf(lastMessage).length > 0 : false, req.model, req.system);
       text = r.text;
       stopReason = r.stopReason;
       // v3 (HH): the tasting performer's replies are told apart by a prefix.

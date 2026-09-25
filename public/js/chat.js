@@ -796,12 +796,14 @@ function finishTasting(conversationId, wrap, assistantMessage) {
   }
 }
 
-// After Neither the user message stays with no reply; Retry (the same key) runs a plain turn.
+// After Neither the user message stays with no reply; Retry (the same key) runs a plain
+// turn, and so does Taste on that key (a key already tasted cannot be tasted again; the
+// server answers 409 idempotency_conflict, and spends nothing).
 function offerRetry(conversationId, t) {
   if (state.currentId !== conversationId) return;
   const text = typeof t.text === "string" ? t.text : "";
   if (t.key && text) {
-    state.pending = { key: t.key, conversationId, text };
+    state.pending = { key: t.key, conversationId, text, tasted: true };
     els.input.value = text;
     grow();
   }
@@ -1095,7 +1097,9 @@ function updateSendState() {
   els.letHerStart.disabled = busy || onCall;
   els.micBtn.disabled = busy || state.operator;
   els.attachBtn.disabled = busy || state.operator;
-  els.tasteBtn.disabled = busy || state.operator;
+  // A tasting carries no photos (the multipart route runs a plain turn), so Taste waits
+  // until the attachments are gone rather than silently spending one ordinary turn.
+  els.tasteBtn.disabled = busy || state.operator || state.attachments.length > 0;
   els.tasteBtn.classList.toggle("hidden", !(state.settings && state.settings.tastingEnabled === true) || state.operator);
   els.callBtn.classList.toggle("hidden", !callVisible() || state.operator);
   els.callBtn.disabled = onCall ? false : (state.inFlight || state.arriving > 0);
@@ -1127,13 +1131,14 @@ function pendingFor(conversationId, text) {
 }
 
 async function send(opts) {
-  const tasting = !!(opts && opts.tasting);
+  const wantTasting = !!(opts && opts.tasting);
   const text = els.input.value.trim();
   if (!text || state.inFlight || state.arriving || state.tasting) return;
   setInFlight(true);
   hideError();
+  let id = null;
   try {
-    const id = await ensureConversation();
+    id = await ensureConversation();
     if (state.operator) {
       const r = await api("POST", "/api/operator", { content: text, conversationId: id });
       if (state.currentId === id && state.operator) {
@@ -1145,6 +1150,8 @@ async function send(opts) {
     } else {
       const pending = pendingFor(id, text);
       state.pending = pending;
+      // A key that already went through a tasting (Neither) is sent as a plain turn.
+      const tasting = wantTasting && !pending.tasted;
       const path = "/api/conversations/" + encodeURIComponent(id) + "/turn";
       let r;
       try {
@@ -1184,6 +1191,12 @@ async function send(opts) {
     grow();
   } catch (e) {
     showError(e.code || "error", e.code !== "tasting_pending");
+    // A tasting started elsewhere (the Mac, another tab): the 409 names it, so this page
+    // shows the two panels and lets him pick here instead of answering every Send with a chip.
+    if (e.code === "tasting_pending" && id && typeof e.detail === "string" && e.detail && state.currentId === id && !state.tasting) {
+      storeSet(tastingStoreKey(id), JSON.stringify({ id: e.detail }));
+      restoreTasting(id, state.loadSeq).catch(() => { /* the chip already says what is pending */ });
+    }
   } finally {
     setInFlight(false);
     els.input.focus();
@@ -1224,6 +1237,7 @@ function addFiles(files) {
 function renderAttachments() {
   clear(els.attachStrip);
   els.attachStrip.classList.toggle("hidden", !state.attachments.length);
+  updateSendState();
   state.attachments.forEach((f, i) => {
     const img = h("img", { alt: "" });
     const reader = new FileReader();

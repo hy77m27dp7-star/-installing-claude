@@ -55,8 +55,9 @@ export const DEFAULT_SETTINGS: Settings = {
   realDelayMaxMinutes: 6,
   driftCheckEnabled: false,
   timezone: "America/New_York",
-  // v2, SPEC_V2 section R (the spec's seed number; his word was opt-in, see HANDOFF).
-  herFirstTextsPerDay: 10,
+  // v2, SPEC_V2 section R. His word was opt-in (HANDOFF): off until he sets a number on the
+  // Model page (1 to 10 a day); the spec's seed number 10 is the ceiling, not the default.
+  herFirstTextsPerDay: 0,
   herFirstQuietHours: "23:30-08:30",
   // v2, SPEC_V2 section S. Workers AI needs no key; ElevenLabs needs its key and a voice id.
   voiceProvider: "workersai",
@@ -296,9 +297,11 @@ export function touchConversationStmt(db: D1Database, conversationId: string, at
   return db.prepare("UPDATE conversations SET last_message_at = ?2 WHERE id = ?1").bind(conversationId, at);
 }
 
-export function usageStmt(db: D1Database, day: string, provider: string, model: string, inputTokens: number, outputTokens: number, costMicro: number): D1PreparedStatement {
-  return db.prepare("INSERT INTO usage_daily (day, provider, model, requests, input_tokens, output_tokens, cost_usd_micro) VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6) ON CONFLICT(day, provider, model) DO UPDATE SET requests = requests + 1, input_tokens = input_tokens + excluded.input_tokens, output_tokens = output_tokens + excluded.output_tokens, cost_usd_micro = cost_usd_micro + excluded.cost_usd_micro")
-    .bind(day, provider, model, inputTokens, outputTokens, costMicro);
+// One request by default; a call's 30-second ticks pass 0 and its end passes 1, so a call
+// reads as one request in the usage table however many ticks metered it.
+export function usageStmt(db: D1Database, day: string, provider: string, model: string, inputTokens: number, outputTokens: number, costMicro: number, requests = 1): D1PreparedStatement {
+  return db.prepare("INSERT INTO usage_daily (day, provider, model, requests, input_tokens, output_tokens, cost_usd_micro) VALUES (?1, ?2, ?3, ?7, ?4, ?5, ?6) ON CONFLICT(day, provider, model) DO UPDATE SET requests = requests + excluded.requests, input_tokens = input_tokens + excluded.input_tokens, output_tokens = output_tokens + excluded.output_tokens, cost_usd_micro = cost_usd_micro + excluded.cost_usd_micro")
+    .bind(day, provider, model, inputTokens, outputTokens, costMicro, Math.max(0, Math.trunc(requests)));
 }
 
 export function auditStmt(db: D1Database, actor: string, action: string, entity: string | null, entityId: string | null, before: unknown, after: unknown): D1PreparedStatement {

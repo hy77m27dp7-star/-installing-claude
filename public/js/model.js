@@ -84,6 +84,13 @@ function collect() {
     if (loaded && loaded[k] === v) continue;
     out[k] = v;
   }
+  // A city typed without a Find pick has no coordinates of its own: the old ones would
+  // give the new name the old weather. Null clears them; the weather line goes quiet
+  // until he picks a match (the pick writes city, lat, lon and timezone together).
+  if ("herCity" in out && known && known.has("herLat") && known.has("herLon")) {
+    out.herLat = null;
+    out.herLon = null;
+  }
   if (known && known.has("callPrices")) {
     const cp = {};
     let any = false;

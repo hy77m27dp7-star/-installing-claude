@@ -33,7 +33,7 @@ import {
 import { createThread, dropThread, listLog, listThreads, logLife, restoreThread, updateThread } from "./life";
 import { readContext } from "./provenance";
 import { listDrift, runDrift } from "./drift";
-import { maybeTextFirst } from "./herfirst";
+import { FIRST_TEXT_NOTE, maybeTextFirst } from "./herfirst";
 import { subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from "./push";
 import { getTimeline } from "./timeline";
 import { listVoiceprints, runVoiceprint } from "./voiceprint";
@@ -659,6 +659,11 @@ export function assertSettingsConsistent(current: Settings, patch: Partial<Setti
   if ((touched("videoCostUsd") || touched("videoProvider")) && typeof next.videoCostUsd === "number" && next.videoProvider === "runway" && !(next.videoCostUsd > 0)) {
     throw invalid("videoCostUsd must be above 0 for video provider runway; only the stub may run at 0");
   }
+  // A paid call provider needs its per-minute floor: at 0 the meter would read $0 whenever
+  // the page reports no usage, and no cap could trip (calls.ts refuses to start as well).
+  if ((touched("callPricePerMinute") || touched("callProvider")) && next.callProvider === "openai" && typeof next.callPricePerMinute === "number" && !(next.callPricePerMinute > 0)) {
+    throw invalid("callPricePerMinute must be above 0 for call provider openai; only the stub may run at 0");
+  }
   if ((touched("tastingEnabled") || touched("tastingModel") || touched("prices")) && next.tastingEnabled === true) {
     const model = String(next.tastingModel ?? "").trim();
     const p = prices[model];
@@ -695,10 +700,10 @@ const FORM_SLACK = 64 * 1024;
 const INBOX_PREFIX = "inbox/";
 const VOICE_IN_PREFIX = "voice_in/";
 
-// The one-time operator note for an opener (SPEC_V2 section Q). He never sees it.
-const OPENER_NOTE =
-  "Start the conversation yourself from your own day or something you remember. One or two bubbles. "
-  + "Do not ask him to reply, do not mention how long it has been, do not say you missed him.";
+// The one-time operator note for an opener (SPEC_V2 section Q) is the first-text note
+// (section R): one wording for both, so "never say you waited" and "never make it about
+// him being gone" hold on Let her start as they do on the cron. He never sees it.
+const OPENER_NOTE = FIRST_TEXT_NOTE;
 
 // The throwaway conversations of the drift check never show in the list.
 route("GET", "/api/conversations", async (c) => json((await listConversations(c.db)).filter((r) => r.status !== "drift")));
@@ -1219,9 +1224,12 @@ route("GET", "/api/assets", async (c) => {
     masters: rows.filter((a) => a.role === "master"),
     candidates: rows.filter((a) => a.approval_status === "candidate"),
     scenes: rows.filter((a) => a.role === "scene" && a.approval_status === "approved"),
-    // v3: approved clips (FF) and faces (DD); their candidates sit in `candidates` with the photos.
+    // v3: approved clips (FF) and faces (DD); their candidates sit in `candidates` with the
+    // photos, and the ones still being made in `generating` (a clip only moves forward
+    // when the page polls it, so a reload must find it again).
     videos: rows.filter((a) => a.role === "video" && a.approval_status === "approved"),
     portraits: rows.filter((a) => a.role === "portrait" && a.approval_status === "approved"),
+    generating: rows.filter((a) => a.approval_status === "generating"),
     rejected: rows.filter((a) => a.approval_status === "rejected"),
     archive: rows.filter((a) => a.role === "legacy_archive" || a.approval_status === "archive"),
   });
@@ -1939,8 +1947,10 @@ route("POST", "/api/calls/:id/end", async (c) => {
   const reason = reasonRaw && reasonRaw.trim() ? reasonRaw.trim() : "ended";
   const segments = callSegments(body.segments);
   const usage = callUsage(body.usage);
+  // The seconds the page counted (optional); calls.ts bounds it by the ticks plus one.
+  const seconds = body.seconds === undefined || body.seconds === null ? undefined : int(body.seconds, "seconds", 0, 24 * 60 * 60);
   const settings = await loadSettings(c);
-  const r = await endCall(c.env, c.db, settings, id, { reason, segments, ...(usage ? { usage } : {}) }, c.actor, c.ctx);
+  const r = await endCall(c.env, c.db, settings, id, { reason, segments, ...(usage ? { usage } : {}), ...(seconds !== undefined ? { seconds } : {}) }, c.actor, c.ctx);
   return json(r);
 });
 
@@ -2056,12 +2066,15 @@ route("DELETE", "/api/messages/:id/mark", async (c) => {
 const TEXTER_MODEL_RE = /^(ft:)?[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 
 // The export options: `stripHim` removes what she knows about him from the state part
-// (absent = 0, the spec's shape; the panel's checkbox sends 1 and is on by default per
-// the owner's answer of 2026-09-24); `includeExplicit` keeps exchanges the explicit
-// detector would leave out (absent = left out, his answer to open question 2; a Drop mark
-// leaves one out by hand either way).
+// (absent = 1: his answer of 2026-09-24 is "on by default", and it holds for a bare GET
+// from a script or a bookmark, not only for the panel's checkbox; `stripHim=0` opts out);
+// `includeExplicit` keeps exchanges the explicit detector would leave out (absent = left
+// out, his answer to open question 2; a Drop mark leaves one out by hand either way).
 function exportOptions(url: URL): { stripHim: boolean; includeExplicit: boolean } {
-  return { stripHim: flagQuery(url, "stripHim"), includeExplicit: flagQuery(url, "includeExplicit") };
+  return {
+    stripHim: url.searchParams.has("stripHim") ? flagQuery(url, "stripHim") : true,
+    includeExplicit: flagQuery(url, "includeExplicit"),
+  };
 }
 
 route("GET", "/api/finetune/status", async (c) => json(await finetuneStatus(c.db, await storedSettings(c))));

@@ -59,7 +59,10 @@ const DEFAULT_QUIET = "23:30-08:30";
 const QUIET_RE = /^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/;
 const ACTOR = "herfirst";
 const PUSH_REASON = "her_first_text";
-const HARD_REJECT_CODE = "dependency_hook";
+// A first text that still carries one of these after the retry is not hers to send: a
+// dependency line ("miss you", "waiting for you", ...) or an open ask leading the text
+// (SPEC_V3 section CC: a push-notified first text never opens with what he did not answer).
+export const HARD_REJECT_CODES: ReadonlySet<string> = new Set(["dependency_hook", "ask_nag"]);
 
 // The one-time note for a first text (SPEC_V2 section R). He never sees it.
 export const FIRST_TEXT_NOTE =
@@ -295,15 +298,16 @@ export async function maybeTextFirst(env: Env, db: D1Database, settings: Setting
   const message = turn.assistantMessage;
   const flags = turn.flags.map((f) => f.code);
 
-  if (flags.includes(HARD_REJECT_CODE)) {
+  const rejected = flags.find((code) => HARD_REJECT_CODES.has(code));
+  if (rejected) {
     try {
       await dropFirstText(db, message, flags);
     } catch (e) {
       console.error("herfirst: dropped first text not removed", errorClass(e));
     }
     await settle();
-    console.warn("herfirst: first text dropped", HARD_REJECT_CODE, message.id);
-    return { ...base, reason: `dropped: the checks raised ${HARD_REJECT_CODE}; not retried this tick`, droppedMessageId: message.id };
+    console.warn("herfirst: first text dropped", rejected, message.id);
+    return { ...base, reason: `dropped: the checks raised ${rejected}; not retried this tick`, droppedMessageId: message.id };
   }
 
   const countAfter = countToday + 1;

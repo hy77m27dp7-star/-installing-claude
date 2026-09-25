@@ -22,6 +22,7 @@ import {
   auditStmt, dayKey, getConversation, getCurrentState, insertMessageStmt, insertModelRunStmt, listFacts, listHistory, listUnknowns, newId,
   nextSeq, nowIso, touchConversationStmt, usageStmt,
 } from "./db";
+import { listAsks } from "./wants";
 import { ApiHttpError } from "./errors";
 import { ProviderError } from "./types";
 import type { CheckContext, Env, Flag, MessageRow, ModelRunRow, RelationshipState, Settings } from "./types";
@@ -325,6 +326,20 @@ function parseUsageJson(json: string | null): CallUsage | null {
   }
 }
 
+// The usage is cumulative for the session, so the stored figure never goes down: a tick
+// that reports less than an earlier one (a zero after a lost response.done) keeps the
+// per-field maximum.
+export function mergeUsage(reported: CallUsage | null, stored: CallUsage | null): CallUsage | null {
+  if (!reported) return stored;
+  if (!stored) return reported;
+  return {
+    audioIn: Math.max(reported.audioIn, stored.audioIn),
+    audioOut: Math.max(reported.audioOut, stored.audioOut),
+    textIn: Math.max(reported.textIn, stored.textIn),
+    textOut: Math.max(reported.textOut, stored.textOut),
+  };
+}
+
 function errorClass(e: unknown): string {
   if (e instanceof ProviderError) return e.kind;
   if (e instanceof Error) return e.name || "Error";
@@ -368,6 +383,11 @@ export async function startCall(
   const live = await db.prepare("SELECT id FROM calls WHERE status IN ('starting', 'live') LIMIT 1").first<{ id: string }>();
   if (live) throw new ApiHttpError(409, "call_in_progress", "a call is already live", false, live.id);
 
+  // The same law as every other paid path: a paid call provider at a per-minute price of
+  // 0 would meter at $0 whenever the page reports no usage, and no cap could trip.
+  if (cs.provider !== "stub" && !(cs.pricePerMinute > 0)) {
+    throw new ApiHttpError(402, "price_unknown", "callPricePerMinute is 0; set the price per minute in the Calls section of the Model page before a call", false, cs.provider);
+  }
   await assertBudget(db, settings, 2 * cs.pricePerMinute);
 
   // Her instructions for the session, compact by default (SPEC_V3 EE, costs).
@@ -464,7 +484,7 @@ export async function tickCall(
   const secondsRaw = body.seconds;
   if (typeof secondsRaw !== "number" || !Number.isFinite(secondsRaw) || secondsRaw < 0) throw new ApiHttpError(400, "validation", "seconds must be a non-negative number");
   const seconds = Math.min(MAX_TICK_SECONDS, Math.floor(secondsRaw));
-  const usage = parseUsage(body.usage) ?? parseUsageJson(row.usage_json);
+  const usage = mergeUsage(parseUsage(body.usage), parseUsageJson(row.usage_json));
 
   const secondsTotal = row.seconds + seconds;
   const cost = callCostMicro(secondsTotal, usage, cs);
@@ -476,7 +496,9 @@ export async function tickCall(
     db.prepare("UPDATE calls SET status = 'live', last_tick_at = ?2, seconds = ?3, cost_usd_micro = ?4, usage_json = ?5 WHERE id = ?1 AND status IN ('starting', 'live')")
       .bind(id, t, secondsTotal, total, usage ? JSON.stringify(usage) : row.usage_json),
   ];
-  if (delta > 0) stmts.push(usageStmt(db, dayKey(), row.provider, model, 0, 0, delta));
+  // The call is one request in the usage table: counted by its first tick (the row is
+  // still "starting"), never again by the later ticks or the end.
+  if (delta > 0) stmts.push(usageStmt(db, dayKey(), row.provider, model, 0, 0, delta, row.status === "starting" ? 1 : 0));
   await db.batch(stmts);
 
   // The tick that crosses is recorded; the stop test then reads the spend with it in.
@@ -513,13 +535,14 @@ function parseSegments(v: unknown): CallSegment[] {
 }
 
 // The checks' view of the world for a spoken turn: shared history, his name, the open
-// unknowns. Read once per call end.
+// unknowns, the open asks (ask_nag reads the transcript too). Read once per call end.
 async function checkContextFor(db: D1Database): Promise<Omit<CheckContext, "recentAssistantTexts">> {
-  const [facts, history, unknowns, rel] = await Promise.all([
+  const [facts, history, unknowns, rel, asks] = await Promise.all([
     listFacts(db, "justin"),
     listHistory(db),
     listUnknowns(db, "open"),
     getCurrentState<RelationshipState>(db, "relationship"),
+    listAsks(db, "open").catch((): Awaited<ReturnType<typeof listAsks>> => []),
   ]);
   const his = rel.state.his_name;
   return {
@@ -527,6 +550,7 @@ async function checkContextFor(db: D1Database): Promise<Omit<CheckContext, "rece
     knownName: typeof his === "string" && his.trim() ? his.trim() : null,
     openUnknownTopics: unknowns.map((u) => u.topic),
     channel: "story",
+    openAsks: asks.filter((a) => a && a.status === "open").map((a) => ({ text: a.text, broughtUp: a.brought_up })),
   };
 }
 
@@ -534,12 +558,20 @@ function isUniqueViolation(e: unknown): boolean {
   return e instanceof Error && /UNIQUE constraint failed/i.test(e.message);
 }
 
+// The seconds the page counted since the call went live (the end body's `seconds`): the
+// per-minute floor sees the time since the last tick, up to one tick's worth, and a call
+// that ends before its first tick is not free. Never below what the ticks recorded.
+function secondsAtEnd(row: CallRow, reported: unknown): number {
+  const n = typeof reported === "number" && Number.isFinite(reported) && reported >= 0 ? Math.floor(reported) : row.seconds;
+  return Math.min(row.seconds + MAX_TICK_SECONDS, Math.max(row.seconds, n));
+}
+
 export async function endCall(
   env: Env,
   db: D1Database,
   settings: Settings,
   id: string,
-  body: { reason?: unknown; segments?: unknown; usage?: unknown },
+  body: { reason?: unknown; segments?: unknown; usage?: unknown; seconds?: unknown },
   actor: string,
   ctx?: ExecutionContext,
 ): Promise<EndCallResponse> {
@@ -554,11 +586,13 @@ export async function endCall(
   }
   const reasonRaw = typeof body.reason === "string" ? body.reason.trim().slice(0, MAX_REASON_CHARS) : "";
   const reason = reasonRaw || "ended";
-  const usage = parseUsage(body.usage) ?? parseUsageJson(row.usage_json);
+  const usage = mergeUsage(parseUsage(body.usage), parseUsageJson(row.usage_json));
   const segments = capSegments(mergeSegments(parseSegments(body.segments)));
 
-  // The final reconciliation, the same rule as the ticks.
-  const cost = callCostMicro(row.seconds, usage, cs);
+  // The final reconciliation, the same rule as the ticks, over the seconds the page
+  // counted (bounded by the ticks plus one tick's worth).
+  const seconds = secondsAtEnd(row, body.seconds);
+  const cost = callCostMicro(seconds, usage, cs);
   const delta = tickDelta(row.cost_usd_micro, cost);
   const total = Math.max(row.cost_usd_micro, cost);
   const model = row.model ?? cs.model;
@@ -577,7 +611,7 @@ export async function endCall(
     input_tokens: usage ? usage.audioIn + usage.textIn : 0,
     output_tokens: usage ? usage.audioOut + usage.textOut : 0,
     cost_usd_micro: total,
-    latency_ms: row.seconds * 1000,
+    latency_ms: seconds * 1000,
     status: "ok",
     error: null,
     flags_json: null,
@@ -585,15 +619,17 @@ export async function endCall(
   };
 
   // Her spoken turns get the flag-only run of the checks, in order, each seeing the ones
-  // before it as its recent replies.
+  // before it as its recent replies and what he said just before it as his text.
   const prepared: Array<{ who: "him" | "her"; text: string; at: string; flags: Flag[] }> = [];
   const herSoFar: string[] = [];
+  let hisLast = "";
   for (const s of segments) {
     if (s.who === "her") {
-      const r = flagOnlyChecks(s.text, { ...base, recentAssistantTexts: herSoFar.slice(-5) });
+      const r = flagOnlyChecks(s.text, { ...base, recentAssistantTexts: herSoFar.slice(-5), hisText: hisLast });
       herSoFar.push(r.text);
       prepared.push({ who: "her", text: r.text, at: s.at, flags: r.flags });
     } else {
+      hisLast = s.text;
       prepared.push({ who: "him", text: s.text, at: s.at, flags: [] });
     }
   }
@@ -632,12 +668,15 @@ export async function endCall(
       if (p.who === "her") stmts.push(contextStmt(db, mid, { callId: row.id, promptVersion }));
     });
     stmts.push(insertModelRunStmt(db, run));
-    stmts.push(db.prepare("UPDATE calls SET status = 'ended', ended_at = ?2, end_reason = ?3, usage_json = ?4, transcript_rows = ?5, cost_usd_micro = ?6 WHERE id = ?1")
-      .bind(row.id, t, reason, usage ? JSON.stringify(usage) : row.usage_json, prepared.length, total));
-    if (delta > 0) stmts.push(usageStmt(db, dayKey(), row.provider, model, 0, 0, delta));
+    stmts.push(db.prepare("UPDATE calls SET status = 'ended', ended_at = ?2, end_reason = ?3, usage_json = ?4, transcript_rows = ?5, cost_usd_micro = ?6, seconds = ?7 WHERE id = ?1")
+      .bind(row.id, t, reason, usage ? JSON.stringify(usage) : row.usage_json, prepared.length, total, seconds));
+    // A call that never ticked is counted as its one request here; otherwise the first
+    // tick counted it and the end adds only the last delta.
+    const requests = row.status === "starting" ? 1 : 0;
+    if (delta > 0 || requests > 0) stmts.push(usageStmt(db, dayKey(), row.provider, model, 0, 0, delta, requests));
     if (prepared.length) stmts.push(touchConversationStmt(db, row.conversation_id, t));
     stmts.push(auditStmt(db, actor, "call.end", "call", row.id, { status: row.status, seconds: row.seconds, cost_usd_micro: row.cost_usd_micro }, {
-      status: "ended", reason, seconds: row.seconds, cost_usd_micro: total, transcript_rows: prepared.length,
+      status: "ended", reason, seconds, cost_usd_micro: total, transcript_rows: prepared.length,
     }));
     return stmts;
   };
@@ -652,7 +691,7 @@ export async function endCall(
 
   const ended: CallRow = {
     ...row, status: "ended", ended_at: nowIso(), end_reason: reason, usage_json: usage ? JSON.stringify(usage) : row.usage_json,
-    transcript_rows: prepared.length, cost_usd_micro: total,
+    transcript_rows: prepared.length, cost_usd_micro: total, seconds,
   };
 
   // The proposal pass over the call's last exchange (its rows are the newest story

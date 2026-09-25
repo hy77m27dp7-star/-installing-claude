@@ -109,3 +109,29 @@ t("buildSystemPrompt: prefix equals stablePrefix() and prefix + separator + stat
   assert.equal(built.promptVersion, prompt.PROMPT_VERSION);
   assert.ok(built.promptVersion.startsWith(CONSTITUTION_VERSION + "-p5"));
 });
+
+// ------------------------------------------------------------------ v3 fix pass
+
+t("stateSections: an opener or a first text never sees the open asks (no unanswered ask leads a push-notified first text); a reply does", () => {
+  const opener = prompt.stateSections(fullState({ opener: true }));
+  assert.ok(!/You asked him:/.test(opener), "the asks line is absent on an opener");
+  assert.ok(/WHAT YOU WANT/.test(opener), "the wants themselves still render");
+  const reply = prompt.stateSections(fullState({ opener: false }));
+  assert.ok(/You asked him:/.test(reply), "a reply carries the open ask");
+});
+
+t("stateSections: an empty ledger next to a known fact about him says nothing is written down, never that they have not met", () => {
+  const known = prompt.stateSections(fullState({ history: [], hasSharedHistory: true }));
+  assert.ok(/SHARED HISTORY[^\n]*\n- nothing written down yet\./.test(known), known.split("SHARED HISTORY")[1]?.slice(0, 120));
+  assert.ok(!/You have not met him before this conversation/.test(known));
+  assert.ok(!/FIRST CONVERSATION/.test(known));
+  const stranger = prompt.stateSections(fullState({ history: [], justinFacts: [], hasSharedHistory: false }));
+  assert.ok(/- none\. You have not met him before this conversation\./.test(stranger));
+  assert.ok(/FIRST CONVERSATION/.test(stranger));
+});
+
+t("stateSections: the record is never the owner's in her prompt (the owner is a leak term for her speech)", () => {
+  const s = prompt.stateSections(fullState());
+  assert.ok(!/\bthe owner\b/i.test(s), "state sections name no owner");
+  assert.ok(!/\bthe owner\b/i.test(prompt.stablePrefix()), "the stable prefix names no owner");
+});

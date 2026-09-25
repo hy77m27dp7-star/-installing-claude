@@ -666,7 +666,7 @@ async function scenariosV2(report, conversationId) {
     assert.equal(original.realDelayMaxMinutes, 6);
     assert.equal(original.driftCheckEnabled, false);
     assert.equal(original.timezone, "America/New_York");
-    assert.equal(original.herFirstTextsPerDay, 10);
+    assert.equal(original.herFirstTextsPerDay, 0, "her first texts ship off (opt-in)");
     assert.equal(original.herFirstQuietHours, "23:30-08:30");
     assert.equal(typeof original.voiceProvider, "string");
     assert.equal(typeof original.voiceMode, "string");
@@ -1178,13 +1178,16 @@ async function scenariosV2(report, conversationId) {
   });
 
   await report.check("POST /api/herfirst/run: cap 10, waking window closing -> one assistant message with no user message; push logged as skipped (no VAPID keys)", async () => {
-    // Her timezone becomes UTC and the quiet window opens 25 minutes from now, so the
-    // waking window has about one tick left and the whole cap of 10 must land in it:
-    // the per-tick probability is 1. Nothing else about her day blocks: no busy thread,
-    // a fresh conversation with no messages, today's count 0.
+    // Her timezone becomes UTC and the quiet window opens 25 minutes from now and runs
+    // around the clock to five minutes ago, so this tick (and at most the next) are the
+    // only waking ticks left today whatever the hour: the whole cap of 10 must land in
+    // them and the per-tick probability is 1. (An eight-hour window from now+25 closed the
+    // day only after 15:35 UTC, which made the check depend on the clock.) Nothing else
+    // about her day blocks: no busy thread, a fresh conversation with no messages, today's
+    // count 0.
     const now = new Date();
     const quietStart = new Date(now.getTime() + 25 * 60_000);
-    const quietEnd = new Date(quietStart.getTime() + 8 * 3600_000);
+    const quietEnd = new Date(now.getTime() - 5 * 60_000);
     const set = await api("PUT", "/api/settings", { timezone: "UTC", herFirstTextsPerDay: 10, herFirstQuietHours: `${hhmm(quietStart)}-${hhmm(quietEnd)}` });
     assert.equal(set.status, 200, set.text);
     const life = await api("GET", "/api/life?status=active");
@@ -1660,13 +1663,13 @@ async function scenariosV3(report) {
     assert.equal(row.brought_up, 0);
   });
 
-  await report.check("two [[NAG:song you meant]] turns -> brought_up 1 after the first, ask_nag retry on the second", async () => {
-    const first = await turn(conversationId, "[[NAG:song you meant]] ok", key("v3-nag1"));
+  await report.check("two [[NAG]] turns (the stub nags about the ask the prompt shows; his text carries none of its words) -> brought_up 1 after the first, ask_nag retry on the second; an ask he raises himself is answered, not nagged", async () => {
+    const first = await turn(conversationId, "[[NAG]] ok", key("v3-nag1"));
     assert.equal(first.status, 200, first.text);
     assert.equal((await contextOf(first.json.assistantMessage.id)).retried, false, "the first mention is allowed");
     const row1 = (await api("GET", "/api/wants")).json.asks.find((a) => a.id === askId);
     assert.equal(row1.brought_up, 1, "brought up once");
-    const second = await turn(conversationId, "[[NAG:song you meant]] ok", key("v3-nag2"));
+    const second = await turn(conversationId, "[[NAG]] ok", key("v3-nag2"));
     assert.equal(second.status, 200, second.text);
     // The second mention is ask_nag on the first draft, a retry; the stub answers a retry
     // with the previous real message, triggers stripped, so the stored reply is clean.
@@ -1677,6 +1680,12 @@ async function scenariosV3(report) {
     assert.ok(!/song you meant/.test(second.json.assistantMessage.content), "the stored reply does not nag");
     const row2 = (await api("GET", "/api/wants")).json.asks.find((a) => a.id === askId);
     assert.equal(row2.brought_up, 1, "still once");
+    // He raises the ask himself: her reply about it is an answer, so no retry.
+    const answered = await turn(conversationId, "[[NAG:song you meant]] i sent you the song you meant, did you listen", key("v3-nag3"));
+    assert.equal(answered.status, 200, answered.text);
+    const ctx3 = await contextOf(answered.json.assistantMessage.id);
+    assert.equal(ctx3.retried, false, "an ask he raised is answered, never nagged: " + JSON.stringify(answered.json.flags));
+    assert.ok(/song you meant/.test(answered.json.assistantMessage.content));
   });
 
   await report.check("PUT /api/asks/:id status let_go -> next turn's section omits it", async () => {
@@ -1977,9 +1986,17 @@ async function scenariosV3(report) {
     assert.equal(tooMany.status, 201, tooMany.text);
     const over = await api("POST", `/api/calls/${tooMany.json.call.id}/end`, { reason: "ended", segments: Array.from({ length: 2001 }, (_, i) => ({ who: "him", text: "x" + i, at: new Date().toISOString() })) });
     assert.equal(over.status, 400, over.text);
-    const empty = await api("POST", `/api/calls/${tooMany.json.call.id}/end`, { reason: "pagehide", segments: [] });
+    const empty = await api("POST", `/api/calls/${tooMany.json.call.id}/end`, { reason: "pagehide", segments: [], seconds: 25 });
     assert.equal(empty.status, 200, "a call with no segments still ends cleanly: " + empty.text);
     assert.equal(empty.json.call.transcript_rows, 0);
+    // A call that ends before its first tick is not free: the page's seconds set the floor.
+    assert.equal(empty.json.call.seconds, 25);
+    assert.equal(empty.json.call.cost_usd_micro, Math.ceil((25 / 60) * 0.3 * 1_000_000));
+    const over60 = await api("POST", "/api/calls/start", { conversationId: callConv });
+    assert.equal(over60.status, 201, over60.text);
+    const clamped = await api("POST", `/api/calls/${over60.json.call.id}/end`, { reason: "ended", segments: [], seconds: 3000 });
+    assert.equal(clamped.status, 200, clamped.text);
+    assert.equal(clamped.json.call.seconds, 60, "bounded by the ticks recorded plus one tick's worth");
   });
 
   await report.check("end on an unknown id -> 404; end twice -> 409 call_over", async () => {
@@ -2014,6 +2031,8 @@ async function scenariosV3(report) {
     assert.equal(gen.json.asset.role, "video");
     assert.equal(gen.json.asset.approval_status, "generating");
     clipId = gen.json.asset.id;
+    const listed = (await api("GET", "/api/assets")).json;
+    assert.ok(Array.isArray(listed.generating) && listed.generating.some((a) => a.id === clipId), "a clip still being made is listed under generating, so a reload finds it");
     const first = await api("POST", `/api/video/${clipId}/poll`);
     assert.equal(first.status, 200, first.text);
     assert.equal(first.json.status, "running");
@@ -2233,6 +2252,13 @@ async function scenariosV3(report) {
     assert.equal(n.status, 200, n.text);
     assert.equal(n.json.assistantMessage, null);
     assert.equal(n.json.tasting.status, "void");
+    // Taste again on the tasted key: refused before anything is spent (the row's key is
+    // taken); the page sends that key as a plain turn instead.
+    const before = (await api("GET", "/api/usage")).json;
+    const again = await api("POST", `/api/conversations/${tasteConv}/turn`, { content: "one more", idempotencyKey: k, tasting: true });
+    assert.equal(again.status, 409, again.text);
+    assert.equal(again.json.code, "idempotency_conflict");
+    assert.equal(JSON.stringify((await api("GET", "/api/usage")).json.byDay), JSON.stringify(before.byDay), "nothing spent on the refused tasting");
     const retry = await turn(tasteConv, "one more", k);
     assert.equal(retry.status, 200, retry.text);
     assert.equal(retry.json.userMessage.id, r.json.userMessage.id, "the stored user row is continued");
@@ -2326,7 +2352,7 @@ async function scenariosV3(report) {
     assert.equal(side.json.count, lines.length);
     assert.equal(side.json.lineHashes.length, lines.length);
     assert.equal(side.json.systemMode, "compact");
-    assert.equal(side.json.stripHim, false);
+    assert.equal(side.json.stripHim, true, "absent stripHim = 1: his answer holds for a bare GET, not only the panel");
     const { createHash } = await import("node:crypto");
     const hashes = lines.map((l) => createHash("sha256").update(l).digest("hex"));
     assert.deepEqual(side.json.lineHashes, hashes);
@@ -2335,7 +2361,9 @@ async function scenariosV3(report) {
   });
 
   await report.check("with a justin fact approved: export.json sentFactIds names it and sentHisName reflects the state; stripHim=1 -> no WHAT YOU KNOW ABOUT HIM, no his_name, sentFactIds empty", async () => {
-    const side = await api("GET", "/api/finetune/export.json");
+    const bare = await api("GET", "/api/finetune/export.json");
+    assert.deepEqual(bare.json.sentFactIds, [], "a bare GET strips him (the default is on)");
+    const side = await api("GET", "/api/finetune/export.json?stripHim=0");
     assert.ok(side.json.sentFactIds.includes(cousinFactId), "sentFactIds: " + JSON.stringify(side.json.sentFactIds));
     const rel = (await api("GET", "/api/state")).json.relationship.state;
     assert.equal(side.json.sentHisName, !!(rel.his_name && String(rel.his_name).trim()));

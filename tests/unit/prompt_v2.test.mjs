@@ -57,7 +57,7 @@ test("stateSections: apart -> texting from the location, or from wherever her da
   assert.ok(known.includes("MODE: apart"));
   assert.ok(known.includes("You are texting from the laundromat."));
   assert.ok(known.includes("He is not there."));
-  assert.ok(known.includes("No shared physical scene unless one starts in the conversation and the owner records it."));
+  assert.ok(known.includes("No shared physical scene unless one starts in the conversation and is written into the record."));
   const unknown = stateSections(promptStateV2());
   assert.ok(unknown.includes("You are texting from wherever your day has you."));
   assert.ok(!unknown.includes("MODE: together"));

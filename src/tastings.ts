@@ -12,8 +12,8 @@
 // he picks, hands the tasting back for replay to a tasting turn with the same key, and
 // expires an abandoned one (30 minutes; nightly too, through expireStaleStmts).
 import { GenerateFailure, afterReply, commitReply, draftFromStored, generateDraft, prepareTurn, recordRuns, runStatements } from "./chat";
-import type { Generated, Performer as ChatPerformer, Prepared } from "./chat";
-import { assertBudget, assertTastingBudget, hasPrice } from "./budget";
+import type { Generated, Performer as ChatPerformer, Prepared, StoredTurnContext } from "./chat";
+import { assertBudget, assertTastingBudget, estimateUsd, hasPrice } from "./budget";
 import { providerConfigured } from "./providers/index";
 import { seededUnit } from "./life";
 import { auditStmt, getMessage, insertMessageStmt, newId, nextSeq, nowIso, putSettings, touchConversationStmt } from "./db";
@@ -48,6 +48,9 @@ export interface TastingRow {
   cost_usd_micro: number;
   created_at: string;
   decided_at: string | null;
+  // The state both candidates were generated from (chat.StoredTurnContext as JSON), so the
+  // pick commits what the performers saw; null on a row from before migration 0006.
+  context_json?: string | null;
 }
 
 export interface TastingCandidateRow {
@@ -273,8 +276,27 @@ export function expireStaleStmts(db: D1Database, now: Date): D1PreparedStatement
 }
 
 function tastingStmt(db: D1Database, t: TastingRow): D1PreparedStatement {
-  return db.prepare("INSERT INTO tastings (id, conversation_id, user_message_id, idempotency_key, left_side, status, a_provider, a_model, b_provider, b_model, pick, winner_side, cost_usd_micro, created_at, decided_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)")
-    .bind(t.id, t.conversation_id, t.user_message_id, t.idempotency_key, t.left_side, t.status, t.a_provider, t.a_model, t.b_provider, t.b_model, t.pick, t.winner_side, t.cost_usd_micro, t.created_at, t.decided_at);
+  return db.prepare("INSERT INTO tastings (id, conversation_id, user_message_id, idempotency_key, left_side, status, a_provider, a_model, b_provider, b_model, pick, winner_side, cost_usd_micro, created_at, decided_at, context_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)")
+    .bind(t.id, t.conversation_id, t.user_message_id, t.idempotency_key, t.left_side, t.status, t.a_provider, t.a_model, t.b_provider, t.b_model, t.pick, t.winner_side, t.cost_usd_micro, t.created_at, t.decided_at, t.context_json ?? null);
+}
+
+// The state the candidates saw, as stored with the tasting; null when the row has none.
+function storedContextOf(row: TastingRow): StoredTurnContext | null {
+  if (typeof row.context_json !== "string" || !row.context_json) return null;
+  try {
+    const v = JSON.parse(row.context_json) as Partial<StoredTurnContext>;
+    if (!v || typeof v !== "object" || typeof v.stateText !== "string") return null;
+    return { stateText: v.stateText, exemplars: Array.isArray(v.exemplars) ? v.exemplars : [], recall: v.recall && typeof v.recall === "object" ? v.recall : null };
+  } catch {
+    return null;
+  }
+}
+
+// The same key already went through a tasting that is no longer pending (void after
+// Neither, expired, picked with its reply gone): nothing is spent on it twice.
+async function priorTasting(db: D1Database, key: string): Promise<{ id: string; status: TastingStatus } | null> {
+  if (!key) return null;
+  return db.prepare("SELECT id, status FROM tastings WHERE idempotency_key = ?1").bind(key).first<{ id: string; status: TastingStatus }>();
 }
 
 function candidateStmt(db: D1Database, c: TastingCandidateRow): D1PreparedStatement {
@@ -341,9 +363,19 @@ export async function runTastingTurn(
   const prepared = await prepareTurn(env, db, settings, conversationId, content, idempotencyKey, actor, { tasting: true });
   if (prepared.replay) return prepared.replay;
   if (prepared.tastingReplay) return replayTasting(db, prepared.tastingReplay.id);
-  const estimate = prepared.estimateUsd;
-  await assertTastingBudget(db, settings, estimate * 2);
-  await assertBudget(db, settings, estimate * 2);
+  // A key whose tasting was already decided (Neither, expiry) would generate both sides
+  // and then fail the row's UNIQUE key: refused here, before anything is spent. The page's
+  // Retry runs a plain turn on that key; a new tasting needs a new message.
+  const prior = await priorTasting(db, prepared.key);
+  if (prior && prior.status !== "pending") {
+    throw new ApiHttpError(409, "idempotency_conflict", "this message was already tasted; Retry sends it as a plain turn", false, prior.id);
+  }
+  // Both sides are gated: A at the live performer's price (the estimate prepareTurn made)
+  // plus B at the tasting performer's own price, which may be several times higher.
+  const inputChars = prepared.req.system.length + prepared.req.messages.reduce((n, m) => n + m.content.length, 0);
+  const estimate = prepared.estimateUsd + estimateUsd(settings, ts.model, inputChars, settings.maxTokens);
+  await assertTastingBudget(db, settings, estimate);
+  await assertBudget(db, settings, estimate);
 
   // Both sides through the shared pipeline piece (same prompt, same checks, the same one
   // retry); a failed or refused side throws a GenerateFailure carrying its run rows.
@@ -425,6 +457,12 @@ export async function runTastingTurn(
     cost_usd_micro: candA.cost_usd_micro + candB.cost_usd_micro,
     created_at: t,
     decided_at: null,
+    // What both performers saw (the pick commits this, not a state rebuilt minutes later).
+    context_json: JSON.stringify({
+      stateText: prepared.stateText,
+      exemplars: prepared.assembled.state.exemplars ?? [],
+      recall: prepared.assembled.state.recall ?? null,
+    } satisfies StoredTurnContext),
   };
   const build = async (): Promise<D1PreparedStatement[]> => {
     const stmts: D1PreparedStatement[] = [];
@@ -438,11 +476,21 @@ export async function runTastingTurn(
     stmts.push(auditStmt(db, actor, "tasting.create", "tasting", tastingId, null, { conversationId, userMessageId: userRow.id, a: performerA, b: performerB, costUsd: row.cost_usd_micro / MICRO }));
     return stmts;
   };
+  const isUnique = (e: unknown): boolean => e instanceof Error && /UNIQUE constraint failed/i.test(e.message);
   try {
     await db.batch(await build());
   } catch (e) {
-    if (!(e instanceof Error && /UNIQUE constraint failed/i.test(e.message))) throw e;
-    await db.batch(await build());
+    if (!isUnique(e)) throw e;
+    // A seq taken by a concurrent turn: recompute once. Still failing: the key itself is
+    // taken (the same message tasted from another request in between); both sides' spend
+    // is recorded and the caller hears why, never a raw database error.
+    try {
+      await db.batch(await build());
+    } catch (e2) {
+      if (!isUnique(e2)) throw e2;
+      await recordRuns(db, [...a.generated.runs, ...b.generated.runs]);
+      throw new ApiHttpError(409, "idempotency_conflict", "this message was already tasted; Retry sends it as a plain turn", false);
+    }
   }
   return { tastingId, conversationId, userMessage: userRow, candidates: blindCandidates(row, [candA, candB]), expiresAt: expiresAtOf(row), replayed: false };
 }
@@ -510,11 +558,15 @@ export async function pickTasting(
       runId: winner.run_id,
       performer: chatPerformer(winnerPerformer),
     });
+    // The provenance, the exemplar uses and the recall row come from the state the two
+    // candidates were generated from (stored with the tasting), not from the rebuild.
+    const stored = storedContextOf(row);
     response = await commitReply(db, prepared, draft, [], {
       runIdOverride: winner.run_id,
       tastingId: id,
       tasting: { id, winner: winnerPerformer, loser: loserPerformer },
       performer: chatPerformer(winnerPerformer),
+      ...(stored ? { stored } : {}),
     });
   } catch (e) {
     try {

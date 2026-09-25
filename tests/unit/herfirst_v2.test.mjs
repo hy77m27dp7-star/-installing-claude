@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { loadSrc } from "./helpers.mjs";
 import { TZ } from "./helpers_v2.mjs";
 
-const { decideFirstText } = await loadSrc("herfirst");
+const { decideFirstText, HARD_REJECT_CODES, FIRST_TEXT_NOTE } = await loadSrc("herfirst");
 
 const MIN = 60_000;
 // Tuesday 10:30am New York: waking hours, far from the quiet window, hours of ticks left.
@@ -122,4 +122,11 @@ test("gates win over the window: a late-day send is still refused when busy, cap
   assert.equal(decide({ now: LATE, countToday: 10 }).send, false);
   assert.equal(decide({ now: LATE, lastMessageAt: new Date(LATE.getTime() - 5 * MIN) }).send, false);
   assert.equal(decide({ now: LATE, lastTwoAreHers: true }).send, false);
+});
+
+test("a first text is dropped for a dependency line or for an open ask leading it; the note forbids both in words", () => {
+  assert.ok(HARD_REJECT_CODES.has("dependency_hook"));
+  assert.ok(HARD_REJECT_CODES.has("ask_nag"));
+  assert.ok(/never say you missed him or waited/.test(FIRST_TEXT_NOTE));
+  assert.ok(/never make it about him being gone/.test(FIRST_TEXT_NOTE));
 });

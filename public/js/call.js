@@ -90,6 +90,19 @@ export const REASON_LABEL = {
   page_hidden: "Ended",
 };
 
+// A refused or missing microphone by its DOMException name (the legacy `.code` is 0 for
+// NotAllowedError, which would read as a chip saying "0").
+export function micErrorLabel(e) {
+  const name = e && typeof e.name === "string" ? e.name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") return "Microphone blocked";
+  if (name === "NotFoundError" || name === "OverconstrainedError" || name === "NotReadableError") return "No microphone";
+  return e && e.code ? String(e.code) : "call_failed";
+}
+
+// A WebRTC "disconnected" is transient (ICE usually recovers within seconds); only a state
+// still not connected after this long ends the call. "failed" and "closed" end it at once.
+export const DISCONNECT_GRACE_MS = 10_000;
+
 // Data-channel event names (OpenAI Realtime, GA shapes).
 const EV_HIS = "conversation.item.input_audio_transcription.completed";
 const EV_HER_DONE = "response.output_audio_transcript.done";
@@ -120,6 +133,10 @@ export function createCall(opts) {
     ticker: null,
     ending: null,
     liveHer: null,
+    // The wall clock of the last tick the server accepted: a tick reports the seconds since
+    // then (a background tab's timers are throttled; the constant would under-meter).
+    lastTickAt: 0,
+    disconnectTimer: null,
   };
 
   const setStatus = (label, live) => {
@@ -164,8 +181,10 @@ export function createCall(opts) {
   const stopTimers = () => {
     clearInterval(st.clock);
     clearInterval(st.ticker);
+    clearTimeout(st.disconnectTimer);
     st.clock = null;
     st.ticker = null;
+    st.disconnectTimer = null;
   };
 
   const releaseMedia = () => {
@@ -180,14 +199,19 @@ export function createCall(opts) {
 
   async function tick() {
     if (!st.id || !st.live || st.ended) return;
+    const now = Date.now();
+    // The elapsed wall seconds since the last accepted tick, at most one minute (the
+    // server's cap): a throttled interval or a lost tick still meters the time it covered.
+    const seconds = Math.min(60, Math.max(0, Math.floor((now - (st.lastTickAt || st.startedAt)) / 1000)));
     let r;
     try {
-      r = await api("POST", "/api/calls/" + encodeURIComponent(st.id) + "/tick", { seconds: st.tickSeconds, usage: st.usage });
+      r = await api("POST", "/api/calls/" + encodeURIComponent(st.id) + "/tick", { seconds, usage: st.usage });
     } catch (e) {
       // A call the server no longer knows ends here; a blip does not.
       if (e && (e.status === 404 || e.status === 409)) end("provider_error");
       return;
     }
+    st.lastTickAt = now;
     if (r && r.stop) end(r.reason || "budget");
   }
 
@@ -252,7 +276,21 @@ export function createCall(opts) {
     dc.addEventListener("message", (e) => onEvent(e.data));
     pc.addEventListener("connectionstatechange", () => {
       const s = pc.connectionState;
-      if (s === "failed" || s === "closed" || s === "disconnected") end("peer_closed");
+      if (s === "failed" || s === "closed") { end("peer_closed"); return; }
+      if (s === "disconnected") {
+        // Transient in WebRTC: give ICE its chance before hanging up on a network hop.
+        if (!st.disconnectTimer) {
+          st.disconnectTimer = setTimeout(() => {
+            st.disconnectTimer = null;
+            if (st.pc && st.pc.connectionState !== "connected" && !st.ended) end("peer_closed");
+          }, DISCONNECT_GRACE_MS);
+        }
+        return;
+      }
+      if (s === "connected" && st.disconnectTimer) {
+        clearTimeout(st.disconnectTimer);
+        st.disconnectTimer = null;
+      }
     });
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -293,8 +331,8 @@ export function createCall(opts) {
     } catch (e) {
       r = null;
       releaseMedia();
-      const code = e && e.code ? String(e.code) : "call_failed";
-      flashReason(code);
+      // The cause, not the generic label: a blocked microphone says so.
+      flashReason(micErrorLabel(e));
       setStatus("Ended", false);
       await end("provider_error");
       return;
@@ -302,14 +340,17 @@ export function createCall(opts) {
     r = null;
     st.live = true;
     st.startedAt = Date.now();
+    st.lastTickAt = st.startedAt;
     setStatus("Live", true);
     st.clock = setInterval(clockTick, 500);
     st.ticker = setInterval(tick, st.tickSeconds * 1000);
     window.addEventListener("pagehide", onPageHide);
   }
 
+  // The seconds ride along so the per-minute floor sees the time since the last tick (and
+  // a call that ends before its first tick is not free); the server bounds the figure.
   function endBody(reason) {
-    return { reason, segments: mergeSegments(st.segments), usage: st.usage };
+    return { reason, segments: mergeSegments(st.segments), usage: st.usage, seconds: st.seconds };
   }
 
   function onPageHide() {
@@ -330,7 +371,8 @@ export function createCall(opts) {
       releaseMedia();
       window.removeEventListener("pagehide", onPageHide);
       const label = REASON_LABEL[reason];
-      if (label && reason !== "hangup") flashReason(label);
+      // A more specific chip already set (a blocked microphone, a provider code) stays.
+      if (label && reason !== "hangup" && !els.reason.childElementCount) flashReason(label);
       setStatus("Ended", false);
       let result = null;
       if (st.id) {

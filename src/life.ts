@@ -79,7 +79,7 @@ const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const HHMM_RE = /^(\d{1,2}):(\d{2})$/;
 
 export const EMPTY_LIFE_LINE =
-  "Nothing about your days has been written down yet. You still have days. Mention ordinary things when they fit; they become real once the owner records them.";
+  "Nothing about your days has been written down yet. You still have days. Mention ordinary things when they fit; they become real once they are written down.";
 
 // ------------------------------------------------------------------ small pure helpers
 
@@ -508,12 +508,25 @@ function portraitCarryStmt(db: D1Database, id: string, portraitAssetId: string):
   return db.prepare("UPDATE life_threads SET portrait_asset_id = ?2 WHERE id = ?1").bind(id, portraitAssetId);
 }
 
-// v3: the statements that make a new head inherit its portrait and its memory weight
-// (SPEC_V3 sections BB and DD). `fromIds` are the rows the weight may live on, first wins.
+// v3: a portrait still being made or waiting for a decision names its person by the head id
+// it was made for (visual_assets.notes "person:<threadId>", portraits.ts); a new head takes
+// those rows with it, so an edit never orphans a candidate the pages key by the current head.
+function portraitNotesCarryStmt(db: D1Database, fromId: string, toId: string): D1PreparedStatement {
+  return db.prepare("UPDATE visual_assets SET notes = replace(notes, 'person:' || ?1, 'person:' || ?2) WHERE role = 'portrait' AND approval_status IN ('generating', 'candidate') AND notes LIKE 'person:' || ?1 || '%'")
+    .bind(fromId, toId);
+}
+
+// v3: the statements that make a new head inherit its portrait, its pending portrait
+// candidates and its memory weight (SPEC_V3 sections BB and DD). `fromIds` are the rows the
+// weight may live on, first wins.
 function headCarryStmts(db: D1Database, row: LifeThread, fromIds: string[]): D1PreparedStatement[] {
   const out: D1PreparedStatement[] = [];
   if (typeof row.portrait_asset_id === "string" && row.portrait_asset_id) out.push(portraitCarryStmt(db, row.id, row.portrait_asset_id));
-  for (const from of fromIds) if (from && from !== row.id) out.push(carryStmt(db, "thread", from, row.id));
+  for (const from of fromIds) {
+    if (!from || from === row.id) continue;
+    out.push(carryStmt(db, "thread", from, row.id));
+    out.push(portraitNotesCarryStmt(db, from, row.id));
+  }
   return out;
 }
 

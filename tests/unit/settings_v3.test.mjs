@@ -88,3 +88,17 @@ tDefaults("the owner's answers (2026-09-24) are the defaults: Portland, Maine wi
 tDefaults("canon/seed/settings.json mirrors every v3 default", () => {
   for (const key of Object.keys(V3_SETTINGS_TABLE)) assert.deepEqual(seed[key], DEFAULT_SETTINGS[key], key);
 });
+
+test("assertSettingsConsistent: a paid call provider must carry a per-minute price; the stub may run at 0", () => {
+  const current = { ...testSettings(), callProvider: "openai", callPricePerMinute: 0.3 };
+  assert.throws(() => assertSettingsConsistent(current, { callPricePerMinute: 0 }), (e) => e && e.status === 400 && /callPricePerMinute/.test(e.message));
+  assert.throws(() => assertSettingsConsistent({ ...current, callPricePerMinute: 0, callProvider: "stub" }, { callProvider: "openai" }), (e) => e && /callPricePerMinute/.test(e.message));
+  assert.doesNotThrow(() => assertSettingsConsistent({ ...current, callProvider: "stub" }, { callPricePerMinute: 0 }));
+  assert.doesNotThrow(() => assertSettingsConsistent(current, { callPricePerMinute: 0.5 }));
+});
+
+tDefaults("her first texts ship off (his word was opt-in): the default cap is 0, the ceiling 10", () => {
+  assert.equal(DEFAULT_SETTINGS.herFirstTextsPerDay, 0);
+  assert.equal(seed.herFirstTextsPerDay, 0);
+  assert.equal(validateSettingsPatch({ herFirstTextsPerDay: 10 }).herFirstTextsPerDay, 10);
+});

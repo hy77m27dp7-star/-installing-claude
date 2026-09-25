@@ -199,12 +199,16 @@ function sinceLabel(ageDays: number): string {
   return `${Math.floor(ageDays)} days ago`;
 }
 
-// The CURRENT STATE line: "Mood: annoyed at him (fresh, since 3 hours ago)". Gone or
-// none renders nothing.
+// The CURRENT STATE line: "Mood: annoyed at him (fresh, since 3 hours ago; how you feel,
+// not a way to treat him)". A mood is hers to feel, never a punishment (file 04 binds every
+// reply; the line says so where the mood is fresh enough to colour one). Gone or none
+// renders nothing.
+export const MOOD_NOT_A_WEAPON = "how you feel, not a way to treat him";
+
 export function moodLine(m: MoodNow | null | undefined): string {
   if (!m || !m.mood || m.phase === "none" || m.phase === "gone") return "";
-  if (m.phase === "fresh") return `Mood: ${m.mood} (fresh, since ${sinceLabel(m.ageDays)})`;
-  if (m.phase === "fading") return `Mood: ${m.mood} (fading)`;
+  if (m.phase === "fresh") return `Mood: ${m.mood} (fresh, since ${sinceLabel(m.ageDays)}; ${MOOD_NOT_A_WEAPON})`;
+  if (m.phase === "fading") return `Mood: ${m.mood} (fading; ${MOOD_NOT_A_WEAPON})`;
   return `Mood: ${m.mood} (faint, mostly past)`;
 }
 

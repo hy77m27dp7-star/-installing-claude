@@ -49,6 +49,44 @@ t("ask_nag: not yet brought up, or brought up without its keywords, is not a nag
   assert.ok(!has(runChecks("long day. tell me something", checkCtx({ openAsks: [{ text: "send me the song you meant", broughtUp: 1 }] })), "ask_nag"));
 });
 
+t("ask_nag: an ask HE raised in his own message this turn is answered, never nagged (she always answers)", () => {
+  const ask = { text: "send me the song you meant", broughtUp: 1 };
+  const sent = runChecks("oh you actually sent it. ok the song you meant is better than you said", checkCtx({ openAsks: [ask], hisText: "sent you the song i meant, finally" }));
+  assert.ok(!has(sent, "ask_nag"), JSON.stringify(sent.flags));
+  const asked = runChecks("the song you meant? yeah i listened twice", checkCtx({ openAsks: [ask], hisText: "did you listen to the song i meant" }));
+  assert.ok(!has(asked, "ask_nag"), JSON.stringify(asked.flags));
+  const unprompted = runChecks("so about the song you meant. still there.", checkCtx({ openAsks: [ask], hisText: "long day at work" }));
+  assert.ok(has(unprompted, "ask_nag"), "his text elsewhere does not excuse the nag");
+});
+
+t("ask_nag: on an opener or a first text any open ask that leads the text is a retry, even one never brought up", () => {
+  const ask = { text: "send me the song you meant", broughtUp: 0 };
+  const opener = runChecks("did you ever find that song you meant", checkCtx({ openAsks: [ask], opener: true }));
+  assert.ok(has(opener, "ask_nag"), JSON.stringify(opener.flags));
+  assert.equal(sev(opener, "ask_nag"), "retry");
+  assert.ok(!has(runChecks("did you ever find that song you meant", checkCtx({ openAsks: [ask], opener: false })), "ask_nag"), "a reply may raise it once");
+  assert.ok(!has(runChecks("slow morning. the coffee place changed its cups", checkCtx({ openAsks: [ask], opener: true })), "ask_nag"), "an opener about her own day is fine");
+});
+
+// ------------------------------------------------------------------ dependency_hook and tech_leak (v3 fix pass)
+
+t("dependency_hook: miss you, missed you, missing you, waited for you, waiting for you are retries", () => {
+  for (const text of ["missed you today. that's all", "i miss you", "missing you a little", "waited for you all night", "waiting for you to say something"]) {
+    const r = runChecks(text, checkCtx());
+    assert.ok(has(r, "dependency_hook"), "expected dependency_hook for " + JSON.stringify(text));
+    assert.equal(sev(r, "dependency_hook"), "retry");
+  }
+  assert.ok(!has(runChecks("i missed the bus again", checkCtx()), "dependency_hook"), "missing a bus is not missing him");
+  assert.ok(!has(runChecks("the waiting room was empty", checkCtx()), "dependency_hook"));
+});
+
+t("tech_leak: \"the owner\" is an entity she cannot name in the story", () => {
+  const r = runChecks("i can't say that yet, the owner hasn't put it in the record", checkCtx());
+  assert.ok(has(r, "tech_leak"), JSON.stringify(r.flags));
+  assert.ok(!has(runChecks("for the record, i own that mistake", checkCtx()), "tech_leak"), "\"the record\" and \"own\" are her words");
+  assert.ok(!has(runChecks("the owner hasn't put it in the record", checkCtx({ channel: "operator" })), "tech_leak"), "operator channel is not the story");
+});
+
 // ------------------------------------------------------------------ shape_uniform
 
 const SAME = "Fine, that is fair. I did not think of it that way.";

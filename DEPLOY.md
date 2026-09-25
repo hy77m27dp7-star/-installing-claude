@@ -255,9 +255,9 @@ npm run db:remote
 npm run deploy
 ```
 
-- `ls migrations` must show 0005_v3.sql and 0005b_voicebank_seed.sql after the 0004 files.
+- `ls migrations` must show 0005_v3.sql, 0005b_voicebank_seed.sql and 0006_tasting_context.sql after the 0004 files (0006 is the v3 review fix: one nullable column on `tastings`).
 - `npm test` now also runs `build:voicebank` (it regenerates 0005b from canon/seed/voicebank.json; a regenerated file is byte-identical, so nothing changes in git).
-- `npm run db:remote` prints the two 0005 files as applied and skips 0001 to 0004d. Run it BEFORE the deploy: the new code reads the new tables on its first request. Apply 0005 and 0005b together; the seed file is written to be applied once and never re-applied (the ledger records it by name).
+- `npm run db:remote` prints the two 0005 files and 0006 as applied and skips 0001 to 0004d. Run it BEFORE the deploy: the new code reads the new tables on its first request. Apply 0005, 0005b and 0006 together; the seed file is written to be applied once and never re-applied (the ledger records it by name).
 - `npm run deploy` runs `npm test` and `check:deploy` again and then `wrangler deploy`. The output must list the custom domain and the same four cron triggers as v2. If it shows `workers.dev` as enabled, stop.
 
 Proof: the two curls of section 7, then `curl -sI https://avelie.bladepharoh.com/ | grep -i -E "content-security-policy|permissions-policy"` after logging in is not possible from curl (Access), so open the site in his Chrome and check the response headers in the Network tab: `content-security-policy` carries `connect-src 'self' https://api.openai.com` and `media-src 'self' blob:`, and `permissions-policy` carries `microphone=(self)`. Without them the Call button cannot reach the realtime provider or the microphone.

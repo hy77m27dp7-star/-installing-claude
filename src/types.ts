@@ -468,6 +468,10 @@ export interface CheckContext {
   exemplars?: string[];
   openAsks?: Array<{ text: string; broughtUp: number }>;
   recentSignatures?: string[];
+  // v3 fix pass: an opener or first text (an open ask may not lead it: ask_nag on any open
+  // ask), and his pending text (an ask he raised himself this turn is answered, never nagged).
+  opener?: boolean;
+  hisText?: string;
 }
 
 export interface CheckResult {

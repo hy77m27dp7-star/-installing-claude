@@ -152,3 +152,17 @@ tCb("callbacks: on an opener or a first text, no ask and no want whose last log 
   const reply = pick({ wants: [want], wantLog: [wantLogRow({ kind: "setback", note: "lost the take", occurred: daysAgo(5) })], asks: [askRow({ asked_at: daysAgo(4) })], opener: false });
   assert.ok(reply.some((c) => /lost the take|you asked him/.test(c.text)), "a reply keeps both kinds");
 });
+
+// ------------------------------------------------------------------ moodLine (v3 fix pass)
+
+t("moodLine: a fresh or fading mood says it is how she feels, not a way to treat him; a faint one and a gone one do not", () => {
+  const rel = (daysBack) => ({ mood: "annoyed at him", mood_set_at: daysAgo(daysBack), mood_days: 3 });
+  const fresh = wants.moodLine(wants.moodNow(rel(0.5), NOW, S));
+  assert.ok(/^Mood: annoyed at him \(fresh, since /.test(fresh), fresh);
+  assert.ok(/how you feel, not a way to treat him\)$/.test(fresh), fresh);
+  const fading = wants.moodLine(wants.moodNow(rel(2), NOW, S));
+  assert.ok(/^Mood: annoyed at him \(fading; how you feel, not a way to treat him\)$/.test(fading), fading);
+  assert.equal(wants.moodLine(wants.moodNow(rel(4), NOW, S)), "Mood: annoyed at him (faint, mostly past)");
+  assert.equal(wants.moodLine(wants.moodNow(rel(7), NOW, S)), "");
+  assert.ok(!BAD_TYPOGRAPHY.test(fresh + fading));
+});

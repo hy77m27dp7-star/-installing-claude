@@ -451,8 +451,11 @@ export async function exportTrainingStream(db: D1Database, settings: Settings, o
   const stripHim = opts.stripHim === true;
   const includeExplicit = opts.includeExplicit === true;
   if (mode === "full") {
-    const status = await finetuneStatus(db, settings);
-    if (status.approved > FULL_MODE_MAX_EXAMPLES) {
+    // Counted with the same includeExplicit the stream will use, so the gate counts what
+    // would actually go out.
+    const walk = await walkExchanges(db, { includeExplicit }, () => undefined);
+    const approved = walk.breakdown.keeps + walk.breakdown.rewrites + walk.breakdown.picks;
+    if (approved > FULL_MODE_MAX_EXAMPLES) {
       throw new ApiHttpError(413, "too_large", `full mode exports at most ${FULL_MODE_MAX_EXAMPLES} examples; use compact`, false);
     }
   }

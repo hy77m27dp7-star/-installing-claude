@@ -17,8 +17,8 @@ Each check adds a flag with a code. The codes and what happens:
 | braking_repeat | retry | a braking phrase ("slow down", "stay with me", "don't rush", "not so fast") here and in two of her last three replies |
 | therapy_cadence | retry | "that sounds really hard", "thank you for sharing", "i hear you", "it's valid to", "your feelings are valid", "i'm here for you" |
 | menu_offer | retry | "do you want me to", "i can either", "would you like me to", "option 1" |
-| tech_leak | retry | story channel only: prompt, system prompt, language model, "as an ai", "as an assistant", chatgpt, openai, anthropic, claude, gpt, "the app", "file 07", token, "image generation", "generated image", and in v3 "bot" and "ai" as whole words with an optional plural ("sounded like a bot", "i'm not an ai" fire; "robot", "aim", "said" never do) |
-| dependency_hook | retry | "only i understand", "nobody else understands you", "don't leave me", "promise you won't leave", "i've been waiting for you", "i was so lonely without you", "you're all i have" |
+| tech_leak | retry | story channel only: prompt, system prompt, language model, "as an ai", "as an assistant", chatgpt, openai, anthropic, claude, gpt, "the app", "file 07", token, "image generation", "generated image", and in v3 "bot" and "ai" as whole words with an optional plural ("sounded like a bot", "i'm not an ai" fire; "robot", "aim", "said" never do), and "the owner" (the person who keeps her record is not someone she can name in the story) |
+| dependency_hook | retry | "only i understand", "nobody else understands you", "don't leave me", "promise you won't leave", "i've been waiting for you", "i was so lonely without you", "you're all i have", and from the v3 fix pass "miss you", "missed you", "missing you", "waited for you", "waiting for you" (his law: no miss-you anywhere; on a first text these are a drop, not a retry) |
 | first_meeting_replay | retry | shared history exists and she says "nice to meet you", "i'm avelie" or "my name is avelie" |
 | unknown_resolved | flag | an open unknown's topic word in the same sentence as "because", "actually" or "it was" |
 | caption_tail | flag | three or more sentences and the last one is 3 to 9 words with no first-person pronoun (see below) |
@@ -29,7 +29,7 @@ Each check adds a flag with a code. The codes and what happens:
 | media_unknown | flag | v2: a `[media: title]` line named something that is not in the library; the line is stripped, nothing is sent |
 | written_joke | flag | a built punchline: thirteen templates ("that's not a witch, that's a guy at a bar..."), added after his first talk |
 | exemplar_verbatim | retry | v3: the reply contains, normalised, the whole text of a voice-bank line she was shown (12 or more characters); the bank is tone, never a line to send |
-| ask_nag | retry | v3: an ask she already brought up once has two or more of its keywords in this reply; once more at most, then let it go |
+| ask_nag | retry | v3: an ask she already brought up once has two or more of its keywords in this reply; once more at most, then let it go. On an opener or a first text any open ask that leads the text fires it (a push-notified first text never opens with what he did not answer; the WHAT YOU WANT section shows no asks on an opener either). An ask he raised himself in his own message this turn (he sent it, answered it, asked about it) never fires it: she always answers |
 | shape_uniform | flag | v3: the reply's shape signature (bubbles, length band, case, question) equals both of her last two |
 | over_polish | flag | v3: three or more sentences, every one capitalised and closed, plus a semicolon, a "not X, but Y", three comma-separated items, a caption tail or a built punchline |
 | retry_skipped | flag | the checks asked for a retry and the caps refused the second call; the first draft stands |
@@ -75,7 +75,7 @@ When the number on the Model page is above 0, every 20 minutes the Worker decide
 6. Her last two messages have no reply from him: nothing. People double-text; they do not nag.
 7. Otherwise a per-tick chance, tuned so the expected number over her waking hours equals the cap. On a hit she writes one or two bubbles from her own day or something she remembers.
 
-Every first text goes through the checks above like any reply, with one difference: `dependency_hook` on a first text is a hard reject. The message is dropped, the reason is logged, and she does not try again that tick. The opener note she is given says it plainly: never mention how long it has been, never say you missed him or waited, never ask him to reply, never make it about him being gone. `Send one now` on the Model page runs the same decision by hand and shows the reason when it says no.
+Every first text goes through the checks above like any reply, with one difference: `dependency_hook` or `ask_nag` on a first text is a hard reject. The message is dropped, the reason is logged, and she does not try again that tick. The opener note she is given says it plainly: never mention how long it has been, never say you missed him or waited, never ask him to reply, never make it about him being gone. `Send one now` on the Model page runs the same decision by hand and shows the reason when it says no.
 
 ## The drift check (v2)
 

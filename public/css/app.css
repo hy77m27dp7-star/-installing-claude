@@ -1251,6 +1251,8 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
   border-radius: 6px;
 }
 
+/* The three controls under her bubbles clear the 24px floor with room (why, note, keep/drop). */
+.meta .why, .meta .mark, .meta .note-btn { min-width: 28px; min-height: 28px; }
 .meta .mark:hover, .meta .note-btn:hover { color: var(--accent-solid); }
 .meta .mark.keep { color: var(--ok); }
 .meta .mark.drop { color: var(--danger); }
@@ -1362,7 +1364,8 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .call-captions .cap .who { font-size: 11px; color: var(--muted); margin: 0 6px; }
 .call-actions { display: flex; justify-content: center; gap: 10px; }
 .call-actions .icon-btn { width: 52px; height: 52px; border: 1px solid var(--line); }
-.call-actions .icon-btn.end { background: var(--danger); color: #fff; border-color: transparent; }
+/* A darker ground than --danger for the white glyph (5.0:1; the accent pink is 2.7:1). */
+.call-actions .icon-btn.end { background: #c8395a; color: #fff; border-color: transparent; }
 .call-actions .icon-btn[aria-pressed="true"] { color: var(--amber); background: rgba(242, 178, 60, 0.12); }
 .icon-btn.calling { color: var(--ok); animation: breathe 1.2s ease-in-out infinite; }
 

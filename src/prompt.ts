@@ -157,7 +157,7 @@ function modeSection(s: PromptState, now: Date, tz: string): string {
     }
   }
   return "MODE: apart\n" +
-    `You are texting from ${where}. He is not there. No shared physical scene unless one starts in the conversation and the owner records it.`;
+    `You are texting from ${where}. He is not there. No shared physical scene unless one starts in the conversation and is written into the record.`;
 }
 
 // A v3 section is a nicety: a renderer that throws costs the section, never the turn.
@@ -210,9 +210,13 @@ export function stateSections(s: PromptState): string {
     push(guarded("half-remember", () => halfRememberSection(recall)));
   }
 
+  // A fact about him ends the stranger mode as an entry does (context.ts hasSharedHistory),
+  // so an empty ledger next to a known fact says "nothing written down", never "never met".
   out.push(
     "SHARED HISTORY (only what actually happened between you two; add nothing)\n" +
-    (s.history.length ? s.history.map(historyBlock).join("\n\n") : "- none. You have not met him before this conversation."),
+    (s.history.length
+      ? s.history.map(historyBlock).join("\n\n")
+      : s.hasSharedHistory ? "- nothing written down yet." : "- none. You have not met him before this conversation."),
   );
 
   // Mood by phase (SPEC_V3 section CC) and a running cooling-off (SPEC_V2 section J).
@@ -230,7 +234,7 @@ export function stateSections(s: PromptState): string {
     "Relationship: " + relationshipLine(s.relationship) + "\n" +
     "Scene: " + JSON.stringify(s.scene) + "\n" +
     moodLines +
-    "The live conversation carries the immediate scene forward; this record moves only when the owner updates it.",
+    "The live conversation carries the immediate scene forward; this record moves only when it is updated.",
   );
 
   out.push(modeSection(s, now, tz));
@@ -249,11 +253,13 @@ export function stateSections(s: PromptState): string {
     if (life.trim()) out.push(life.trim());
   }
 
-  // What she wants and what she asked him for (SPEC_V3 section CC); omitted when empty.
+  // What she wants and what she asked him for (SPEC_V3 section CC); omitted when empty. An
+  // opener or a first text never sees the open asks: her push-notified first text must
+  // never open with the thing he did not answer (the picker keeps them out; so does this).
   if (s.wants || s.asks) {
     const wants = s.wants ?? [];
     const log = s.wantLog ?? [];
-    const asks = s.asks ?? [];
+    const asks = s.opener ? [] : s.asks ?? [];
     const limit = typeof s.wantsShown === "number" && Number.isFinite(s.wantsShown) ? s.wantsShown : WANTS_SHOWN_DEFAULT;
     push(guarded("wants", () => wantsSection(wants, log, asks, now, tz, limit)));
   }

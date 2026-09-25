@@ -15,6 +15,10 @@ export interface CheckContextV3 extends CheckContext {
   openAsks?: Array<{ text: string; broughtUp: number }>;
   // The signatures of her last replies, newest last (shape_uniform).
   recentSignatures?: string[];
+  // An opener or first text: no message of his, and an open ask may not lead it (ask_nag).
+  opener?: boolean;
+  // His pending text: an ask he raised himself this turn is being answered, not nagged.
+  hisText?: string;
 }
 
 // ------------------------------------------------------------------ phrase tables (lowercase)
@@ -52,6 +56,9 @@ export const TECH_LEAK_TERMS: string[] = [
   // "sounded like a bot" and "i'm not an ai" hit while "robot", "aim" and "said" never do.
   "bot",
   "ai",
+  // The person who curates her record is not someone she can name in the story ("the
+  // owner hasn't put it in the record"); "the owner of the bar" costs one retry, accepted.
+  "the owner",
 ];
 
 export const DEPENDENCY_PHRASES: string[] = [
@@ -62,6 +69,13 @@ export const DEPENDENCY_PHRASES: string[] = [
   "i've been waiting for you",
   "i was so lonely without you",
   "you're all i have",
+  // The owner's law (HANDOFF): no "miss you" anywhere, no waiting for him, in any reply and
+  // on a first text above all (herfirst.ts drops a first text that carries one of these).
+  "miss you",
+  "missed you",
+  "missing you",
+  "waited for you",
+  "waiting for you",
 ];
 
 export const MENU_PHRASES: string[] = ["do you want me to", "i can either", "would you like me to", "option 1"];
@@ -414,13 +428,25 @@ function runV3Checks(text: string, norm: string, sentences: string[], ctx: Check
     }
   }
 
-  // ask_nag (retry, section CC): an ask she has already brought up once more comes back again.
+  // ask_nag (retry, section CC): an ask she has already brought up once more comes back
+  // again; on an opener or a first text any open ask is one too many (a push-notified first
+  // text must never open with the thing he did not answer). An ask HE raised in his own
+  // message this turn (he sent it, answered it, asked about it) is being answered, never
+  // nagged: she always answers.
+  const hisNorm = typeof ctx.hisText === "string" && ctx.hisText.trim() ? normalize(ctx.hisText) : "";
   for (const ask of ctx.openAsks ?? []) {
-    if (!ask || typeof ask.text !== "string" || !(ask.broughtUp >= 1)) continue;
+    if (!ask || typeof ask.text !== "string") continue;
     const words = askWords(ask.text);
+    if (words.length < 2) continue;
+    if (hisNorm && words.filter((w) => termRe(w).test(hisNorm)).length >= 2) continue;
     const hits = words.filter((w) => termRe(w).test(norm)).length;
-    if (words.length >= 2 && hits >= 2) {
+    if (hits < 2) continue;
+    if (ask.broughtUp >= 1) {
       flags.push(flag("ask_nag", "retry", `open ask brought up again (${hits} of its words: "${ask.text.slice(0, 60)}")`));
+      break;
+    }
+    if (ctx.opener === true) {
+      flags.push(flag("ask_nag", "retry", `an open ask leads a first text (${hits} of its words: "${ask.text.slice(0, 60)}")`));
       break;
     }
   }

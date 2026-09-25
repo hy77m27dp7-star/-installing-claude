@@ -68,7 +68,7 @@ INSERT INTO settings (key, value, updated_at) VALUES ('replyDelayMode', '"instan
 INSERT INTO settings (key, value, updated_at) VALUES ('realDelayMaxMinutes', '6', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('driftCheckEnabled', 'false', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('timezone', '"America/New_York"', '2026-09-24T00:00:00.000Z');
-INSERT INTO settings (key, value, updated_at) VALUES ('herFirstTextsPerDay', '10', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('herFirstTextsPerDay', '0', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('herFirstQuietHours', '"23:30-08:30"', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('voiceProvider', '"workersai"', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('voiceMode', '"some"', '2026-09-24T00:00:00.000Z');

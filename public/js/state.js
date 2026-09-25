@@ -765,7 +765,10 @@ async function loadWants() {
 
 function progressBar(value) {
   const v = Math.max(0, Math.min(100, Number(value) || 0));
-  return h("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(v) }, h("span", { style: "width:" + v + "%" }));
+  // CSSOM, not a style attribute: the page's CSP has no style-src 'unsafe-inline'.
+  const fill = h("span");
+  fill.style.width = v + "%";
+  return h("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(v) }, fill);
 }
 
 function wantCard(w) {
@@ -1369,6 +1372,12 @@ async function loadVoice() {
   clear(cbox);
   if (counts) for (const k of ["unapproved", "approved", "rejected"]) if (counts[k] !== undefined) cbox.append(chip(k + " " + counts[k], k === "approved" ? "ok" : k === "rejected" ? "" : "amber"));
   renderTagFilter();
+  // The bulk decisions act on unapproved lines only (the route's rule), so they show on
+  // that filter alone.
+  const deciding = voiceStatus === "unapproved";
+  $("voiceApproveSelected").classList.toggle("hidden", !deciding);
+  $("voiceRejectSelected").classList.toggle("hidden", !deciding);
+  $("voiceApproveTag").classList.toggle("hidden", !deciding);
   $("voiceApproveTag").disabled = !voiceTag;
   if (!voiceLines.length) box.append(h("div", { class: "chips" }, chip("none")));
   for (const l of voiceLines) box.append(voiceRow(l));
@@ -1465,10 +1474,12 @@ function voiceRow(l) {
     chip(st, st === "approved" ? "ok" : st === "rejected" ? "" : "amber"),
     l.origin ? chip(l.origin) : null,
     Number(l.uses) > 0 ? chip("used " + l.uses) : null);
+  // A decision is offered only where the route takes one: an unapproved line (a decided
+  // line answers 409 already_decided).
   return h("div", { class: "line-row" },
     h("span", { class: "pick" }, pick),
     text,
-    h("div", { class: "actions" }, save, st !== "approved" ? approve : null, st !== "rejected" ? reject : null, editTags, meta, slot),
+    h("div", { class: "actions" }, save, st === "unapproved" ? approve : null, st === "unapproved" ? reject : null, editTags, meta, slot),
     h("div", { class: "tags" }, tagsBox, picker));
 }
 
