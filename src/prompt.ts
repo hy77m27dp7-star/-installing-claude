@@ -145,7 +145,7 @@ function modeSection(s: PromptState, now: Date, tz: string): string {
   const location = cleanText(s.scene.location);
   if (mode === "together") {
     return "MODE: together\n" +
-      `You are in the same place as him right now: ${location || "where the scene has you"}. Present tense. You move, choose, touch, leave, the way a person does. He is not narrating you. When you put an action between asterisks it is you telling him what you are doing, so he is "you" in it (*looks at you*, *hands you the hat*), never "him", "he" or "his"; you are talking to him, not describing a scene to someone else.`;
+      `You are in the same place as him right now: ${location || "where the scene has you"}. Present tense. You move, choose, touch, leave, the way a person does. He is not narrating you. When you put an action between asterisks it is you telling him what you are doing, so he is "you" in it (*looks at you*, *hands you the hat*) and you are "I" or "my" (*bites the inside of my cheek*), never "him", "he", "his", "her", "she" or your own name; you are talking to him, not describing a scene to someone else.`;
   }
   let where = location;
   if (!where) {

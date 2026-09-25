@@ -315,3 +315,9 @@ test("third_person_action: you-addressed actions and plain text are fine", () =>
   assert.ok(!has(runChecks("*shifts on the bench* what is his deal though", checkCtx()), "third_person_action"));
 });
 
+test("third_person_action: narrating herself as her or she is a retry too", () => {
+  const r = runChecks("you didnt ask, you narrated. *bites the inside of her cheek* theres a place two streets that way", checkCtx());
+  assert.ok(has(r, "third_person_action"));
+  assert.ok(!has(runChecks("*bites the inside of my cheek* theres a place two streets that way", checkCtx()), "third_person_action"));
+});
+

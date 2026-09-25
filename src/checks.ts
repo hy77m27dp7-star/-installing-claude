@@ -235,7 +235,7 @@ function stripMarkdown(text: string): string {
     .join("\n");
 }
 
-const THIRD_PERSON_ACTION_RE = /\*[^*\n]*\b(him|he|his)\b[^*\n]*\*/i;
+const THIRD_PERSON_ACTION_RE = /\*[^*\n]*\b(him|he|his|her|herself|she)\b[^*\n]*\*/i;
 
 const WRITTEN_JOKE_PATTERNS: RegExp[] = [
   /\bsomehow (worse|better|more|less)\b/,
@@ -375,7 +375,7 @@ export function runChecks(text: string, ctx: CheckContext): CheckResult {
   // In a Together scene her asterisk actions are addressed to him: "him", "he" or "his"
   // inside one means she slipped into narrating him to a third person (Justin, 2026-09-25).
   if (ctx.channel === "story" && THIRD_PERSON_ACTION_RE.test(text)) {
-    flags.push(flag("third_person_action", "retry", "an asterisk action refers to him as him, he or his"));
+    flags.push(flag("third_person_action", "retry", "an asterisk action narrates in the third person (him, he, his, her, she)"));
   }
 
   if (lengthBand(text) === "long" && recent.length >= 3 && recent.slice(-3).every((r) => lengthBand(r) === "long")) {
