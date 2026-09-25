@@ -283,17 +283,17 @@ export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWA
   const others = rest.length
     ? " (" + (rest.length === 1 ? rest[0] + " is" : rest.slice(0, -1).join(", ") + " and " + rest[rest.length - 1] + " are") + " the same person as " + head + ")"
     : "";
+  // Runway caps the prompt at 1000 units, so every word here costs scene words: the face and
+  // the bearing up front, the body AFTER the scene (the model follows the scene over an
+  // earlier line; a dusk railing picture on 2026-09-25 kept her face and lost her figure to
+  // "ribbed knit under a jacket"), and the scene gets whatever is left, cut at a word.
   const identity =
-    head + " is the woman in every reference image" + others + ". Show exactly her: the same person as " + head +
-    ", her face exactly as the references show it, and her full curvy hourglass figure with the same full bust the references show, never slimmed or flattened; her face fully visible and clearly lit even in a dusk, night or grainy scene, the eyes, brows, nose and mouth matching the references feature for feature; a clearly adult 22-year-old, fully clothed as the scene describes. " +
-    "Her clothes, the setting, the lighting and her pose come from the scene only, never from a reference. " +
-    "Candid, realistic phone photo, natural imperfections, no text, no watermark, no collage, one image.";
+    head + " is the woman in every reference image" + others + ". Show exactly her: her face as the references show it, feature for feature, fully visible and clearly lit even at dusk or night; " +
+    "a clearly adult 22-year-old, fully clothed as the scene describes. Striking, dresses well: clothes that fit and flatter her, upright easy posture, never frumpy, baggy or slouched. " +
+    "Clothes, setting, light and pose come from the scene only. Candid phone photo, no text, no watermark, no collage, one image.";
   const prefix = identity + " Scene: ";
-  // The figure is said again AFTER the scene, tied to the references that show her body: a
-  // dusk railing picture (2026-09-25) kept her face and lost her bust to "ribbed knit under a
-  // jacket" in the scene text, because the model follows the scene over a line it read earlier.
   const bodyRefs = rest.length ? rest.join(" and ") : head;
-  const suffix = " Her figure in this picture: the same full bust and curvy hourglass build as " + bodyRefs + ", clearly visible under whatever she is wearing, never slimmed or flattened.";
+  const suffix = " Her figure here as " + bodyRefs + " show it: full bust, defined waist, full shapely backside, an hourglass under any outfit, never slimmed, flattened or made heavy.";
   const clean = scene.replace(/\s+/g, " ").trim();
   return prefix + trimToWords(clean, MAX_PROMPT_UNITS - prefix.length - suffix.length) + suffix;
 }
