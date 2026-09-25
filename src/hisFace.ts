@@ -11,7 +11,7 @@
 // written to his message, never shown in the chat, never counted against the six-message
 // picture window. The pure rule lives at the top of this file so it unit-tests without a
 // database; the D1 and provider helpers follow.
-import { HIM_PREFIX, imageMime, isVisionModel } from "./vision";
+import { HIM_PREFIX, STUB_BLIND_MODEL, imageMime, isVisionModel } from "./vision";
 import type { ImageRef } from "./vision";
 import { assertBudget, costMicro, estimateUsd } from "./budget";
 import { getTextProvider, providerConfigured } from "./providers/index";
@@ -96,18 +96,38 @@ export function mentionsHisLooks(text: unknown): boolean {
 }
 
 // Whether the performer can look at a picture at all. Anthropic and OpenAI chat models
-// see; the stub pretends to; a Workers AI model only when its id says vision.
+// see; the stub pretends to (except STUB_BLIND_MODEL, the suites' text-only stand-in); a
+// Workers AI model only when its id says vision.
 export function performerCanSee(provider: ProviderName | string, model: string): boolean {
   switch (provider) {
     case "anthropic":
     case "openai":
-    case "stub":
       return true;
+    case "stub":
+      return model !== STUB_BLIND_MODEL;
     case "workersai":
       return isVisionModel(model);
     default:
       return false;
   }
+}
+
+// Whether every performer the call goes to can see. A plain turn names one; a tasting turn
+// names two (the live performer and side B), and both read the same system text and the
+// same messages, so the photos ride for both or for neither: a side that cannot see would
+// otherwise be told about pictures its adapter never sent. An empty list sees nothing.
+export function performersCanSee(performers: ReadonlyArray<{ provider: ProviderName | string; model: string }>): boolean {
+  return performers.length > 0 && performers.every((p) => p && performerCanSee(p.provider, p.model));
+}
+
+// His first turn of a conversation: no story row of his exists before this one. Her opener
+// (POST /open) and her first texts are her rows, so a conversation she began still has his
+// first turn ahead of it; the pending row is his own message on an idempotent resume. The
+// rows are the recent window (oldest first or any order); an all-hers window counts as his
+// first turn, which a window shorter than her run of unanswered texts can only get wrong
+// by showing the photos once more.
+export function isHisFirstTurn(rows: ReadonlyArray<{ id: string; role: string }>, pendingMessageId: string | null): boolean {
+  return rows.every((r) => r.role === "assistant" || r.id === pendingMessageId);
 }
 
 export interface ShowFaceArgs {
@@ -117,13 +137,15 @@ export interface ShowFaceArgs {
   turnsSinceLastShown: number;
   userText: string;
   settings: Partial<HisFaceSettings> | Settings | Record<string, unknown>;
-  // false when the performer cannot see (the section then carries no attached-photos line).
+  // false when a performer on the call cannot see (performersCanSee: on a tasting turn both
+  // sides must); the section then carries no attached-photos line.
   canSee?: boolean;
 }
 
-// The rule (SPEC_V3 JJ): never when the performer cannot see; the first user turn of a
-// conversation; any turn where he mentions his looks; every Together turn while
-// hisFaceInTogether is on; in Apart mode every hisFaceApartEvery-th turn (0 = never).
+// The rule (SPEC_V3 JJ): never when a performer on the call cannot see; his first turn of a
+// conversation (isHisFirstTurn: her opener does not count); any turn where he mentions his
+// looks; every Together turn while hisFaceInTogether is on; in Apart mode every
+// hisFaceApartEvery-th turn (0 = never).
 export function shouldShowFace(args: ShowFaceArgs): boolean {
   if (args.canSee === false) return false;
   const s = hisFaceSettings(args.settings as Record<string, unknown>);

@@ -369,7 +369,7 @@ What the export carries, said plainly: his approved facts, his recorded name and
 | POST | /api/him/describe | | `{ look }`: the story performer's own description of the photos on file, cleaned and cut at 600 characters, not saved. A paid call (`model_runs` kind `describe`, under the caps: 402 over one, 503 with the performer not configured, 409 `cannot_see` on a performer that cannot look at a picture, 409 `no_photos` with none on file, 502 on a refusal) |
 | PUT | /api/him/look | `{ look }` | `{ look }` as stored (trimmed, " -- " and "..." typography, at most 600 characters; "" clears it; audited `him.look.save`) |
 
-The words reach every turn as the WHAT HE LOOKS LIKE section; the photos ride on the provider call (never on his stored message) on the first turn of a conversation, whenever he mentions his looks, on every Together turn while `hisFaceInTogether` is on, and every `hisFaceApartEvery` turns in Apart mode. `GET /api/messages/:id/context` carries `hisFace: { section, shown, photos }`. `GET /api/assets` never lists a role `him` row.
+The words reach every turn as the WHAT HE LOOKS LIKE section; the photos ride on the provider call (never on his stored message) on his first turn of a conversation (her opener does not count), whenever he mentions his looks, on every Together turn while `hisFaceInTogether` is on, and every `hisFaceApartEvery` turns in Apart mode; never when a performer on the call cannot see (on a tasting turn both performers must). `GET /api/messages/:id/context` carries `hisFace: { section, shown, photos }`. `GET /api/assets` never lists a role `him` row.
 
 ## Settings added in v3
 
@@ -429,7 +429,7 @@ The words reach every turn as the WHAT HE LOOKS LIKE section; the photos ride on
 | hisLookText | `""` | a string, at most 600 characters after cleaning (em and en dashes become " -- ", the ellipsis character "..."); `PUT /api/him/look` writes it too |
 | hisFaceMax | 3 | 1 to 3 (photos of him on file, and how many ride along) |
 | hisFaceInTogether | true | boolean (the photos on every Together turn) |
-| hisFaceApartEvery | 8 | 0 to 50 (Apart mode: every N of her replies; 0 = only the first turn of a conversation) |
+| hisFaceApartEvery | 8 | 0 to 50 (Apart mode: every N of her replies; 0 = only his first turn of a conversation) |
 
 A database seeded before these keys existed reads them as the defaults; the deploy session inserts the four rows with INSERT OR IGNORE. Migration `0007_his_face.sql` adds `conversations.his_face_seq` (nullable; the Worker tolerates its absence).
 

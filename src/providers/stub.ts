@@ -8,7 +8,7 @@ import type {
 } from "../types";
 import { approxTokens, lastUserContent } from "./types";
 import type { ImageFromTextRequest, ImageProviderV3, VideoProvider, VideoStartRequest, VideoTaskStatus } from "./types";
-import { base64ToBytes, imagesOf, isHimRef } from "../vision";
+import { STUB_BLIND_MODEL, base64ToBytes, imagesOf, isHimRef } from "../vision";
 
 // Built at runtime so the typography scan of this file stays clean.
 const EM_DASH = String.fromCharCode(0x2014);
@@ -245,7 +245,9 @@ export const stubProvider: TextProvider = {
       // v3.1: his reference photos (him/ keys) are not a photo he sent; only his own count.
       // On a retry the real message is the one before the note, and its pictures too.
       const pictured = retry ? [...req.messages].reverse().filter((m) => m.role === "user")[1] : lastMessage;
-      const refs = pictured ? imagesOf(pictured) : [];
+      // v3.1 fix 1: the blind stub model opens no picture at all (a text-only performer),
+      // so [[HISFACE]] answers 0 on it and his own photo never reads as received.
+      const refs = pictured && req.model !== STUB_BLIND_MODEL ? imagesOf(pictured) : [];
       const hisRefs = refs.filter((i) => isHimRef(i)).length;
       const r = storyReply(subject, refs.length - hisRefs > 0, req.model, req.system, hisRefs);
       text = r.text;

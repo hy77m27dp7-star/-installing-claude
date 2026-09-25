@@ -2643,6 +2643,79 @@ async function scenariosV31(report) {
     await settingsPut({ hisFaceApartEvery: 8, hisFaceInTogether: true });
   });
 
+  // v3.1 fix 1 (d): his first turn is the first row of HIS. A conversation she opened
+  // (POST /open, her row first) still shows the photos on his first message, with the
+  // cadence at 0 and the Together switch off; the opener turn itself is hers, not his first.
+  await report.check("v3.1 fix 1: a conversation she opened -> her opener turn carried no photo (apart, cadence 0, together off); his first turn carried all 3; his second none; two of her rows first still count as his first", async () => {
+    await settingsPut({ hisFaceApartEvery: 0, hisFaceInTogether: false });
+    const opened = await newConversation("integration v3.1 her opener first");
+    const open = await api("POST", `/api/conversations/${opened}/open`);
+    assert.equal(open.status, 200, open.text);
+    assert.equal(open.json.userMessage, null);
+    const openCtx = await contextOf(open.json.assistantMessage.id);
+    assert.equal(openCtx.opener, true);
+    assert.deepEqual(openCtx.hisFace, { section: true, shown: false, photos: 0 }, "an opener turn is hers, never his first");
+    const first = await turn(opened, "[[HISFACE]] hi", key("v31-open-first"));
+    assert.equal(first.status, 200, first.text);
+    assert.equal(shownIn(first), 3, "his first turn after her opener");
+    const firstCtx = await contextOf(first.json.assistantMessage.id);
+    assert.deepEqual(firstCtx.hisFace, { section: true, shown: true, photos: 3 });
+    assert.equal(firstCtx.mode, "apart");
+    assert.equal(first.json.userMessage.images_json ?? null, null, "nothing written to his row");
+    const second = await turn(opened, "[[HISFACE]] and again", key("v31-open-second"));
+    assert.equal(shownIn(second), 0, "cadence 0: his second turn carries none");
+    const twice = await newConversation("integration v3.1 two of hers first");
+    assert.equal((await api("POST", `/api/conversations/${twice}/open`)).status, 200);
+    assert.equal((await api("POST", `/api/conversations/${twice}/open`)).status, 200);
+    const list = await api("GET", `/api/conversations/${twice}/messages?channel=story`);
+    assert.equal(list.json.length, 2);
+    assert.ok(list.json.every((m) => m.role === "assistant"), "two of her rows, none of his");
+    const afterTwo = await turn(twice, "[[HISFACE]] here", key("v31-open-twice"));
+    assert.equal(shownIn(afterTwo), 3, "still his first turn");
+    await settingsPut({ hisFaceApartEvery: 8, hisFaceInTogether: true });
+  });
+
+  // v3.1 fix 1 (e): a tasting turn names two performers on one system text and one message
+  // list. A side B that cannot see (the blind stub model, a text-only performer's stand-in)
+  // keeps the photos off both sides, so nobody is told about pictures never sent; a side B
+  // that sees gets them with the live performer.
+  await report.check("v3.1 fix 1: a tasting whose side B cannot see (stub-blind) -> neither side's call carried a photo, the pick's provenance says shown false; side B stub-b -> both carried 3, shown true", async () => {
+    const before = (await api("GET", "/api/settings")).json;
+    const one = { inputPerMTok: 1, outputPerMTok: 1 };
+    await settingsPut({ prices: { ...before.prices, stub: one, "stub-b": one, "stub-blind": one } });
+    await settingsPut({ tastingProvider: "stub", tastingModel: "stub-blind", tastingEnabled: true, tastingDailyCapUsd: 5 });
+    await setScene("together", "her kitchen");
+    const blind = await api("POST", `/api/conversations/${conversationId}/turn`, { content: "[[HISFACE]] both of you", idempotencyKey: key("v31-taste-blind"), tasting: true });
+    assert.equal(blind.status, 200, blind.text);
+    assert.equal(blind.json.candidates.length, 2, blind.text);
+    for (const c of blind.json.candidates) assert.ok(c.text.includes("0 on file"), "no side saw a photo: " + JSON.stringify(blind.json.candidates.map((x) => x.text)));
+    const blindPick = await api("POST", `/api/tastings/${blind.json.tastingId}/pick`, { pick: "left" });
+    assert.equal(blindPick.status, 200, blindPick.text);
+    assert.ok(blindPick.json.assistantMessage.content.includes("0 on file"));
+    const blindCtx = await contextOf(blindPick.json.assistantMessage.id);
+    assert.deepEqual(blindCtx.hisFace, { section: true, shown: false, photos: 0 }, "a together turn, but side B cannot see");
+    assert.equal(blindCtx.mode, "together");
+    assert.ok(blindCtx.tasting && blindCtx.tasting.winner, "a tasting pick");
+    assert.equal(blind.json.userMessage.images_json ?? null, null);
+    await settingsPut({ tastingModel: "stub-b" });
+    const sees = await api("POST", `/api/conversations/${conversationId}/turn`, { content: "[[HISFACE]] now both", idempotencyKey: key("v31-taste-sees"), tasting: true });
+    assert.equal(sees.status, 200, sees.text);
+    const texts = sees.json.candidates.map((c) => c.text);
+    assert.ok(texts.every((t) => t.includes("3 on file")), "both sides saw the three photos: " + JSON.stringify(texts));
+    assert.equal(texts.filter((t) => t.startsWith("b: ")).length, 1, "side B answered too: " + JSON.stringify(texts));
+    const seesPick = await api("POST", `/api/tastings/${sees.json.tastingId}/pick`, { pick: "right" });
+    assert.equal(seesPick.status, 200, seesPick.text);
+    const seesCtx = await contextOf(seesPick.json.assistantMessage.id);
+    assert.deepEqual(seesCtx.hisFace, { section: true, shown: true, photos: 3 }, "both see: the photos rode for both");
+    const plain = await turn(conversationId, "[[HISFACE]] just you", key("v31-taste-after"));
+    assert.equal(shownIn(plain), 3, "a plain together turn after the tastings");
+    await setScene("none", null);
+    const back = { tastingEnabled: before.tastingEnabled, tastingDailyCapUsd: before.tastingDailyCapUsd, prices: before.prices };
+    if (typeof before.tastingProvider === "string" && before.tastingProvider) back.tastingProvider = before.tastingProvider;
+    if (typeof before.tastingModel === "string" && before.tastingModel) back.tastingModel = before.tastingModel;
+    await settingsPut(back);
+  });
+
   await report.check("v3.1: the character export carries no photo of him; the fine-tune export drops WHAT HE LOOKS LIKE with stripHim=1 and keeps it with 0", async () => {
     const pkg = await api("GET", "/api/export/character");
     assert.equal(pkg.status, 200, pkg.text.slice(0, 200));

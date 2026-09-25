@@ -42,6 +42,11 @@ export function isVisionModel(model: string): boolean {
   return typeof model === "string" && VISION_MODEL_RE.test(model);
 }
 
+// v3.1 fix 1: the one stub model that cannot look at a picture, so the keyless suites can
+// exercise the cannot-see branch (a tasting side on a text-only model, hisFace.ts
+// performerCanSee). Every other stub model pretends to see.
+export const STUB_BLIND_MODEL = "stub-blind";
+
 // The four types the APIs accept; anything else is sent as jpeg (the bytes were sniffed
 // on upload, so an unknown value here is a missing one, not a wrong one).
 export function imageMime(mime: string | null | undefined): ImageMime {

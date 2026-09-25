@@ -360,7 +360,7 @@ export async function runTastingTurn(
   // Everything a turn needs, once; both sides share it (same prompt, same checks). The
   // gate inside hands a pending tasting with this key back as a replay and answers any
   // other pending one with 409 tasting_pending.
-  const prepared = await prepareTurn(env, db, settings, conversationId, content, idempotencyKey, actor, { tasting: true });
+  const prepared = await prepareTurn(env, db, settings, conversationId, content, idempotencyKey, actor, { tasting: true, tastingPerformer: { provider: ts.provider, model: ts.model } });
   if (prepared.replay) return prepared.replay;
   if (prepared.tastingReplay) return replayTasting(db, prepared.tastingReplay.id);
   // A key whose tasting was already decided (Neither, expiry) would generate both sides
@@ -546,7 +546,9 @@ export async function pickTasting(
   const loserPerformer = performerOf(row, winnerSide === "A" ? "B" : "A");
   let response: TurnResponse;
   try {
-    const prepared = await prepareTurn(env, db, settings, row.conversation_id, user.content, row.idempotency_key, actor, { tasting: true, tastingPickId: id });
+    // Side B from the row, so the rebuild decides his photos the way the tasting did
+    // (v3.1 fix 1: both performers must see), whatever the tasting settings say now.
+    const prepared = await prepareTurn(env, db, settings, row.conversation_id, user.content, row.idempotency_key, actor, { tasting: true, tastingPickId: id, tastingPerformer: chatPerformer(performerOf(row, "B")) });
     if (prepared.replay) throw new ApiHttpError(409, "already_decided", "the message already has a reply", false);
     // The run rows were stored with the tasting, so the commit carries none; the
     // provenance names both performers.

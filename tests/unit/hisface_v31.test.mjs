@@ -23,7 +23,8 @@ const { stripHimFromState } = await loadSrc("finetune");
 const { stubProvider, STUB_LOOK } = await loadSrc("providers/stub");
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-const { shouldShowFace, hisLookSection, hisFaceSettings, cleanLookText, mentionsHisLooks, performerCanSee, himRefs, mimeOfKey, attachedLine, LOOK_SECTION_HEADER, LOOK_NO_WORDS_LINE, DESCRIBE_SYSTEM, DESCRIBE_PREFIX, HIS_FACE_DEFAULTS } = hisFace;
+const { shouldShowFace, hisLookSection, hisFaceSettings, cleanLookText, mentionsHisLooks, performerCanSee, performersCanSee, isHisFirstTurn, himRefs, mimeOfKey, attachedLine, LOOK_SECTION_HEADER, LOOK_NO_WORDS_LINE, DESCRIBE_SYSTEM, DESCRIBE_PREFIX, HIS_FACE_DEFAULTS } = hisFace;
+const { STUB_BLIND_MODEL } = vision;
 
 const S = { hisFaceInTogether: true, hisFaceApartEvery: 8 };
 const rule = (over) => shouldShowFace({ mode: "apart", isFirstTurnOfConversation: false, turnsSinceLastShown: 1, userText: "hey", settings: S, canSee: true, ...over });
@@ -88,13 +89,45 @@ test("shouldShowFace and hisFaceSettings: a missing key reads as its default, an
   assert.deepEqual(HIS_FACE_DEFAULTS, { hisLookText: "", hisFaceMax: 3, hisFaceInTogether: true, hisFaceApartEvery: 8 });
 });
 
-test("performerCanSee: the chat models see, the stub pretends to, a Workers AI model only when its id says vision", () => {
+test("performerCanSee: the chat models see, the stub pretends to (except the blind stub model), a Workers AI model only when its id says vision", () => {
   assert.equal(performerCanSee("anthropic", "claude-opus-5-5"), true);
   assert.equal(performerCanSee("openai", "gpt-4.1"), true);
   assert.equal(performerCanSee("stub", "anything"), true);
+  assert.equal(performerCanSee("stub", "stub-b"), true);
+  assert.equal(STUB_BLIND_MODEL, "stub-blind");
+  assert.equal(performerCanSee("stub", STUB_BLIND_MODEL), false);
   assert.equal(performerCanSee("workersai", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"), false);
   assert.equal(performerCanSee("workersai", "@cf/meta/llama-3.2-11b-vision-instruct"), true);
   assert.equal(performerCanSee("nope", "x"), false);
+});
+
+// v3.1 fix 1 (e): a tasting turn names two performers and both read one system text and one
+// message list, so the photos ride for both or for neither.
+test("performersCanSee: every performer on the call must see; a text-only side B blinds the turn; an empty list sees nothing", () => {
+  const live = { provider: "anthropic", model: "claude-opus-5-5" };
+  assert.equal(performersCanSee([live]), true);
+  assert.equal(performersCanSee([live, { provider: "openai", model: "gpt-4.1" }]), true);
+  assert.equal(performersCanSee([live, { provider: "workersai", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" }]), false, "side B cannot see");
+  assert.equal(performersCanSee([{ provider: "workersai", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" }, live]), false, "the live one cannot see");
+  assert.equal(performersCanSee([live, { provider: "workersai", model: "@cf/meta/llama-3.2-11b-vision-instruct" }]), true, "a vision side B sees");
+  assert.equal(performersCanSee([{ provider: "stub", model: "stub" }, { provider: "stub", model: STUB_BLIND_MODEL }]), false);
+  assert.equal(performersCanSee([{ provider: "stub", model: "stub" }, { provider: "stub", model: "stub-b" }]), true);
+  assert.equal(performersCanSee([]), false);
+  assert.equal(shouldShowFace({ mode: "together", isFirstTurnOfConversation: true, turnsSinceLastShown: Infinity, userText: "my beard", settings: S, canSee: performersCanSee([live, { provider: "workersai", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" }]) }), false, "the rule reads it as cannot see");
+});
+
+// v3.1 fix 1 (d): his first turn is the first row of HIS, not the first row of the
+// conversation: her opener (POST /open) and her first texts come before it.
+test("isHisFirstTurn: no rows, only her rows, or only his pending row -> true; any earlier row of his -> false", () => {
+  assert.equal(isHisFirstTurn([], null), true, "an empty conversation");
+  assert.equal(isHisFirstTurn([{ id: "m_open", role: "assistant" }], null), true, "her opener only");
+  assert.equal(isHisFirstTurn([{ id: "m_t1", role: "assistant" }, { id: "m_t2", role: "assistant" }], null), true, "two first texts of hers, unanswered");
+  assert.equal(isHisFirstTurn([{ id: "m_pending", role: "user" }], "m_pending"), true, "his own pending row on an idempotent resume");
+  assert.equal(isHisFirstTurn([{ id: "m_open", role: "assistant" }, { id: "m_pending", role: "user" }], "m_pending"), true, "her opener, then his pending row");
+  assert.equal(isHisFirstTurn([{ id: "m_his", role: "user" }], null), false, "one earlier row of his");
+  assert.equal(isHisFirstTurn([{ id: "m_his", role: "user" }, { id: "m_hers", role: "assistant" }], null), false);
+  assert.equal(isHisFirstTurn([{ id: "m_open", role: "assistant" }, { id: "m_his", role: "user" }, { id: "m_hers", role: "assistant" }, { id: "m_pending", role: "user" }], "m_pending"), false, "his reply to her opener was answered; this is his second");
+  assert.equal(isHisFirstTurn([{ id: "m_his", role: "user" }], "m_other"), false, "a stored row of his that is not the pending one");
 });
 
 test("himRefs and mimeOfKey: only him/ keys become refs, the mime from the extension", () => {
@@ -270,6 +303,13 @@ test("stub: the describe pass answers a fixed description; [[HISFACE]] reports h
   assert.ok(!refsOnly.text.includes("(photo received)"), "a reference photo of him is not a photo he sent: " + refsOnly.text);
   const own = await stubProvider.generate({}, { ...base, messages: [{ role: "user", content: "hey there", images: [{ key: "him/a.jpg", mime: "image/jpeg" }, { key: "inbox/in_1/0.png", mime: "image/png" }] }] });
   assert.ok(own.text.includes("(photo received)"));
+  // v3.1 fix 1: the blind stub model opens nothing: [[HISFACE]] answers 0 and his own photo
+  // never reads as received, the way a text-only Workers AI model behaves.
+  const blind = await stubProvider.generate({}, { ...base, model: STUB_BLIND_MODEL, messages: [{ role: "user", content: "[[HISFACE]] hey", images: [{ key: "him/a.jpg", mime: "image/jpeg" }, { key: "him/b.png", mime: "image/png" }] }] });
+  assert.equal(blind.text, "i know your face. 0 on file");
+  assert.equal(blind.model, STUB_BLIND_MODEL);
+  const blindOwn = await stubProvider.generate({}, { ...base, model: STUB_BLIND_MODEL, messages: [{ role: "user", content: "hey there", images: [{ key: "inbox/in_1/0.png", mime: "image/png" }] }] });
+  assert.ok(!blindOwn.text.includes("(photo received)"), blindOwn.text);
 });
 
 // ------------------------------------------------------------------ the migration

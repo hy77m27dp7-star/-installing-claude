@@ -104,6 +104,11 @@ export interface TurnOptions {
   // v3.1 (SPEC_V3 JJ): false keeps his reference photos off this turn's call (the drift
   // cron); the WHAT HE LOOKS LIKE words still render. Default: the rule decides.
   hisFace?: boolean;
+  // v3.1 fix 1: the tasting's side B (tastings.ts names it on a tasting turn and again at
+  // pick time, from the row). Both sides read one system text and one message list, so his
+  // photos ride only when both performers can see; otherwise neither side gets them and
+  // the section carries no attached-photos line.
+  tastingPerformer?: Performer;
 }
 
 // Who generates: the live performer by default, the tasting performer for side B.
@@ -521,7 +526,13 @@ export async function prepareTurn(
   // 4. context (read only), then 3. budget from the real prompt size; nothing is written yet
   const now = new Date();
   const pendingImages: ImageRef[] = !opener && opts && Array.isArray(opts.images) ? opts.images : [];
-  const assembled = await assembleContext(db, conversationId, settings, userText, existingUser ? existingUser.id : null, now, pendingImages, { opener, env, hisFace: opts?.hisFace });
+  const sideB = opts?.tastingPerformer;
+  const assembled = await assembleContext(db, conversationId, settings, userText, existingUser ? existingUser.id : null, now, pendingImages, {
+    opener,
+    env,
+    hisFace: opts?.hisFace,
+    ...(sideB ? { performers: [performer, sideB] } : {}),
+  });
   const statePart = opener ? assembled.systemParts.state + SYSTEM_SEPARATOR + openerBlock(openerNote) : assembled.systemParts.state;
   const system = assembled.systemParts.prefix + SYSTEM_SEPARATOR + statePart;
   const inputChars = system.length + assembled.messages.reduce((n, m) => n + m.content.length, 0);

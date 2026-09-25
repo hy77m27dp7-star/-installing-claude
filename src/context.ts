@@ -23,7 +23,7 @@ import { listAsks, listWantLogRecent, listWants } from "./wants";
 import { outfitNow, todayRows } from "./grounding";
 import { getWeather } from "./weather";
 import { shapeCue, signature } from "./imperfection";
-import { himRefs, loadHisLook, performerCanSee, shouldShowFace, turnsSinceFaceShown } from "./hisFace";
+import { himRefs, isHisFirstTurn, loadHisLook, performersCanSee, shouldShowFace, turnsSinceFaceShown } from "./hisFace";
 import type { ImageRef } from "./vision";
 import type {
   AssembledContext, AskRow, ChatMessage, Correction, Env, HisLook, HistoryRow, MediaRow, OutfitNow, PromptCallback, PromptState, RecallPick,
@@ -373,6 +373,9 @@ export interface AssembleOptions {
   // v3.1: false keeps his reference photos off the call (the drift cron's throwaway turns);
   // the words still render.
   hisFace?: boolean;
+  // v3.1 fix 1: every performer this turn's call goes to (a tasting turn names the live one
+  // and side B); the live performer alone when absent. The photos ride only when all can see.
+  performers?: ReadonlyArray<{ provider: string; model: string }>;
 }
 
 // pendingMessageId names a stored user row that pendingUserText repeats (an idempotent
@@ -431,14 +434,17 @@ export async function assembleContext(
   let hisFaceShown = 0;
   const look = state.hisLook;
   if (look && look.photos.length && opts.hisFace !== false) {
-    const firstTurn = !opener && recentAll.every((r) => r.id === pendingMessageId);
+    // His first turn: no earlier row of his in the window (her opener or her first texts do
+    // not make it a later turn); an opener turn is hers, never his first.
+    const firstTurn = !opener && isHisFirstTurn(recentAll, pendingMessageId);
+    const performers = opts.performers && opts.performers.length ? opts.performers : [{ provider: settings.provider, model: settings.model }];
     const show = attempt("shouldShowFace", () => shouldShowFace({
       mode: state.mode,
       isFirstTurnOfConversation: firstTurn,
       turnsSinceLastShown: sinceFace,
       userText: opener ? "" : pendingUserText,
       settings,
-      canSee: performerCanSee(settings.provider, settings.model),
+      canSee: performersCanSee(performers),
     }), false);
     const last = messages[messages.length - 1];
     if (show && last && last.role === "user") {
