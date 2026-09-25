@@ -180,7 +180,7 @@ Weather (`src/weather.ts`, M2): `getWeather(env, db, settings, now): Promise<Wea
 
 Grounding log (0005_v3.sql): `grounding_log (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('meal','outfit','errand','misc')), note TEXT NOT NULL, occurred TEXT NOT NULL, source TEXT, message_id TEXT, created_at TEXT NOT NULL)`, index on `occurred`. Rows enter through the owner (Life tab, Today list) or through a new proposal kind `grounding` (payload `{ kind, note, occurred? }`; extractor rule: "What SHE says she ate, wore, or ran out to do today is a grounding proposal, never from him, never from a joke"). Only the current local day is shown; older rows stay for the timeline and the export.
 
-What she is wearing (`outfitNow`, pure): the newest of (a) an approved scene asset whose `decided_at` falls on today's local day, using its `prompt` (her own photo description; the section says what she wore in it), and (b) a `grounding_log` outfit row from today. Nothing today: no line. Never asserted from an older day.
+What she is wearing (`outfitNow`, pure): the newest of (a) an approved scene asset whose `decided_at` falls on today's local day and whose `message_id` is set (a photo she sent in a conversation; one fired by the owner from the Images page or the API with his own description never counts), using its `prompt` (her own photo description; the section says what she wore in it), and (b) a `grounding_log` outfit row from today. Nothing today: no line. Never asserted from an older day.
 
 Time of day (`timeOfDay(localHour)`, pure): early morning 5..8, morning 8..11, midday 11..14, afternoon 14..17, evening 17..21, night 21..24, late night 0..5.
 

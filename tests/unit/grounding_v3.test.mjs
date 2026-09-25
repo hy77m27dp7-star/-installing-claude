@@ -76,6 +76,15 @@ t("outfitNow: today's newest of an approved photo and an outfit log row; yesterd
   assert.ok(nothing === null || nothing === undefined, "nothing from yesterday");
   const notOutfit = outfitNow([], [groundingRow({ kind: "meal", note: "a bagel" })], NOW, TZ);
   assert.ok(notOutfit === null || notOutfit === undefined, "a meal is not an outfit");
+  // A photo the owner fired from the Images page or the API (no message behind it) is not
+  // something she wore, even when approved today and newer than everything else.
+  const ownerFired = assetRow({ id: "img_api", message_id: null, decided_at: "2026-09-29T19:20:00Z", prompt: "grey t-shirt and sweatpants in her kitchen" });
+  const skipped = outfitNow([ownerFired], [], NOW, TZ);
+  assert.ok(skipped === null || skipped === undefined, "an owner-fired photo never dresses her");
+  const stillPhoto = outfitNow([ownerFired, photo], [], NOW, TZ);
+  assert.ok(/black hoodie/.test(JSON.stringify(stillPhoto)), "her own sent photo still wins over the owner-fired one");
+  const emptyId = outfitNow([assetRow({ id: "img_blank", message_id: "  ", decided_at: "2026-09-29T19:20:00Z" })], [], NOW, TZ);
+  assert.ok(emptyId === null || emptyId === undefined, "a blank message id counts as none");
 });
 
 t("groundingSection: full and empty", () => {

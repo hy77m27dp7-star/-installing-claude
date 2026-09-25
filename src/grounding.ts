@@ -122,8 +122,12 @@ export function weatherLine(w: WeatherNow | null | undefined, city: string, _now
   return `${place}: ${parts.join(", ")}.`;
 }
 
-// What she is wearing today: the newest of an approved photo decided today (its own
-// description says what she wore) and an outfit note from today. Never from an older day.
+// What she is wearing today: the newest of an approved photo decided today that she sent in
+// a conversation (its own description says what she wore) and an outfit note from today.
+// Never from an older day. A photo with no message behind it was fired by the owner from the
+// Images page or the API with his own description (2026-09-25: four Runway test scenes,
+// approved the same afternoon, would have dressed her in a stranger's words), so it never
+// counts as something she wore.
 export function outfitNow(assets: VisualAssetRow[], rows: GroundingRow[], now: Date, tz: string): Outfit | null {
   let best: Outfit | null = null;
   const consider = (o: Outfit): void => {
@@ -132,6 +136,7 @@ export function outfitNow(assets: VisualAssetRow[], rows: GroundingRow[], now: D
   for (const a of Array.isArray(assets) ? assets : []) {
     if (!a || a.role !== "scene" || a.approval_status !== "approved") continue;
     if (!a.decided_at || !isSameLocalDay(a.decided_at, now, tz)) continue;
+    if (typeof a.message_id !== "string" || !a.message_id.trim()) continue;
     const text = typeof a.prompt === "string" ? a.prompt.replace(/\s+/g, " ").trim() : "";
     if (!text) continue;
     consider({ text, from: "photo", at: a.decided_at, assetId: a.id });
