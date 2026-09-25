@@ -191,11 +191,16 @@ async function claimRequest(
 
 // ------------------------------------------------------------------ masters
 
+const MASTER_ORDER = ["master-04", "master-05", "master-03", "master-01", "master-02"];
+
 export async function loadMasterBytes(env: Env, db: D1Database): Promise<Array<{ name: string; bytes: ArrayBuffer }>> {
   const rows = (await db
     .prepare("SELECT * FROM visual_assets WHERE role = 'master' AND approval_status = 'approved' ORDER BY file")
     .all<VisualAssetRow>()).results;
   if (!rows.length) throw new ProviderError("assets", "config", "no master images in the registry", 503, false);
+  // The generator leans hardest on the first references: clearest faces first (Justin, 2026-09-25).
+  const rank = (id: string): number => { const i = MASTER_ORDER.indexOf(id); return i < 0 ? MASTER_ORDER.length : i; };
+  rows.sort((a, b) => rank(a.id) - rank(b.id) || a.file.localeCompare(b.file));
 
   return Promise.all(rows.map(async (r) => {
     // The hash is the identity. A master with no hash on file is not a reference (the same
