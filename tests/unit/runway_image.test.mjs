@@ -72,7 +72,8 @@ test("runwayImagePrompt: opens with @avelie, names every tag, states her build, 
   assert.ok(p.startsWith("@avelie "), p.slice(0, 40));
   for (const t of RUNWAY_REFERENCE_TAGS) assert.ok(p.includes("@" + t), "mentions @" + t);
   assert.ok(p.includes(" Scene: mirror selfie in a black hoodie, messy bun, lamp light, half smile"), p);
-  assert.ok(p.endsWith("half smile"));
+  assert.ok(p.includes("half smile Her figure in this picture: the same full bust and curvy hourglass build as @avelie_2 and @avelie_3, clearly visible under whatever she is wearing, never slimmed or flattened."), p.slice(-260));
+  assert.ok(p.endsWith("never slimmed or flattened."), "the figure clause closes the prompt");
   assert.ok(!BODY_WORDS.test(p), "body-part word in: " + p);
   assert.ok(!BAD_TYPOGRAPHY.test(p));
   assert.ok(p.includes("fully clothed"));
@@ -88,6 +89,7 @@ test("runwayImagePrompt: opens with @avelie, names every tag, states her build, 
   const one = runwayImagePrompt("x", ["avelie"]);
   assert.ok(one.startsWith("@avelie is the woman in every reference image. "));
   assert.ok(!one.includes("avelie_2"));
+  assert.ok(one.endsWith("build as @avelie, clearly visible under whatever she is wearing, never slimmed or flattened."), "one reference: the figure clause names it");
 });
 
 test("runwayImagePrompt: a long scene is cut at a word so the whole prompt fits 1000 units; the identity line is never cut", () => {
@@ -96,7 +98,8 @@ test("runwayImagePrompt: a long scene is cut at a word so the whole prompt fits 
   assert.ok(p.length <= MAX_PROMPT_UNITS, String(p.length));
   assert.ok(p.length > MAX_PROMPT_UNITS - 12, "fills the cap: " + p.length);
   assert.ok(p.includes(" Scene: word0 word1"));
-  assert.ok(/word\d+$/.test(p), "ends on a whole word: " + p.slice(-20));
+  assert.ok(/word\d+ Her figure in this picture:/.test(p), "the scene is cut on a whole word before the figure clause: " + p.slice(-260));
+  assert.ok(p.endsWith("never slimmed or flattened."));
   assert.ok(p.includes("no collage, one image."), "identity line intact");
 });
 

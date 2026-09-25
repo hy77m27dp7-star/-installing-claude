@@ -289,8 +289,13 @@ export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWA
     "Her clothes, the setting, the lighting and her pose come from the scene only, never from a reference. " +
     "Candid, realistic phone photo, natural imperfections, no text, no watermark, no collage, one image.";
   const prefix = identity + " Scene: ";
+  // The figure is said again AFTER the scene, tied to the references that show her body: a
+  // dusk railing picture (2026-09-25) kept her face and lost her bust to "ribbed knit under a
+  // jacket" in the scene text, because the model follows the scene over a line it read earlier.
+  const bodyRefs = rest.length ? rest.join(" and ") : head;
+  const suffix = " Her figure in this picture: the same full bust and curvy hourglass build as " + bodyRefs + ", clearly visible under whatever she is wearing, never slimmed or flattened.";
   const clean = scene.replace(/\s+/g, " ").trim();
-  return prefix + trimToWords(clean, MAX_PROMPT_UNITS - prefix.length);
+  return prefix + trimToWords(clean, MAX_PROMPT_UNITS - prefix.length - suffix.length) + suffix;
 }
 
 function sniffMime(bytes: ArrayBuffer): string {
