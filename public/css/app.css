@@ -737,10 +737,14 @@ main.chat {
 .photo { display: grid; gap: 6px; justify-items: start; }
 
 .photo img {
-  width: min(100%, 280px);
+  width: min(100%, 420px);
   border-radius: 14px;
   background: var(--field);
+  cursor: zoom-in;
 }
+.photo-link { display: block; }
+.photo-links { display: flex; gap: 12px; font-size: 12px; }
+.photo-links a { color: var(--muted, #9aa); text-decoration: underline; }
 
 .photo-pending {
   /* A fixed width: the empty box sits in a shrink-wrapped column, where a percentage

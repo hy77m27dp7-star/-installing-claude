@@ -563,7 +563,7 @@ export async function decideImage(
 
 // v1: a photo (candidate or scene) as image/png. v3 (SPEC_V3 DD, FF): a portrait as
 // image/png and a clip (role video) as video/mp4 with Range support, so <video> can seek.
-export async function serveMedia(env: Env, db: D1Database, id: string, range: string | null = null): Promise<Response> {
+export async function serveMedia(env: Env, db: D1Database, id: string, range: string | null = null, download = false): Promise<Response> {
   if (!id || id.length > 80) return notFound();
   const row = await getAsset(db, id);
   if (!row) return notFound();
@@ -583,7 +583,7 @@ export async function serveMedia(env: Env, db: D1Database, id: string, range: st
       "content-type": "image/png",
       "content-length": String(obj.size),
       "cache-control": "private, no-store",
-      "content-disposition": "inline",
+      "content-disposition": download ? `attachment; filename="avelie-${id}.png"` : "inline",
       "x-content-type-options": "nosniff",
     },
   });

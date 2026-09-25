@@ -913,7 +913,13 @@ function renderPhoto(m, errorCode, error) {
   }
   if (status === "ready" && m.image_id) {
     if (state.rejected.has(m.image_id)) return null;
-    const wrap = h("div", { class: "photo" }, h("img", { src: "/media/" + encodeURIComponent(m.image_id), alt: "" }));
+    const url = "/media/" + encodeURIComponent(m.image_id);
+    // The picture opens at full size in its own tab; Save fetches the same bytes as a file.
+    const wrap = h("div", { class: "photo" },
+      h("a", { href: url, target: "_blank", rel: "noopener", class: "photo-link", title: "Open full size" }, h("img", { src: url, alt: "" })),
+      h("div", { class: "photo-links" },
+        h("a", { href: url, target: "_blank", rel: "noopener" }, "Open full size"),
+        h("a", { href: url + "?download=1", download: "avelie-" + m.image_id + ".png" }, "Save")));
     if (!state.approved.has(m.image_id)) wrap.append(photoActions(m, m.image_id, wrap));
     return wrap;
   }

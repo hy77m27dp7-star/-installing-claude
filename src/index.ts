@@ -108,7 +108,8 @@ function serveMediaPath(request: Request, env: Env, path: string): Promise<Respo
   if (parts.length === 2 && kind === "library" && a) return serveLibrary(env, env.DB, a, range);
   // v3: a clip (role video) is served with Range support so <video> can seek; the range
   // rides along for every /media/:id and is ignored for a png.
-  if (parts.length === 1 && kind) return serveMedia(env, env.DB, kind, range);
+  // ?download=1 sends the same bytes as an attachment so the chat's Save link works.
+  if (parts.length === 1 && kind) return serveMedia(env, env.DB, kind, range, new URL(request.url).searchParams.get("download") === "1");
   return Promise.resolve(notFound());
 }
 
