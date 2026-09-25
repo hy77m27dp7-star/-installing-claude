@@ -348,7 +348,7 @@ export function proposalSystemPrompt(): string {
 // words a moderation filter could read as sexual.
 export function imageIdentityPrompt(): string {
   return [
-    "Generate a photo of the same young woman shown in the reference images. Her FACE must be exactly hers, the same person in every reference: brown eyes, light freckles across the nose and cheeks, full lips, the same nose, jaw and brows, long wavy dark brown hair (styling may vary), warm skin tone. Her FIGURE must be exactly as in the references: a full bust and the same curvy build and proportions; never slim, flatten, exaggerate or age her. She is a clearly adult 22-year-old.",
+    "Generate a photo of the same young woman shown in the reference images. Her FACE must be exactly hers, the same person in every reference: brown eyes, light freckles across the nose and cheeks, full lips, the same nose, jaw and brows, long wavy dark brown hair (styling may vary), warm skin tone. Her BODY must match the references exactly: the same build, height and proportions as the woman in every reference photo; never slim, flatten, reshape, exaggerate or age her. She is a clearly adult 22-year-old, fully clothed as the scene describes.",
     "The references are for her face and figure ONLY. Take her clothes, the setting, the lighting, the time of day and her pose from the scene description that follows, never from any reference image; do not copy a reference's outfit or background.",
     "Style: candid, realistic phone photo or casual snapshot, natural imperfections, no watermark, no text, no captions, no collage, single image.",
   ].join(" ");
