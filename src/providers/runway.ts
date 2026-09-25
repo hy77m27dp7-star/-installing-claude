@@ -289,8 +289,8 @@ export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWA
   // "ribbed knit under a jacket"), and the scene gets whatever is left, cut at a word.
   const identity =
     head + " is the woman in every reference image" + others + ". Show exactly her: her face as " + (rest.length >= 2 ? rest[rest.length - 1] + " and the other references" : "the references") + " show it, feature for feature, fully visible and clearly lit even at night; " +
-    "a clearly adult 22-year-old, fully clothed as the scene describes. Striking, dresses well: clothes that fit and flatter her, upright easy posture, never frumpy, baggy or slouched. " +
-    "Clothes, setting, light and pose come from the scene only. Candid phone photo, no text, no watermark, no collage, one image.";
+    "a clearly adult 22-year-old, fully clothed as the scene describes. Striking, dresses well: clothes that fit and flatter her, upright posture, never frumpy, baggy or slouched. " +
+    "Clothes, setting, light and pose from the scene only. Candid phone photo, no text, no watermark, no collage, one image.";
   const prefix = identity + " Scene: ";
   // The body references are the first two tags (the black dress and the blazer); the third is
   // the face crop, which shows no figure.
