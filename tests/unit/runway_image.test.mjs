@@ -82,7 +82,8 @@ test("runwayImagePrompt: opens with @avelie, names every tag, states her build, 
   assert.ok(p.includes("her face as @avelie_3 and the other references show it"), "the face crop, third, is named for the face");
   assert.ok(p.includes("full bust"), "bust line present");
   assert.ok(p.includes("never slimmed, flattened or made heavy"));
-  assert.ok(p.includes("never frumpy, baggy or slouched"), "dresses well");
+  assert.ok(p.includes("never frumpy or slouched"), "dresses well");
+  assert.ok(p.includes("as beautiful as in the references"), "polish");
   assert.ok(p.length - "mirror selfie in a black hoodie, messy bun, lamp light, half smile".length <= 720, "at least 280 units stay free for her scene; boilerplate is " + (p.length - 66));
   assert.ok(p.length <= MAX_PROMPT_UNITS);
   // Fewer references: only the tags that were sent are named.
@@ -103,7 +104,7 @@ test("runwayImagePrompt: a long scene is cut at a word so the whole prompt fits 
   assert.ok(p.includes(" Scene: word0 word1"));
   assert.ok(/word\d+ Her figure here as/.test(p), "the scene is cut on a whole word before the figure clause: " + p.slice(-260));
   assert.ok(p.endsWith("never slimmed, flattened or made heavy."));
-  assert.ok(p.includes("no collage, one image."), "identity line intact");
+  assert.ok(p.includes("no watermark, one image."), "identity line intact");
 });
 
 test("referenceUri: a PNG becomes data:image/png;base64 that decodes to the same bytes; a JPEG is sniffed; empty and oversize are refused before encoding", () => {
