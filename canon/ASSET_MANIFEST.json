@@ -1,6 +1,11 @@
 {
   "masters": [
     {
+      "path": "public/images/masters/00_MASTER_FACE_CROP.png",
+      "bytes": 737521,
+      "sha256": "2235c360bc2aff318787765cd36854f63b2f119a170e102b3cfe4303d5f4a9a8"
+    },
+    {
       "path": "public/images/masters/01_MASTER_ORIGINAL_CREAM_SWEATER.png",
       "bytes": 762577,
       "sha256": "3e879b7aa64e66fadabbddb2f6151a406b729aa3821ff2d0ffb11ab5163ea672"

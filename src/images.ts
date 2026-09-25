@@ -191,7 +191,9 @@ async function claimRequest(
 
 // ------------------------------------------------------------------ masters
 
-const MASTER_ORDER = ["master-04", "master-05", "master-03", "master-01", "master-02"];
+const MASTER_ORDER = ["master-00", "master-04", "master-05", "master-03", "master-01", "master-02"];
+// Fewer, stronger references hold a face better than all of them at once.
+const MAX_REFERENCES = 3;
 
 export async function loadMasterBytes(env: Env, db: D1Database): Promise<Array<{ name: string; bytes: ArrayBuffer }>> {
   const rows = (await db
@@ -201,8 +203,9 @@ export async function loadMasterBytes(env: Env, db: D1Database): Promise<Array<{
   // The generator leans hardest on the first references: clearest faces first (Justin, 2026-09-25).
   const rank = (id: string): number => { const i = MASTER_ORDER.indexOf(id); return i < 0 ? MASTER_ORDER.length : i; };
   rows.sort((a, b) => rank(a.id) - rank(b.id) || a.file.localeCompare(b.file));
+  const chosen = rows.slice(0, MAX_REFERENCES);
 
-  return Promise.all(rows.map(async (r) => {
+  return Promise.all(chosen.map(async (r) => {
     // The hash is the identity. A master with no hash on file is not a reference (the same
     // rule verifyMasters applies), and neither is one whose bytes drifted from it.
     if (!r.sha256) throw new ProviderError("assets", "config", "master image has no recorded hash: " + r.file, 503, false);
