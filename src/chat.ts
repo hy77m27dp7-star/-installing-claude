@@ -83,6 +83,7 @@ export const RETRY_RULES: Record<string, string> = {
   // v3
   exemplar_verbatim: "do not reuse the example lines; say your own thing in your own words",
   ask_nag: "you already asked; do not bring it up again, let it go",
+  third_person_action: "in your asterisk actions he is \"you\" (*looks at you*), never him, he or his; you are talking to him",
 };
 
 export interface TurnOptions {

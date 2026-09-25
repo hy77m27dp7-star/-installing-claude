@@ -235,6 +235,8 @@ function stripMarkdown(text: string): string {
     .join("\n");
 }
 
+const THIRD_PERSON_ACTION_RE = /\*[^*\n]*\b(him|he|his)\b[^*\n]*\*/i;
+
 const WRITTEN_JOKE_PATTERNS: RegExp[] = [
   /\bsomehow (worse|better|more|less)\b/,
   /\bthat'?s not (a|an|the|your) [^.?!\n]{1,60}?,? that'?s (a|an|the)\b/,
@@ -370,6 +372,11 @@ export function runChecks(text: string, ctx: CheckContext): CheckResult {
   const lower = text.toLowerCase();
   const joke = WRITTEN_JOKE_PATTERNS.find((re) => re.test(lower));
   if (joke) flags.push(flag("written_joke", "flag", `punchline shape ${joke.source}`));
+  // In a Together scene her asterisk actions are addressed to him: "him", "he" or "his"
+  // inside one means she slipped into narrating him to a third person (Justin, 2026-09-25).
+  if (ctx.channel === "story" && THIRD_PERSON_ACTION_RE.test(text)) {
+    flags.push(flag("third_person_action", "retry", "an asterisk action refers to him as him, he or his"));
+  }
 
   if (lengthBand(text) === "long" && recent.length >= 3 && recent.slice(-3).every((r) => lengthBand(r) === "long")) {
     flags.push(flag("length_pattern", "flag", "four long replies in a row"));

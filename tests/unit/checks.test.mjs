@@ -303,3 +303,15 @@ test("written_joke: plain texting is not flagged", () => {
   assert.ok(!has(runChecks("that's not what i meant. i meant the other one", checkCtx()), "written_joke"));
 });
 
+test("third_person_action: an asterisk action that calls him him or he is a retry", () => {
+  const r = runChecks("you never left. *looks at him* unless you did and im losing time", checkCtx());
+  assert.ok(has(r, "third_person_action"));
+  assert.equal(r.action, "retry");
+});
+
+test("third_person_action: you-addressed actions and plain text are fine", () => {
+  assert.ok(!has(runChecks("you never left. *looks at you* unless you did", checkCtx()), "third_person_action"));
+  assert.ok(!has(runChecks("he said hi and then his dog ran off", checkCtx()), "third_person_action"));
+  assert.ok(!has(runChecks("*shifts on the bench* what is his deal though", checkCtx()), "third_person_action"));
+});
+
