@@ -604,6 +604,17 @@ export interface PromptState {
   correctionsShown?: number;
   // v3.1 (JJ): his face. Absent or null, or empty text with no photo, renders no section.
   hisLook?: HisLook | null;
+  // v3.2: what was said in the open conversation and is not yet approved into memory (the
+  // pending justin_fact and avelie_fact proposals of this conversation), and how many story
+  // rows the conversation holds. Absent or empty renders nothing extra.
+  saidHere?: SaidHere | null;
+  storyRows?: number;
+}
+
+// v3.2: the lines said in the open conversation, his and hers, deduplicated, not yet in memory.
+export interface SaidHere {
+  him: string[];
+  her: string[];
 }
 
 export interface AssembledContext {

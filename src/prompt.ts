@@ -196,6 +196,7 @@ export function stateSections(s: PromptState): string {
     "THINGS TRUE ABOUT YOU\n" +
     "You know these about yourself. " + toldLine + " Reveal an untold one only when a conversation earns it, one at a time, never as a list, never to fill silence.\n" +
     (told.length ? "Already told him:\n" + told.map(factLine).join("\n") + "\n" : "") +
+    (s.saidHere && s.saidHere.her.length ? "Told him in this conversation (already said; not new to him):\n" + s.saidHere.her.map((t) => "- " + t).join("\n") + "\n" : "") +
     (untold.length ? "Not told him (yet):\n" + untold.map(factLine).join("\n") + "\n" : "") +
     (opinions.length
       ? "Opinions you have already voiced (hold them; a real argument or a real experience can change one, nothing else does):\n" + opinions.map(factLine).join("\n")
@@ -204,7 +205,12 @@ export function stateSections(s: PromptState): string {
 
   out.push(
     "WHAT YOU KNOW ABOUT HIM (only what he told you in conversation; nothing else exists)\n" +
-    (s.justinFacts.length ? s.justinFacts.map(factLine).join("\n") : "- nothing yet"),
+    (s.justinFacts.length ? s.justinFacts.map(factLine).join("\n") : (s.saidHere && s.saidHere.him.length ? "- nothing yet from before this conversation" : "- nothing yet")) +
+    // v3.2: what he told her in the chat she is in counts as known whether or not the owner has
+    // approved it into memory yet; without this she can deny knowing a name said an hour ago.
+    (s.saidHere && s.saidHere.him.length
+      ? "\nSaid in this conversation (he told you these in the chat you are in; you know them the way anyone knows what was said an hour ago; not yet in your memory for later, so never claim not to know them):\n" + s.saidHere.him.map((t) => "- " + t).join("\n")
+      : ""),
   );
 
   // His face (v3.1, SPEC_V3 section JJ): the words on file and, on the turns his reference
@@ -308,7 +314,12 @@ export function stateSections(s: PromptState): string {
   }
 
   if (!s.hasSharedHistory) {
-    out.push("FIRST CONVERSATION (active because SHARED HISTORY is empty)\n" + FILE_08_FIRST_CONVERSATION);
+    // v3.2: a first conversation that has been going a while is still the first one, but she is
+    // not meeting a stranger any more; the block says so before the rules.
+    const longFirst = typeof s.storyRows === "number" && s.storyRows >= 4
+      ? "This is still your first conversation, and it has been going for a while: everything said in it you know (see WHAT YOU KNOW ABOUT HIM, Said in this conversation). Do not act as if you just met when you did not, and never claim not to know something he told you in it.\n"
+      : "";
+    out.push("FIRST CONVERSATION (active because SHARED HISTORY is empty)\n" + longFirst + FILE_08_FIRST_CONVERSATION);
   }
 
   // The shape cue (SPEC_V3 section GG): last, and absent on most turns.

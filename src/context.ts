@@ -25,10 +25,7 @@ import { getWeather } from "./weather";
 import { shapeCue, signature } from "./imperfection";
 import { FACE_CADENCE_UNREADABLE, himRefs, isHisFirstTurn, loadHisLook, performersCanSee, shouldShowFace, turnsSinceFaceShown } from "./hisFace";
 import type { ImageRef } from "./vision";
-import type {
-  AssembledContext, AskRow, ChatMessage, Correction, Env, HisLook, HistoryRow, MediaRow, OutfitNow, PromptCallback, PromptState, RecallPick,
-  RelationshipState, SceneState, Settings, ShapeCue, SystemMode, VisualAssetRow, VoiceLine, WantLogRow, WantRow, WeatherNow,
-} from "./types";
+import type { AssembledContext, AskRow, ChatMessage, Correction, Env, HisLook, HistoryRow, MediaRow, OutfitNow, PromptCallback, PromptState, RecallPick, RelationshipState, SceneState, Settings, ShapeCue, SystemMode, VisualAssetRow, VoiceLine, WantLogRow, WantRow, WeatherNow, SaidHere, FactRow } from "./types";
 import type { LifeThread } from "./life";
 
 const STOP = new Set(["the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with", "is", "it", "was", "i", "you", "he", "she", "we", "they", "that", "this", "my", "your", "her", "his", "me", "so", "do", "not", "just", "like", "what", "about", "have", "had", "be", "are", "were", "from", "as", "if", "then", "than", "too", "very", "ok", "okay", "yeah", "no", "yes"]);
@@ -116,6 +113,9 @@ export interface LoadOptions {
   // false skips the voice bank (no HOW YOU TEXT, no uses to record) and the half-remembered
   // pick (no memory_recalls row): a call's instructions, where neither is checked or booked.
   exemplars?: boolean;
+  // v3.2: how many story rows the conversation holds before this turn (the first-conversation
+  // block softens once it has been going a while).
+  storyRows?: number;
   recall?: boolean;
 }
 
@@ -178,6 +178,57 @@ async function wantLogsFor(db: D1Database, wants: WantRow[], limit: number): Pro
   return rows.slice().sort((a, b) => a.occurred.localeCompare(b.occurred) || a.created_at.localeCompare(b.created_at));
 }
 
+
+// v3.2 "Said in this conversation": her memory is approval-gated, but what he told her an hour
+// ago in the chat she is in is known whether or not the owner has approved it yet. The pending
+// justin_fact and avelie_fact proposals of the current conversation ride into the prompt as
+// such, deduplicated against each other and against the facts already in memory.
+const SAID_STOP = new Set(["a", "an", "the", "is", "are", "was", "were", "be", "his", "her", "he", "she", "him", "it", "its", "that", "this", "of", "to", "and", "s"]);
+
+// One line, plain typography (" -- " and "..."), trimmed and capped.
+export function saidLine(text: unknown, max = 160): string {
+  if (typeof text !== "string") return "";
+  const t = text.replace(/[\u2014\u2013]/g, " -- ").replace(/\u2026/g, "...").replace(/\s+/g, " ").trim();
+  return t.length > max ? t.slice(0, max - 3).trimEnd() + "..." : t;
+}
+
+// The identity of a line for deduplication: its content words as a sorted set, so "His name
+// is Justin" and "Justin's name is Justin" are one line.
+export function saidKey(text: string): string {
+  const words = text.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(" ").filter((w) => w && !SAID_STOP.has(w));
+  return Array.from(new Set(words)).sort().join(" ");
+}
+
+export function dedupeSaid(lines: readonly string[], exclude: readonly string[] = [], cap = 25): string[] {
+  const seen = new Set(exclude.map((e) => saidKey(saidLine(e))).filter(Boolean));
+  const out: string[] = [];
+  for (const raw of Array.isArray(lines) ? lines : []) {
+    const t = saidLine(raw);
+    if (!t) continue;
+    const k = saidKey(t);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out.length > cap ? out.slice(-cap) : out;
+}
+
+interface SaidRow { kind: string; proposal: string }
+
+// The pending proposal lines of one conversation, oldest first. A read failure is the caller's
+// nicety (empty lists), never a failed turn.
+export async function listSaidRows(db: D1Database, conversationId: string): Promise<SaidRow[]> {
+  const r = await db.prepare("SELECT kind, proposal FROM proposals WHERE conversation_id = ?1 AND status = 'pending' AND kind IN ('justin_fact', 'avelie_fact') ORDER BY created_at ASC LIMIT 200").bind(conversationId).all<SaidRow>();
+  return (r.results ?? []).filter((x) => x && typeof x.proposal === "string");
+}
+
+export function buildSaidHere(rows: readonly SaidRow[], justinFacts: readonly FactRow[], avelieFacts: readonly FactRow[]): SaidHere {
+  return {
+    him: dedupeSaid(rows.filter((x) => x.kind === "justin_fact").map((x) => x.proposal), justinFacts.map((f) => f.fact)),
+    her: dedupeSaid(rows.filter((x) => x.kind === "avelie_fact").map((x) => x.proposal), avelieFacts.map((f) => f.fact)),
+  };
+}
+
 export async function loadPromptState(db: D1Database, recentText = "", opts: LoadOptions = {}): Promise<PromptState> {
   const now = opts.now ?? new Date();
   const tz = opts.tz && opts.tz.trim() ? opts.tz.trim() : DEFAULT_TZ;
@@ -192,7 +243,7 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
   const recallEvery = opts.recall === false ? 0 : intSetting(settings.provisionalRecallEvery, 0);
   const seed = callbackSeed(now, conversationId);
 
-  const [facts, historyAll, unknowns, rel, scene, threadsAll, log, media, approvedLines, usedIds, corrections, weights, wantsAll, asks, today, approvedAssets, recallCount, hisLook] = await Promise.all([
+  const [facts, historyAll, unknowns, rel, scene, threadsAll, log, media, approvedLines, usedIds, corrections, weights, wantsAll, asks, today, approvedAssets, recallCount, hisLook, saidRows] = await Promise.all([
     listFacts(db),
     listHistory(db),
     listUnknowns(db, "open"),
@@ -217,6 +268,8 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     nicety("recall count", conversationId && recallEvery > 0 ? recentRecallCount(db, conversationId, recallEvery) : Promise.resolve(0), 0),
     // v3.1 (JJ): the words on file and his reference photos; none attached until assembleContext decides.
     nicety("his look", loadHisLook(db, settings), null as HisLook | null),
+    // v3.2: what was said in this conversation and is not approved yet.
+    nicety("said here", conversationId ? listSaidRows(db, conversationId) : Promise.resolve([] as SaidRow[]), [] as SaidRow[]),
   ]);
 
   const recentKeywords = keywords(recentText);
@@ -312,6 +365,8 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     fixedFacts: facts.filter((f) => f.scope === "fixed"),
     avelieFacts: facts.filter((f) => f.scope === "avelie"),
     justinFacts,
+    saidHere: buildSaidHere(saidRows, justinFacts, facts.filter((f) => f.scope === "avelie")),
+    storyRows: typeof opts.storyRows === "number" && Number.isFinite(opts.storyRows) ? Math.max(0, Math.trunc(opts.storyRows)) : 0,
     history,
     unknowns,
     relationship: rel.state,
@@ -417,6 +472,7 @@ export async function assembleContext(
   const recentText = messages.slice(-8).map((m) => m.content).join(" ");
   const recentAssistantTexts = recentRows.filter((r) => r.role === "assistant").slice(-5).map((r) => r.content);
   const state = await loadPromptState(db, recentText, {
+    storyRows: recentRows.length,
     now,
     tz: settings.timezone,
     conversationId,
