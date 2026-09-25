@@ -288,11 +288,13 @@ export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWA
   // earlier line; a dusk railing picture on 2026-09-25 kept her face and lost her figure to
   // "ribbed knit under a jacket"), and the scene gets whatever is left, cut at a word.
   const identity =
-    head + " is the woman in every reference image" + others + ". Show exactly her: her face as the references show it, feature for feature, fully visible and clearly lit even at dusk or night; " +
+    head + " is the woman in every reference image" + others + ". Show exactly her: her face as " + (rest.length >= 2 ? rest[rest.length - 1] + " and the other references" : "the references") + " show it, feature for feature, fully visible and clearly lit even at night; " +
     "a clearly adult 22-year-old, fully clothed as the scene describes. Striking, dresses well: clothes that fit and flatter her, upright easy posture, never frumpy, baggy or slouched. " +
     "Clothes, setting, light and pose come from the scene only. Candid phone photo, no text, no watermark, no collage, one image.";
   const prefix = identity + " Scene: ";
-  const bodyRefs = rest.length ? rest.join(" and ") : head;
+  // The body references are the first two tags (the black dress and the blazer); the third is
+  // the face crop, which shows no figure.
+  const bodyRefs = rest.length ? head + " and " + rest[0] : head;
   const suffix = " Her figure here as " + bodyRefs + " show it: full bust, defined waist, full shapely backside, an hourglass under any outfit, never slimmed, flattened or made heavy.";
   const clean = scene.replace(/\s+/g, " ").trim();
   return prefix + trimToWords(clean, MAX_PROMPT_UNITS - prefix.length - suffix.length) + suffix;

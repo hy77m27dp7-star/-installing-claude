@@ -72,13 +72,14 @@ test("runwayImagePrompt: opens with @avelie, names every tag, states her build, 
   assert.ok(p.startsWith("@avelie "), p.slice(0, 40));
   for (const t of RUNWAY_REFERENCE_TAGS) assert.ok(p.includes("@" + t), "mentions @" + t);
   assert.ok(p.includes(" Scene: mirror selfie in a black hoodie, messy bun, lamp light, half smile"), p);
-  assert.ok(p.includes("half smile Her figure here as @avelie_2 and @avelie_3 show it: full bust, defined waist, full shapely backside, an hourglass under any outfit, never slimmed, flattened or made heavy."), p.slice(-260));
+  assert.ok(p.includes("half smile Her figure here as @avelie and @avelie_2 show it: full bust, defined waist, full shapely backside, an hourglass under any outfit, never slimmed, flattened or made heavy."), p.slice(-260));
   assert.ok(p.endsWith("never slimmed, flattened or made heavy."), "the figure clause closes the prompt");
   assert.ok(!BODY_WORDS.test(p), "body-part word in: " + p);
   assert.ok(!BAD_TYPOGRAPHY.test(p));
   assert.ok(p.includes("fully clothed"));
   assert.ok(p.includes("22-year-old"));
   assert.ok(p.includes("an hourglass"), "build line present");
+  assert.ok(p.includes("her face as @avelie_3 and the other references show it"), "the face crop, third, is named for the face");
   assert.ok(p.includes("full bust"), "bust line present");
   assert.ok(p.includes("never slimmed, flattened or made heavy"));
   assert.ok(p.includes("never frumpy, baggy or slouched"), "dresses well");

@@ -191,7 +191,10 @@ async function claimRequest(
 
 // ------------------------------------------------------------------ masters
 
-const MASTER_ORDER = ["master-00", "master-04", "master-05", "master-03", "master-01", "master-02"];
+// Body first (2026-09-25): with the face crop as the lead reference Runway kept her face and
+// lost her figure picture after picture. The black dress (05) and the blazer (04) show her
+// bust and waist; the face crop (00) rides third for the face.
+const MASTER_ORDER = ["master-05", "master-04", "master-00", "master-03", "master-01", "master-02"];
 // Fewer, stronger references hold a face better than all of them at once.
 const MAX_REFERENCES = 3;
 
