@@ -44,7 +44,11 @@ const noWait = { sleep: async () => {} };
 
 // Anatomy words the prompt must never carry (the OpenAI filter refused one this morning;
 // Runway moderates prompt text too). "face" and "build" are allowed on purpose.
-const BODY_WORDS = /\b(body|bodies|breast\w*|chest|bust|cleavage|hips?|waist|thighs?|legs?|torso|curv\w*|figure|lips|skin|butt|bottom)\b/i;
+// Words that risk Runway moderation stay out of the identity line. "figure", "curvy",
+// "hourglass" and "bust" are allowed on purpose: Runway accepted them on 2026-09-25 and
+// they are what keeps her build matching the references (a picture without them came
+// out slimmer than every master).
+const BODY_WORDS = /\b(body|bodies|breast\w*|chest|cleavage|hips?|waist|thighs?|legs?|torso|lips|skin|butt|bottom)\b/i;
 
 // ------------------------------------------------------------------ pure pieces
 
@@ -63,7 +67,7 @@ test("ratioForSize: exact enum values pass through, 1024x1536 lands on 1080:1440
   }
 });
 
-test("runwayImagePrompt: opens with @avelie, names every tag, ends with the scene, no body-part words, clean typography, within the 1000-unit cap", () => {
+test("runwayImagePrompt: opens with @avelie, names every tag, states her build, ends with the scene, no moderation-risk words, clean typography, within the 1000-unit cap", () => {
   const p = runwayImagePrompt("mirror selfie in a black hoodie, messy bun, lamp light, half smile");
   assert.ok(p.startsWith("@avelie "), p.slice(0, 40));
   for (const t of RUNWAY_REFERENCE_TAGS) assert.ok(p.includes("@" + t), "mentions @" + t);
@@ -73,6 +77,9 @@ test("runwayImagePrompt: opens with @avelie, names every tag, ends with the scen
   assert.ok(!BAD_TYPOGRAPHY.test(p));
   assert.ok(p.includes("fully clothed"));
   assert.ok(p.includes("22-year-old"));
+  assert.ok(p.includes("full curvy hourglass figure"), "build line present");
+  assert.ok(p.includes("full bust"), "bust line present");
+  assert.ok(p.includes("never slimmed or flattened"));
   assert.ok(p.length <= MAX_PROMPT_UNITS);
   // Fewer references: only the tags that were sent are named.
   const two = runwayImagePrompt("x", ["avelie", "avelie_2"]);

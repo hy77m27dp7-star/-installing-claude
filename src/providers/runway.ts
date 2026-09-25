@@ -285,7 +285,7 @@ export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWA
     : "";
   const identity =
     head + " is the woman in every reference image" + others + ". Show exactly her: the same person as " + head +
-    ", her face and her build precisely as the references show them, a clearly adult 22-year-old, fully clothed as the scene describes. " +
+    ", her face exactly as the references show it, and her full curvy hourglass figure with the same full bust the references show, never slimmed or flattened; a clearly adult 22-year-old, fully clothed as the scene describes. " +
     "Her clothes, the setting, the lighting and her pose come from the scene only, never from a reference. " +
     "Candid, realistic phone photo, natural imperfections, no text, no watermark, no collage, one image.";
   const prefix = identity + " Scene: ";
