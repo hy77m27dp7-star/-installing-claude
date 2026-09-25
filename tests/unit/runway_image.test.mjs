@@ -72,8 +72,8 @@ test("runwayImagePrompt: opens with @avelie, names every tag, states her build, 
   assert.ok(p.startsWith("@avelie "), p.slice(0, 40));
   for (const t of RUNWAY_REFERENCE_TAGS) assert.ok(p.includes("@" + t), "mentions @" + t);
   assert.ok(p.includes(" Scene: mirror selfie in a black hoodie, messy bun, lamp light, half smile"), p);
-  assert.ok(p.includes("half smile Her figure here as @avelie and @avelie_2 show it: full bust, defined waist, full shapely backside, an hourglass under any outfit, never slimmed, flattened or made heavy."), p.slice(-260));
-  assert.ok(p.endsWith("never slimmed, flattened or made heavy."), "the figure clause closes the prompt");
+  assert.ok(p.includes("half smile Her figure here as @avelie and @avelie_2 show it: a small slim frame, slim waist, flat stomach, with a full bust and a full shapely backside, an hourglass under any outfit, never heavy."), p.slice(-260));
+  assert.ok(p.endsWith("an hourglass under any outfit, never heavy."), "the figure clause closes the prompt");
   assert.ok(!BODY_WORDS.test(p), "body-part word in: " + p);
   assert.ok(!BAD_TYPOGRAPHY.test(p));
   assert.ok(p.includes("fully clothed"));
@@ -81,7 +81,7 @@ test("runwayImagePrompt: opens with @avelie, names every tag, states her build, 
   assert.ok(p.includes("an hourglass"), "build line present");
   assert.ok(p.includes("her face as @avelie_3 and the other references show it"), "the face crop, third, is named for the face");
   assert.ok(p.includes("full bust"), "bust line present");
-  assert.ok(p.includes("never slimmed, flattened or made heavy"));
+  assert.ok(p.includes("slim waist, flat stomach"));
   assert.ok(p.includes("never frumpy or slouched"), "dresses well");
   assert.ok(p.includes("as beautiful as in the references"), "polish");
   assert.ok(p.length - "mirror selfie in a black hoodie, messy bun, lamp light, half smile".length <= 720, "at least 280 units stay free for her scene; boilerplate is " + (p.length - 66));
@@ -93,7 +93,7 @@ test("runwayImagePrompt: opens with @avelie, names every tag, states her build, 
   const one = runwayImagePrompt("x", ["avelie"]);
   assert.ok(one.startsWith("@avelie is the woman in every reference image. "));
   assert.ok(!one.includes("avelie_2"));
-  assert.ok(one.endsWith("Her figure here as @avelie show it: full bust, defined waist, full shapely backside, an hourglass under any outfit, never slimmed, flattened or made heavy."), "one reference: the figure clause names it");
+  assert.ok(one.endsWith("Her figure here as @avelie show it: a small slim frame, slim waist, flat stomach, with a full bust and a full shapely backside, an hourglass under any outfit, never heavy."), "one reference: the figure clause names it");
 });
 
 test("runwayImagePrompt: a long scene is cut at a word so the whole prompt fits 1000 units; the identity line is never cut", () => {
@@ -103,7 +103,7 @@ test("runwayImagePrompt: a long scene is cut at a word so the whole prompt fits 
   assert.ok(p.length > MAX_PROMPT_UNITS - 12, "fills the cap: " + p.length);
   assert.ok(p.includes(" Scene: word0 word1"));
   assert.ok(/word\d+ Her figure here as/.test(p), "the scene is cut on a whole word before the figure clause: " + p.slice(-260));
-  assert.ok(p.endsWith("never slimmed, flattened or made heavy."));
+  assert.ok(p.endsWith("an hourglass under any outfit, never heavy."));
   assert.ok(p.includes("no watermark, one image."), "identity line intact");
 });
 

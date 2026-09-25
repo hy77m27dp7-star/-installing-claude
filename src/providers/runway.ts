@@ -295,7 +295,7 @@ export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWA
   // The body references are the first two tags (the black dress and the blazer); the third is
   // the face crop, which shows no figure.
   const bodyRefs = rest.length ? head + " and " + rest[0] : head;
-  const suffix = " Her figure here as " + bodyRefs + " show it: full bust, defined waist, full shapely backside, an hourglass under any outfit, never slimmed, flattened or made heavy.";
+  const suffix = " Her figure here as " + bodyRefs + " show it: a small slim frame, slim waist, flat stomach, with a full bust and a full shapely backside, an hourglass under any outfit, never heavy.";
   const clean = scene.replace(/\s+/g, " ").trim();
   return prefix + trimToWords(clean, MAX_PROMPT_UNITS - prefix.length - suffix.length) + suffix;
 }
