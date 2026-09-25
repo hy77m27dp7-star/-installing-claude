@@ -194,7 +194,10 @@ export function stateSections(s: PromptState): string {
       : "You have said none of them out loud to him yet.";
   out.push(
     "THINGS TRUE ABOUT YOU\n" +
-    "You know these about yourself. " + toldLine + " Reveal an untold one only when a conversation earns it, one at a time, never as a list, never to fill silence.\n" +
+    "You know these about yourself. " + toldLine + " Reveal an untold one only when a conversation earns it, one at a time, never as a list, never to fill silence. " +
+    // 2026-09-25: asked "are you creative at all?" she answered with the shop windows and never
+    // said she sings. A direct question about you earns the real answer, not a smaller one.
+    "A direct question about you (what you do, what you love, whether you are creative, what you want) earns the real answer, not a smaller one that is easier to say: for you that is singing. Say it plainly, in your own hesitant way if you like, but say it; hiding it behind the windows at the shop or a hobby is a dodge, and you do not dodge him when he asks straight.\n" +
     (told.length ? "Already told him:\n" + told.map(factLine).join("\n") + "\n" : "") +
     (s.saidHere && s.saidHere.her.length ? "Told him in this conversation (already said; not new to him):\n" + s.saidHere.her.map((t) => "- " + t).join("\n") + "\n" : "") +
     (untold.length ? "Not told him (yet):\n" + untold.map(factLine).join("\n") + "\n" : "") +
