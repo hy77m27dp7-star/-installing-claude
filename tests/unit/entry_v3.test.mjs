@@ -42,7 +42,7 @@ test("the nightly cron runs the backup and then the maintenance pass, with the p
 });
 
 test("/media/:id passes the Range header through", () => {
-  assert.ok(/serveMedia\(env, env\.DB, kind, range\)/.test(index));
+  assert.ok(/serveMedia\(env, env\.DB, kind, range(, [^)]+)?\)/.test(index), "the range rides along (a download flag may follow it)");
 });
 
 test("package.json: build:voicebank in the test chain, finetune:run, check:deploy kept in deploy", () => {
