@@ -90,7 +90,8 @@ export async function restoreSnapshot(env: Env, db: D1Database, key: string, act
   if (!obj) throw new ApiHttpError(404, "not_found", "no such snapshot");
   let payload: unknown;
   try { payload = JSON.parse(await obj.text()); } catch { throw new ApiHttpError(422, "unreadable", "the snapshot is not valid JSON"); }
-  const result = await importAll(db, payload, actor);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new ApiHttpError(422, "unreadable", "the snapshot is not an export");
+  const result = await importAll(db, payload as Record<string, unknown>, actor);
   await auditStmt(db, actor, "snapshot.restore", "r2", key, null, { key, bytes: obj.size }).run();
   return result as unknown as Record<string, unknown>;
 }
