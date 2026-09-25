@@ -60,7 +60,7 @@ Fixed-scope facts are read-only through the API (403 `fixed_canon`).
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | GET | /api/settings | | `Settings` |
-| PUT | /api/settings | partial `Settings` | `Settings` (validated: provider in set, effort in set, 0<=temperature<=2, 64<=maxTokens<=4000, caps >= 0; `model` and `proposalModel` must have an entry in `prices` (the stored table over the built-in one), and `imageCostUsd` must be above 0 unless `imageProvider` is keyless (`stub`); otherwise 400 `validation`) |
+| PUT | /api/settings | partial `Settings` | `Settings` (validated: provider in set, effort in set, `imageProvider` one of `runway`, `openai`, `stub` (runway since 2026-09-25: Gen-4 Image with tagged character references, the photo provider; `imageModel` `gen4_image`; the key is checked at call time, so it can be selected before `RUNWAY_API_KEY` exists), 0<=temperature<=2, 64<=maxTokens<=4000, caps >= 0; `model` and `proposalModel` must have an entry in `prices` (the stored table over the built-in one), and `imageCostUsd` must be above 0 unless `imageProvider` is keyless (`stub`); otherwise 400 `validation`) |
 | GET | /api/usage | | `{ todayUsd, monthUsd, dailyCapUsd, monthlyCapUsd, byDay: [...] }` |
 | GET | /api/audit | `?limit=100` | `audit_events[]` (desc) |
 
@@ -413,7 +413,7 @@ What the export carries, said plainly: his approved facts, his recorded name and
 
 | Secret | Used by |
 |---|---|
-| RUNWAY_API_KEY | clips (`videoProvider: "runway"`); without it every clip control is hidden and generate answers 503. On the Mac: `security find-generic-password -s runwayml -w \| npx wrangler secret put RUNWAY_API_KEY` when the keychain item exists. |
+| RUNWAY_API_KEY | clips (`videoProvider: "runway"`) and, since 2026-09-25, photos and portraits (`imageProvider: "runway"`); without it every clip control is hidden, clip generate answers 503, and a photo on the runway provider answers 503 `provider_not_configured` (detail `runway`) with the request row left failed and retryable. On the Mac: `pbpaste \| npx wrangler secret put RUNWAY_API_KEY` from the clipboard, or `security find-generic-password -s runwayml -w \| npx wrangler secret put RUNWAY_API_KEY` when the keychain item exists. |
 
 `OPENAI_API_KEY` now also serves calls (the realtime token), portraits (text-to-image) and the fine-tuned texter. The key used for training never becomes a Worker concern: `scripts/finetune_run.mjs` reads it from the environment or the clipboard on the Mac and clears the clipboard.
 

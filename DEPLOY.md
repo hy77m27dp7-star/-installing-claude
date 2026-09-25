@@ -58,7 +58,7 @@ Do not touch any other Access application (BLADEGOD, BLADEGOD MCP, BLADEGOD well
 
 ## 4. Her two keys (never through chat, never on screen)
 
-She talks through Anthropic (Claude Opus 5) and makes her photos through OpenAI (gpt-image-1). Each needs an API key stored as a Worker secret. The keys go from Justin's clipboard straight into Cloudflare through `pbpaste`; you never see them, print them or write them to a file. The Worker must exist before secrets can be set, so this step runs AFTER the first deploy in step 6. Read it now so you can prepare him.
+She talks through Anthropic (Claude Opus 5) and makes her photos through OpenAI (gpt-image-1) until the Runway key exists (section 25: Runway is the photo provider since 2026-09-25, OpenAI the fallback). Each needs an API key stored as a Worker secret. The keys go from Justin's clipboard straight into Cloudflare through `pbpaste`; you never see them, print them or write them to a file. The Worker must exist before secrets can be set, so this step runs AFTER the first deploy in step 6. Read it now so you can prepare him.
 
 Ask Justin, yes or no, without asking him to paste anything:
 - "Do you have an OpenAI account with API billing (platform.openai.com)?" Photos need it.
@@ -298,6 +298,18 @@ If OpenAI's moderation refuses the file, the job fails with a message the script
 - `provisionalRecallEvery` (Model page > Memory): 0 means she never half-remembers a detail. The behavior scenario H03 ("she half-remembers a low-weight detail and takes his correction in one line") is the gate; when it reads as a person on the real performer, set it to 8.
 - `typoCueShare` (Model page > Text): 0 means the app never cues a typo; the TEXTURE paragraph lets typos happen on their own. If none ever do, set it to 0.05.
 - Clips (section 20) are off for want of a key. Everything else in v3 is on.
+
+## 25. Photos on Runway (2026-09-25; the key arrives later)
+
+Runway's Gen-4 Image with tagged character references is the photo provider now (four OpenAI pictures were rejected on 2026-09-25: the face drifted and the body never came from the references). OpenAI stays selectable as the fallback. The code is deployed with the rest; the only missing piece is the secret, and until it exists a photo on the runway provider fails cleanly with `503 provider_not_configured` (the message shows a failed photo with Retry; nothing is spent).
+
+When Justin has the key on his clipboard (never through chat, never on screen):
+1. Run `pbpaste | npx wrangler secret put RUNWAY_API_KEY`, then `printf '' | pbcopy`. (If the key sits in the keychain item `runwayml` instead: `security find-generic-password -s runwayml -w | npx wrangler secret put RUNWAY_API_KEY`.) Secrets are live at once; no redeploy.
+2. On the Model page, Images: Image provider `runway`, Image model `gen4_image`, Size `1024x1536` (sent to Runway as `1080:1440`), Cost USD `0.08` (8 credits at 0.01 USD each for a 1080p image; `gen4_image_turbo` would be `0.02`), Quality can stay (it is not sent to Runway), Save. The Model page's System panel shows the `runway` key dot on once the secret is set.
+3. Ask her for a photo (or Images > Generate with a description). Expect 10 to 40 seconds: the page holds the request open while the Worker starts the Runway task, polls it every 3 seconds for up to 90 seconds, downloads the picture and stores it as a candidate, exactly as before. A moderated prompt comes back as a failed photo whose notes start with `refusal: moderated by Runway`; a slow task past 90 seconds is cancelled and reported as a retryable failure.
+4. If the pictures are wrong, switch Image provider back to `openai` (model `gpt-image-1`, cost `0.06`) and Save; nothing else changes.
+
+What the secret is used for: clips (section 20) and photos share it. Never run `pbpaste` on its own, never `echo` a key, never paste one in chat.
 
 ## Cost ceilings (from the build brief, 2026-09-24; confirm on Cloudflare's pricing pages, they move)
 

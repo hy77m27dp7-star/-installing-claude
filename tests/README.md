@@ -56,6 +56,12 @@ stand-in that answers table reads with fixture rows):
 - scenarios_v2 and drift_backup_v2: `scenarios.json` keeps the runner's schema, exactly five
   scenarios are tagged `drift`, the four life scenarios exist, and `src/drift.ts` embeds the
   same five (ids, turns, checks); `backupKey`.
+- runway_image (2026-09-25): Runway as the photo provider, driven through the Runway
+  stand-in in `src/providers/stub.ts` (`stubRunwayFetch`): the ratio table, the prompt
+  (opens with @avelie, names every tag, no body-part words, within 1000 units), the
+  reference data URIs and their 5 MB cap, the shaped request (headers, body, tags), the
+  poll and its cancel past the budget, every error mapping (HTTP, moderation, network),
+  portraits, and the registry and settings wiring.
 - herfirst_v2: the `decideFirstText` decision table (off, quiet hours, busy, cap, recent
   message, two unanswered, the probability window at both ends of the day).
 - push_v2: the VAPID JWT (ES256 header, `aud` from the endpoint origin, `exp` within 24 h,

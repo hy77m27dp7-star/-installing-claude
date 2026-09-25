@@ -23,7 +23,7 @@ Cost of one call = input tokens x input price / 1,000,000 + output tokens x outp
 
 A model that is not in the table cannot be used. The Model page refuses to save it (400: no entry in prices), and a call on a model whose price is missing is refused with `402 price_unknown` before anything is spent, so an unpriced model can never run at zero on the meter and slip past the caps. Add the model's prices in the Prices section of the Model page first, then switch to it (the page sends only what changed, so a cap change never re-asserts the model line). (The `price_unknown` flag on a run row is a fallback for a post-call lookup that misses; the gate makes it unreachable in practice.)
 
-Photos are billed per call, not per token. `imageCostUsd` (default 0.06 for gpt-image-1 at medium quality, 1024x1536) is added to the day's spend for every generated candidate, approved or not. Change it on the Model page when OpenAI's price changes. It must be above 0 for a paid image provider: the Model page refuses 0 unless the image provider is keyless (the stub), and a photo on a paid provider at 0 is refused with `402 price_unknown`.
+Photos are billed per call, not per token. `imageCostUsd` is a flat price per photo added to the day's spend for every generated candidate, approved or not, whichever provider made it; the stored default is 0.06 (gpt-image-1 at medium quality, 1024x1536). Since 2026-09-25 the photo provider is Runway's `gen4_image` with tagged character references, which Runway bills in credits, not dollars: 5 credits per 720p image, 8 credits per 1080p image, a credit being 0.01 USD (https://docs.dev.runwayml.com/guides/pricing, fetched at the build), so at the app's default size (1024x1536, sent as `1080:1440`) set `imageCostUsd` to 0.08; `gen4_image_turbo` is 2 credits (0.02) per image; a moderated generation costs the same as a successful one; a task the app cancels after its 90 second poll budget is refunded or partly refunded by Runway, but the meter keeps its flat charge. Change the price on the Model page when Runway's or OpenAI's price changes. It must be above 0 for a paid image provider: the Model page refuses 0 unless the image provider is keyless (the stub), and a photo on a paid provider at 0 is refused with `402 price_unknown`. A portrait on Runway costs the same credits as a photo of the same tier (`portraitCostUsd`, 1024x1024).
 
 Two more calls can happen around a turn:
 
@@ -54,10 +54,10 @@ Forty turns on claude-opus-5, each about 9,000 input tokens (the constitution pr
 |---|---|---:|
 | Input | 40 x 9,000 = 360,000 tokens x 5.00 / 1,000,000 | 1.80 |
 | Output | 40 x 250 = 10,000 tokens x 25.00 / 1,000,000 | 0.25 |
-| Photos | 3 x 0.06 | 0.18 |
-| Day on the meter | | 2.23 |
+| Photos (0.08 on Runway gen4_image at 1080:1440; 0.06 on the OpenAI fallback) | 3 x 0.08 | 0.24 |
+| Day on the meter | | 2.29 |
 | Proposal pass, if on | 40 calls, about 2,500 in and 150 out each: 100,000 x 2.00 / 1,000,000 + 6,000 x 10.00 / 1,000,000 | 0.26 |
-| Day on the meter with proposals | | 2.49 |
+| Day on the meter with proposals | | 2.55 |
 
 That day fits under the 3 USD daily cap with a little room for one or two retries. Thirty such days reach the 30 USD monthly cap on about day 13, so if that is a normal month for you, raise the monthly cap on the Model page.
 

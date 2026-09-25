@@ -449,11 +449,12 @@ async function scenarios(report) {
     assert.ok(!r.text.includes("which model"), "operator text in the transcript");
   });
 
-  await report.check("POST /api/assets/verify -> allOk true for the five masters", async () => {
+  // Six since 2026-09-25: the tight face crop of master 04 (master-00) joined the five.
+  await report.check("POST /api/assets/verify -> allOk true for the six masters", async () => {
     const r = await api("POST", "/api/assets/verify");
     assert.equal(r.status, 200, r.text);
     assert.equal(r.json.allOk, true, JSON.stringify(r.json.results.filter((x) => !x.ok)));
-    assert.equal(r.json.results.length, 5);
+    assert.equal(r.json.results.length, 6);
   });
 
   await report.check("dailyCapUsd 0 -> turn 402 budget_exceeded, nothing written; cap restored", async () => {
@@ -2435,6 +2436,79 @@ async function scenariosV3(report) {
 // wrangler dev: with a route configured it rewrites every request's origin, and
 // wrangler.jsonc pins dev.host to 127.0.0.1 so the local rule works at all; the non-local
 // branch of requireOwner is covered by tests/unit/auth.test.mjs.)
+// ------------------------------------------------------------------ photos on Runway, no key (2026-09-25)
+
+// Runs on a server whose local image-provider overlay is off (main() blanks
+// DEFAULT_IMAGE_PROVIDER for this phase; with it on, api.ts overlaySettings would turn
+// every stored image provider back into the stub). There is no RUNWAY_API_KEY in the test
+// environment: the switch is accepted, the photo fails as a config error, and nothing is
+// written but the failed request row and its run row, which the app writes for any
+// failed photo (a failed request is listed nowhere and served nowhere).
+async function runwayScenarios(report, conversationId) {
+  let before = null;
+
+  await report.check("runway (overlay off): PUT imageProvider runway, imageModel gen4_image, 0.08 per photo -> stored and read back as runway; no Runway key on /api/system", async () => {
+    before = await api("GET", "/api/settings");
+    assert.equal(before.status, 200, before.text);
+    // Phase 1 leaves the day's spend above the default cap; raised for this block, restored below.
+    const caps = await api("PUT", "/api/settings", { dailyCapUsd: 200, monthlyCapUsd: 500 });
+    assert.equal(caps.status, 200, caps.text);
+    const r = await api("PUT", "/api/settings", { imageProvider: "runway", imageModel: "gen4_image", imageCostUsd: 0.08 });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.imageProvider, "runway");
+    assert.equal(r.json.imageModel, "gen4_image");
+    assert.equal(r.json.imageCostUsd, 0.08);
+    const again = await api("GET", "/api/settings");
+    assert.equal(again.json.imageProvider, "runway", "the stored value reaches the pipeline in this phase");
+    const sys = await api("GET", "/api/system");
+    assert.equal(sys.status, 200, sys.text);
+    assert.equal(sys.json.providerKeys.runway, false, "no Runway key in the test environment");
+    const zero = await api("PUT", "/api/settings", { imageCostUsd: 0 });
+    assert.equal(zero.status, 400, "a paid provider at 0 is refused: " + zero.text);
+    assert.ok(/imageCostUsd/.test(zero.json.error), zero.json.error);
+  });
+
+  await report.check("runway with no key: POST /api/images/generate -> 503 provider_not_configured (detail runway); no candidate, nothing generating, no image.generate audit event, nothing served", async () => {
+    const assetsBefore = await api("GET", "/api/assets");
+    assert.equal(assetsBefore.status, 200, assetsBefore.text);
+    const auditBefore = (await auditRows(200)).filter((e) => e.action === "image.generate").length;
+    const r = await api("POST", "/api/images/generate", { conversationId, description: "integration: runway with no key, lamp light" });
+    assert.equal(r.status, 503, r.text);
+    assert.equal(r.json.code, "provider_not_configured");
+    assert.equal(r.json.detail, "runway");
+    assert.equal(r.json.retryable, false);
+    assert.ok(/runway image provider not configured/.test(r.json.error), r.json.error);
+    const assetsAfter = await api("GET", "/api/assets");
+    assert.equal(assetsAfter.json.candidates.length, assetsBefore.json.candidates.length, "no candidate was made");
+    assert.equal(assetsAfter.json.generating.length, 0, "nothing left generating");
+    assert.equal(assetsAfter.json.rejected.length, assetsBefore.json.rejected.length);
+    const auditAfter = (await auditRows(200)).filter((e) => e.action === "image.generate").length;
+    assert.equal(auditAfter, auditBefore, "no image.generate audit event");
+    // The same through her marker: the turn still lands (the photo is asked for later by the page).
+    const t = await turn(conversationId, "[[PHOTO]] one more", key("runway-photo"));
+    assert.equal(t.status, 200, t.text);
+    assert.equal(t.json.imagePending, true);
+    const gen = await api("POST", "/api/images/generate", { conversationId, messageId: t.json.assistantMessage.id });
+    assert.equal(gen.status, 503, gen.text);
+    assert.equal(gen.json.code, "provider_not_configured");
+    const m = await api("GET", `/api/messages/${t.json.assistantMessage.id}`);
+    assert.equal(m.json.image_status, "failed", "the message shows a failed photo, retryable from the page");
+    const media = await fetchBytes(`/media/${m.json.image_id}`);
+    assert.equal(media.status, 404, "a failed request serves nothing");
+    return "503 " + r.json.code + " / " + r.json.detail;
+  });
+
+  await report.check("runway: image settings and caps restored to what phase 1 left (the stub)", async () => {
+    const r = await api("PUT", "/api/settings", {
+      imageProvider: before.json.imageProvider, imageModel: before.json.imageModel, imageCostUsd: before.json.imageCostUsd,
+      dailyCapUsd: before.json.dailyCapUsd, monthlyCapUsd: before.json.monthlyCapUsd,
+    });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.imageProvider, before.json.imageProvider);
+    assert.equal(r.json.imageModel, before.json.imageModel);
+  });
+}
+
 async function gateScenarios(report) {
   await report.check("ACCESS_AUD set: GET /api/me without a token -> 401, dev actor not granted", async () => {
     const r = await api("GET", "/api/me");
@@ -2566,10 +2640,39 @@ async function main() {
     console.log("");
     await scenariosV3(report);
 
-    // Second phase, same port and state, with the production gate switched on. The gated
-    // server cannot be told apart by /api/me (401), so nothing may answer before it boots.
+    // Second phase (2026-09-25), same port and state, with the local image-provider overlay
+    // off: `--var DEFAULT_IMAGE_PROVIDER:` blanks it the way the dev script blanks
+    // ACCESS_AUD, so a stored imageProvider of runway reaches the pipeline and a photo
+    // without RUNWAY_API_KEY fails the honest way (503 provider_not_configured).
     await stopWrangler(wrangler);
     if (await answering()) throw new Error("the first server is still answering on " + BASE + " after shutdown");
+    const tu = Date.now();
+    wrangler = startWrangler([
+      "--port", String(PORT), "--local", "--persist-to", STATE_ARG,
+      "--var", "APP_ENV:" + APP_ENV_TAG,
+      "--var", "ACCESS_AUD:",
+      "--var", `DEV_ACTOR_EMAIL:${DEV_ACTOR_EMAIL}`,
+      "--var", "DEFAULT_PROVIDER:stub",
+      "--var", "DEFAULT_IMAGE_PROVIDER:",
+      "--var", "OPENAI_API_KEY:dummy-for-settings-only",
+    ], { DEV_ACTOR_EMAIL, DEFAULT_PROVIDER: "stub", DEFAULT_IMAGE_PROVIDER: "" });
+    await waitFor("wrangler dev (image overlay off) on " + BASE, async () => {
+      if (wrangler.hasExited()) throw new Error("wrangler dev exited before it was ready");
+      const r = await api("GET", "/api/me");
+      return r.status === 200 && r.json && r.json.env === APP_ENV_TAG;
+    }, BOOT_TIMEOUT_MS, 500).catch((e) => {
+      console.log("wrangler output (tail):");
+      console.log(wrangler.tail());
+      throw e;
+    });
+    console.log(`\nwrangler dev (image overlay off) ready on ${BASE} (${Date.now() - tu} ms)\n`);
+
+    await runwayScenarios(report, conversationId);
+
+    // Third phase, same port and state, with the production gate switched on. The gated
+    // server cannot be told apart by /api/me (401), so nothing may answer before it boots.
+    await stopWrangler(wrangler);
+    if (await answering()) throw new Error("the second server is still answering on " + BASE + " after shutdown");
     const tg = Date.now();
     wrangler = startWrangler([
       "--port", String(PORT), "--local", "--persist-to", STATE_ARG,

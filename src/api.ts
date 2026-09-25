@@ -381,7 +381,7 @@ export function sniffImage(b: Uint8Array): { mime: string; width: number | null;
 // ------------------------------------------------------------------ settings validation
 
 const PROVIDERS = ["anthropic", "openai", "workersai", "stub"] as const;
-const IMAGE_PROVIDERS = ["openai", "stub"] as const;
+const IMAGE_PROVIDERS = ["openai", "runway", "stub"] as const;
 const LEVELS = ["low", "medium", "high"] as const;
 const SIZE_RE = /^(auto|\d{3,4}x\d{3,4})$/;
 // v2

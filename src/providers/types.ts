@@ -29,7 +29,7 @@ export type {
 export { ProviderError } from "../types";
 
 export const TEXT_PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "workersai", "stub"];
-export const IMAGE_PROVIDER_NAMES: readonly ImageProviderName[] = ["openai", "stub"];
+export const IMAGE_PROVIDER_NAMES: readonly ImageProviderName[] = ["openai", "runway", "stub"];
 
 // v3, SPEC_V3 FF. "off" is a setting value, not a provider: the registry holds the two
 // adapters that can be called.

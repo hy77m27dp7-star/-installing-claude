@@ -4,6 +4,11 @@
 // v3: a video registry (Runway, stub) and the call providers (OpenAI Realtime, stub;
 // elevenlabs reserved, off). RUNWAY_API_KEY is optional: without it the video provider
 // reports not configured and every video control stays hidden (SPEC_V3 FF).
+//
+// 2026-09-25: Runway is also an image provider (Gen-4 Image with tagged character
+// references, for her photos); OpenAI stays selectable as the fallback. The key is checked
+// at call time like OpenAI's, so the Model page can be switched before the secret exists
+// and a photo fails cleanly (503 provider_not_configured) until it does.
 import { ProviderError } from "../types";
 import type { Env, ImageProviderName, ProviderName, TextProvider } from "../types";
 import type { CallProviderName, ImageProviderV3, ProviderRegistry, VideoAdapterName, VideoProvider } from "./types";
@@ -11,7 +16,7 @@ import { anthropicProvider } from "./anthropic";
 import { openaiImageProvider, openaiProvider } from "./openai";
 import { workersAiProvider } from "./workersai";
 import { stubImageProvider, stubProvider, stubVideoProvider } from "./stub";
-import { runwayProvider } from "./runway";
+import { runwayImageProvider, runwayProvider } from "./runway";
 
 export const registry: ProviderRegistry = {
   text: {
@@ -22,6 +27,7 @@ export const registry: ProviderRegistry = {
   },
   image: {
     openai: openaiImageProvider,
+    runway: runwayImageProvider,
     stub: stubImageProvider,
   },
   video: {
@@ -73,6 +79,8 @@ export function imageProviderConfigured(env: Env, name: ImageProviderName): bool
       return true;
     case "openai":
       return hasKey(env.OPENAI_API_KEY);
+    case "runway":
+      return hasKey(env.RUNWAY_API_KEY);
     default:
       return false;
   }

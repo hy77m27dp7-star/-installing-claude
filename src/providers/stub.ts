@@ -8,7 +8,7 @@ import type {
 } from "../types";
 import { approxTokens, lastUserContent } from "./types";
 import type { ImageFromTextRequest, ImageProviderV3, VideoProvider, VideoStartRequest, VideoTaskStatus } from "./types";
-import { imagesOf } from "../vision";
+import { base64ToBytes, imagesOf } from "../vision";
 
 // Built at runtime so the typography scan of this file stays clean.
 const EM_DASH = String.fromCharCode(0x2014);
@@ -326,3 +326,134 @@ export const stubVideoProvider: VideoProvider = {
     return stubMp4();
   },
 };
+
+// ------------------------------------------------------------------ Runway stand-in (photos, 2026-09-25)
+
+// A fake of the three Runway calls the image adapter makes (POST /v1/text_to_image, GET
+// /v1/tasks/{id}, GET the output URL; DELETE /v1/tasks/{id} is recorded), so the whole
+// request shaping, polling and error mapping runs in the unit suite without a key or a
+// wait. The output is the first reference's own bytes decoded from its data URI (the
+// same trick the image stub plays with master 03), so a caller can check the picture
+// that comes back is the one that went in. Every request is recorded with its headers
+// and parsed body for assertions.
+export interface StubRunwayOptions {
+  // How many status reads answer RUNNING before SUCCEEDED (default 1; -1 = forever).
+  runningPolls?: number;
+  // A terminal failure instead of a success.
+  fail?: { status: "FAILED" | "CANCELLED"; failureCode?: string; failure?: string };
+  // An HTTP status for the start call (429, 500, ...) with a JSON error body, instead of a task.
+  startStatus?: number;
+  // Bytes to answer the output URL with; default: the first reference's bytes (or a 1x1 PNG).
+  output?: ArrayBuffer;
+  // An HTTP status for the output download instead of the bytes.
+  outputStatus?: number;
+}
+
+export interface StubRunwayRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
+}
+
+export interface StubRunway {
+  fetch: (url: string, init?: RequestInit) => Promise<Response>;
+  requests: StubRunwayRequest[];
+  taskIds: string[];
+}
+
+export const STUB_RUNWAY_OUTPUT_ORIGIN = "https://stub-runway.invalid";
+
+function headerMap(init?: RequestInit): Record<string, string> {
+  const out: Record<string, string> = {};
+  const h = init?.headers;
+  if (!h) return out;
+  if (h instanceof Headers) {
+    h.forEach((v, k) => { out[k.toLowerCase()] = v; });
+  } else if (Array.isArray(h)) {
+    for (const [k, v] of h) out[String(k).toLowerCase()] = String(v);
+  } else {
+    for (const [k, v] of Object.entries(h)) out[k.toLowerCase()] = String(v);
+  }
+  return out;
+}
+
+function firstReferenceBytes(body: unknown): ArrayBuffer | null {
+  const refs = typeof body === "object" && body !== null ? (body as { referenceImages?: unknown }).referenceImages : null;
+  const first = Array.isArray(refs) ? refs[0] : null;
+  const uri = typeof first === "object" && first !== null ? (first as { uri?: unknown }).uri : null;
+  if (typeof uri !== "string" || !uri.startsWith("data:")) return null;
+  const view = base64ToBytes(uri);
+  return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer;
+}
+
+let stubRunwayCounter = 0;
+
+export function stubRunwayFetch(options: StubRunwayOptions = {}): StubRunway {
+  const requests: StubRunwayRequest[] = [];
+  const taskIds: string[] = [];
+  const polls = new Map<string, number>();
+  const outputs = new Map<string, ArrayBuffer>();
+  const runningPolls = options.runningPolls ?? 1;
+  const json = (data: unknown, status = 200): Response =>
+    new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
+
+  const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = (init?.method ?? "GET").toUpperCase();
+    const headers = headerMap(init);
+    let body: unknown = null;
+    if (typeof init?.body === "string") {
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+        body = init.body;
+      }
+    }
+    requests.push({ method, url, headers, body });
+    const u = new URL(url);
+
+    if (u.origin === STUB_RUNWAY_OUTPUT_ORIGIN) {
+      if (options.outputStatus && options.outputStatus !== 200) return new Response("nope", { status: options.outputStatus });
+      const id = u.pathname.split("/").pop() ?? "";
+      const bytes = options.output ?? outputs.get(id) ?? (STUB_PNG.buffer.slice(STUB_PNG.byteOffset, STUB_PNG.byteOffset + STUB_PNG.byteLength) as ArrayBuffer);
+      return new Response(bytes.slice(0), { status: 200, headers: { "content-type": "image/png", "content-length": String(bytes.byteLength) } });
+    }
+
+    if (!headers.authorization || !headers.authorization.startsWith("Bearer ")) return json({ error: "Unauthorized" }, 401);
+    if (!headers["x-runway-version"]) return json({ error: "X-Runway-Version header is required" }, 400);
+
+    if (method === "POST" && u.pathname === "/v1/text_to_image") {
+      if (options.startStatus && options.startStatus !== 200) return json({ error: "stub start failure " + options.startStatus }, options.startStatus);
+      const b = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+      if (typeof b.promptText !== "string" || !b.promptText || typeof b.ratio !== "string" || typeof b.model !== "string") {
+        return json({ error: "Invalid request", issues: [{ code: "invalid_type", path: ["promptText"], message: "Required" }] }, 400);
+      }
+      stubRunwayCounter += 1;
+      const id = "stub-image-task-" + stubRunwayCounter;
+      taskIds.push(id);
+      const first = firstReferenceBytes(body);
+      if (first) outputs.set(id, first);
+      return json({ id, estimatedCost: { credits: 8 } });
+    }
+
+    const task = /^\/v1\/tasks\/([^/]+)$/.exec(u.pathname);
+    if (task) {
+      const id = decodeURIComponent(task[1] ?? "");
+      if (!taskIds.includes(id)) return json({ error: "Task not found" }, 404);
+      if (method === "DELETE") return json({});
+      const n = (polls.get(id) ?? 0) + 1;
+      polls.set(id, n);
+      const created = "2026-09-25T12:00:00.000Z";
+      if (runningPolls < 0 || n <= runningPolls) return json({ id, createdAt: created, status: "RUNNING", progress: 0.5, estimatedCost: { credits: 8 } });
+      if (options.fail) {
+        const { status, failureCode, failure } = options.fail;
+        return json({ id, createdAt: created, status, failure: failure ?? "stub failure", failureCode: failureCode ?? null, cost: { credits: 8 } });
+      }
+      return json({ id, createdAt: created, status: "SUCCEEDED", output: [STUB_RUNWAY_OUTPUT_ORIGIN + "/output/" + id], cost: { credits: 8 } });
+    }
+
+    return json({ error: "Not found" }, 404);
+  };
+
+  return { fetch: fetchImpl, requests, taskIds };
+}

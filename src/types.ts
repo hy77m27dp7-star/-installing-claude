@@ -31,14 +31,18 @@ export interface Env {
   OPENAI_API_KEY?: string;
   // Optional (SPEC_V2 section S): her voice through ElevenLabs. Absent = that provider is off.
   ELEVENLABS_API_KEY?: string;
-  // Optional (SPEC_V3 section FF): clips through Runway. Absent = video is off.
+  // Optional (SPEC_V3 section FF): clips through Runway, and since 2026-09-25 her photos
+  // when imageProvider is runway. Absent = video is off and a Runway photo fails as a
+  // config error (503 provider_not_configured) until the secret exists.
   RUNWAY_API_KEY?: string;
 }
 
 export type Channel = "story" | "operator";
 export type Role = "user" | "assistant";
 export type ProviderName = "anthropic" | "openai" | "workersai" | "stub";
-export type ImageProviderName = "openai" | "stub";
+// runway (2026-09-25): Gen-4 Image with tagged character references, the photo provider;
+// openai stays selectable as the fallback.
+export type ImageProviderName = "openai" | "runway" | "stub";
 export type Effort = "low" | "medium" | "high";
 // instant: her reply lands as soon as it exists. real: it lands when a person with her
 // day would have answered (SPEC_V2 section B); the row carries deliver_at until then.
