@@ -1102,9 +1102,11 @@ export async function commitReply(
     }
   }
 
-  // v3.1 (JJ): the cadence marker, after the batch and best effort: a database without
-  // migration 0007 costs nothing but the Apart cadence (the photos then ride on the first
-  // turn, on Together turns and whenever he mentions his looks, as before).
+  // v3.1 (JJ): the cadence marker, after the batch and best effort: on a database without
+  // migration 0007 this write fails and is logged, and the read in assembleContext counts
+  // that shape as just shown (FACE_CADENCE_UNREADABLE), so the missing column costs the
+  // Apart cadence and nothing else: the photos still ride on his first turn, on Together
+  // turns and whenever he mentions his looks, and never on every Apart turn (v3.1 fix 2).
   if (assembled.hisFaceShown > 0) {
     try {
       await faceShownStmt(db, conversationId, assistantRow.seq).run();

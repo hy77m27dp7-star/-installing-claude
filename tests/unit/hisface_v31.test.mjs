@@ -23,7 +23,7 @@ const { stripHimFromState } = await loadSrc("finetune");
 const { stubProvider, STUB_LOOK } = await loadSrc("providers/stub");
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-const { shouldShowFace, hisLookSection, hisFaceSettings, cleanLookText, mentionsHisLooks, performerCanSee, performersCanSee, isHisFirstTurn, himRefs, mimeOfKey, attachedLine, LOOK_SECTION_HEADER, LOOK_NO_WORDS_LINE, DESCRIBE_SYSTEM, DESCRIBE_PREFIX, HIS_FACE_DEFAULTS } = hisFace;
+const { shouldShowFace, hisLookSection, hisFaceSettings, cleanLookText, mentionsHisLooks, performerCanSee, performersCanSee, isHisFirstTurn, himRefs, mimeOfKey, attachedLine, turnsSinceFaceShown, LOOK_SECTION_HEADER, LOOK_NO_WORDS_LINE, DESCRIBE_SYSTEM, DESCRIBE_PREFIX, HIS_FACE_DEFAULTS, FACE_CADENCE_UNREADABLE } = hisFace;
 const { STUB_BLIND_MODEL } = vision;
 
 const S = { hisFaceInTogether: true, hisFaceApartEvery: 8 };
@@ -51,7 +51,7 @@ test("shouldShowFace: together mode follows hisFaceInTogether every turn", () =>
   assert.equal(rule({ mode: "together", settings: { hisFaceInTogether: false, hisFaceApartEvery: 8 }, turnsSinceLastShown: 100 }), false, "the apart cadence never applies to a together turn");
 });
 
-test("shouldShowFace: apart mode every hisFaceApartEvery turns; 0 is never; never shown counts as forever ago", () => {
+test("shouldShowFace: apart mode every hisFaceApartEvery turns; 0 is never; never shown counts as forever ago; an unreadable count as just shown", () => {
   assert.equal(rule({ turnsSinceLastShown: 8 }), true);
   assert.equal(rule({ turnsSinceLastShown: 9 }), true);
   assert.equal(rule({ turnsSinceLastShown: 7 }), false);
@@ -59,7 +59,44 @@ test("shouldShowFace: apart mode every hisFaceApartEvery turns; 0 is never; neve
   assert.equal(rule({ turnsSinceLastShown: Infinity }), true);
   assert.equal(rule({ turnsSinceLastShown: Infinity, settings: { hisFaceInTogether: true, hisFaceApartEvery: 0 } }), false);
   assert.equal(rule({ turnsSinceLastShown: 1, settings: { hisFaceInTogether: true, hisFaceApartEvery: 1 } }), true);
-  assert.equal(rule({ turnsSinceLastShown: NaN }), true, "an unreadable count reads as never shown");
+  // v3.1 fix 2: a count the caller could not read (the column missing before 0007) is the
+  // cheap failure, "just shown": the cadence waits, it never fires on every turn.
+  assert.equal(FACE_CADENCE_UNREADABLE, 0);
+  assert.equal(rule({ turnsSinceLastShown: FACE_CADENCE_UNREADABLE }), false, "the fallback the context uses on a failed read never fires the cadence");
+  assert.equal(rule({ turnsSinceLastShown: FACE_CADENCE_UNREADABLE, settings: { hisFaceInTogether: true, hisFaceApartEvery: 1 } }), false, "not even at cadence 1");
+  assert.equal(rule({ turnsSinceLastShown: NaN }), false, "an unreadable count reads as just shown, never as never shown");
+  assert.equal(rule({ turnsSinceLastShown: undefined }), false);
+  assert.equal(rule({ turnsSinceLastShown: "8" }), false);
+  // The other three reasons still show on that shape.
+  assert.equal(rule({ turnsSinceLastShown: FACE_CADENCE_UNREADABLE, isFirstTurnOfConversation: true }), true);
+  assert.equal(rule({ turnsSinceLastShown: FACE_CADENCE_UNREADABLE, mode: "together" }), true);
+  assert.equal(rule({ turnsSinceLastShown: FACE_CADENCE_UNREADABLE, userText: "do you like my beard" }), true);
+});
+
+// v3.1 fix 2: the D1 read behind the cadence. A row that says null is "never shown"
+// (Infinity); a number is her replies after that seq plus this turn; a database without
+// the column (before 0007) rejects, and the context's fallback for that is the constant
+// above, never Infinity (Infinity on that shape put every photo on every Apart turn).
+test("turnsSinceFaceShown: null -> Infinity; a seq -> her replies since plus one; a missing column rejects (the caller then counts it as just shown)", async () => {
+  const never = fakeDb({ conversations: [{ id: "c1", his_face_seq: null }], messages: [] });
+  assert.equal(await turnsSinceFaceShown(never, "c1"), Infinity);
+  const noRow = fakeDb({ conversations: [], messages: [] });
+  assert.equal(await turnsSinceFaceShown(noRow, "c1"), Infinity, "no conversation row reads as never shown");
+  // The fake evaluates "column = ?N" binds only, so the rows given are the ones the real
+  // query would count: her story replies with seq above the marker.
+  const shown = fakeDb({ conversations: [{ id: "c1", his_face_seq: 4 }], messages: [{ conversation_id: "c1", role: "assistant", channel: "story", seq: 6 }, { conversation_id: "c1", role: "assistant", channel: "story", seq: 8 }] });
+  assert.equal(await turnsSinceFaceShown(shown, "c1"), 3, "two replies since plus this turn");
+  const justShown = fakeDb({ conversations: [{ id: "c1", his_face_seq: 4 }], messages: [] });
+  assert.equal(await turnsSinceFaceShown(justShown, "c1"), 1, "the turn right after a showing is 1");
+  const unmigrated = fakeDb({ conversations: [{ id: "c1" }], messages: [] });
+  const prepare = unmigrated.prepare;
+  unmigrated.prepare = (sql) => {
+    const st = prepare(sql);
+    if (/his_face_seq/.test(sql)) st.first = async () => { throw new Error("D1_ERROR: no such column: his_face_seq"); };
+    return st;
+  };
+  await assert.rejects(() => turnsSinceFaceShown(unmigrated, "c1"), /no such column/, "a database before 0007 rejects; assembleContext catches it and counts FACE_CADENCE_UNREADABLE");
+  assert.equal(shouldShowFace({ mode: "apart", isFirstTurnOfConversation: false, turnsSinceLastShown: FACE_CADENCE_UNREADABLE, userText: "hey", settings: S, canSee: true }), false);
 });
 
 test("shouldShowFace: any mode when he mentions his looks (whole words), and not on look-alike words", () => {
@@ -310,6 +347,17 @@ test("stub: the describe pass answers a fixed description; [[HISFACE]] reports h
   assert.equal(blind.model, STUB_BLIND_MODEL);
   const blindOwn = await stubProvider.generate({}, { ...base, model: STUB_BLIND_MODEL, messages: [{ role: "user", content: "hey there", images: [{ key: "inbox/in_1/0.png", mime: "image/png" }] }] });
   assert.ok(!blindOwn.text.includes("(photo received)"), blindOwn.text);
+});
+
+// v3.1 fix 2: the wiring itself. The context's fallback for a failed cadence read is the
+// constant (just shown), never Infinity; the integration suite proves the behaviour on a
+// database whose column was dropped, this guards the line.
+test("context.ts counts a failed cadence read as FACE_CADENCE_UNREADABLE, never as never shown", () => {
+  const src = readFileSync(join(ROOT, "src", "context.ts"), "utf8");
+  const line = src.split("\n").find((l) => l.includes('nicety("his face cadence"'));
+  assert.ok(line, "the cadence read is a nicety");
+  assert.ok(line.includes("FACE_CADENCE_UNREADABLE"), line);
+  assert.ok(!line.includes("POSITIVE_INFINITY") && !line.includes("Infinity"), line);
 });
 
 // ------------------------------------------------------------------ the migration

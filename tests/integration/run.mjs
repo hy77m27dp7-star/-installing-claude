@@ -2716,6 +2716,45 @@ async function scenariosV31(report) {
     await settingsPut(back);
   });
 
+  // v3.1 fix 2 (d): the live database shape before migration 0007 (conversations without
+  // his_face_seq). The cadence read fails on it; that must count as "just shown", so an
+  // Apart turn carries no photo unless it is his first, a mention, or Together. Before the
+  // fix the failed read counted as "never shown" and every Apart turn carried all three.
+  // The column is dropped under the running server the way the checker did it, and put
+  // back before the next check whatever happens.
+  await report.check("v3.1 fix 2: conversations without his_face_seq (the shape before 0007) -> apart, cadence 8: his first turn 3, then 0, 0 (never every turn); a mention 3; together 3; apart 0; the column back (null = never shown) -> 3, then 0", async () => {
+    await setScene("none", null);
+    const d1 = (sql) => runCommand(["d1", "execute", "avelie", "--local", "--persist-to", STATE_ARG, "--command", sql, "--json"], { env: { CI: "1" } });
+    const drop = await d1("ALTER TABLE conversations DROP COLUMN his_face_seq");
+    assert.equal(drop.code, 0, "drop his_face_seq: " + drop.output.slice(0, 400));
+    const c = await newConversation("integration v3.1 fix 2 unmigrated");
+    let add;
+    try {
+      const first = await turn(c, "[[HISFACE]] one", key("v31f2-1"));
+      assert.equal(first.status, 200, first.text);
+      assert.equal(shownIn(first), 3, "his first turn");
+      const second = await turn(c, "[[HISFACE]] two", key("v31f2-2"));
+      assert.equal(second.status, 200, second.text);
+      assert.equal(shownIn(second), 0, "the cadence read failed: counts as just shown, never as never shown");
+      const secondCtx = await contextOf(second.json.assistantMessage.id);
+      assert.deepEqual(secondCtx.hisFace, { section: true, shown: false, photos: 0 });
+      assert.equal(secondCtx.mode, "apart");
+      assert.equal(shownIn(await turn(c, "[[HISFACE]] three", key("v31f2-3"))), 0);
+      assert.equal(shownIn(await turn(c, "[[HISFACE]] is my hair ok", key("v31f2-mention"))), 3, "a mention of his looks still shows");
+      await setScene("together", "the bench");
+      assert.equal(shownIn(await turn(c, "[[HISFACE]] sit", key("v31f2-together"))), 3, "a together turn still shows");
+      await setScene("none", null);
+      assert.equal(shownIn(await turn(c, "[[HISFACE]] four", key("v31f2-4"))), 0, "apart again: still quiet");
+    } finally {
+      add = await d1("ALTER TABLE conversations ADD COLUMN his_face_seq INTEGER");
+    }
+    assert.equal(add.code, 0, "re-add his_face_seq: " + add.output.slice(0, 400));
+    const resumed = await turn(c, "[[HISFACE]] five", key("v31f2-5"));
+    assert.equal(resumed.status, 200, resumed.text);
+    assert.equal(shownIn(resumed), 3, "the column is back and says null: never shown, so the cadence fires");
+    assert.equal(shownIn(await turn(c, "[[HISFACE]] six", key("v31f2-6"))), 0, "1 turn since: the marker was written");
+  });
+
   await report.check("v3.1: the character export carries no photo of him; the fine-tune export drops WHAT HE LOOKS LIKE with stripHim=1 and keeps it with 0", async () => {
     const pkg = await api("GET", "/api/export/character");
     assert.equal(pkg.status, 200, pkg.text.slice(0, 200));

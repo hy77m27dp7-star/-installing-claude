@@ -27,6 +27,13 @@ export const LOOK_MAX_CHARS = 600;
 export const HIS_FACE_MAX_LIMIT = 3;
 export const HIS_FACE_APART_EVERY_LIMIT = 50;
 export const HIS_FACE_DEFAULTS = { hisLookText: "", hisFaceMax: 3, hisFaceInTogether: true, hisFaceApartEvery: 8 } as const;
+// v3.1 fix 2: the turns-since count the caller uses when the cadence read FAILED (the
+// conversations.his_face_seq column not there yet, before 0007; a broken query). Zero reads
+// as "just shown", the cheap failure: the Apart cadence then waits for the migration, and
+// the photos still ride on his first turn, on Together turns and whenever he mentions his
+// looks. Never Infinity: that is "never shown", the row's own null, and on a database
+// without the column it would put every photo on every Apart turn.
+export const FACE_CADENCE_UNREADABLE = 0;
 
 // The section's first line, and the line that stands in for the words while none are on file.
 export const LOOK_SECTION_HEADER = "WHAT HE LOOKS LIKE (his face; you know it the way you know any face you have looked at, without narrating it)";
@@ -133,7 +140,9 @@ export function isHisFirstTurn(rows: ReadonlyArray<{ id: string; role: string }>
 export interface ShowFaceArgs {
   mode: SceneMode;
   isFirstTurnOfConversation: boolean;
-  // Her replies since the photos last rode along in this conversation; Infinity when never.
+  // Her replies since the photos last rode along in this conversation, plus this turn:
+  // Infinity when never (the row says null), FACE_CADENCE_UNREADABLE (0, just shown) when
+  // the read failed. Anything that is not a number reads as unreadable, never as never.
   turnsSinceLastShown: number;
   userText: string;
   settings: Partial<HisFaceSettings> | Settings | Record<string, unknown>;
@@ -154,7 +163,7 @@ export function shouldShowFace(args: ShowFaceArgs): boolean {
   if (args.mode === "together") return s.hisFaceInTogether;
   if (args.mode === "apart") {
     if (s.hisFaceApartEvery <= 0) return false;
-    const since = typeof args.turnsSinceLastShown === "number" && !Number.isNaN(args.turnsSinceLastShown) ? args.turnsSinceLastShown : Number.POSITIVE_INFINITY;
+    const since = typeof args.turnsSinceLastShown === "number" && !Number.isNaN(args.turnsSinceLastShown) ? args.turnsSinceLastShown : FACE_CADENCE_UNREADABLE;
     return since >= s.hisFaceApartEvery;
   }
   return false;
@@ -216,8 +225,11 @@ export async function countHimPhotos(db: D1Database): Promise<number> {
 
 // Which turn since the photos last rode along this turn is, in this conversation: her
 // replies since that one plus this turn itself, so the turn right after a showing is 1 and
-// a cadence of N fires on every N-th turn (N = 1 is every turn). Infinity when never (or
-// when the column does not exist yet; a missing 0007 is a nicety, never a failed turn).
+// a cadence of N fires on every N-th turn (N = 1 is every turn). Infinity when never shown
+// (the row's own null). Throws when the column is not there yet (a database before 0007):
+// the caller (assembleContext) catches that and counts FACE_CADENCE_UNREADABLE, just shown,
+// so a missing migration costs the Apart cadence and nothing else, never a failed turn and
+// never the photos on every Apart turn.
 export async function turnsSinceFaceShown(db: D1Database, conversationId: string): Promise<number> {
   const row = await db.prepare("SELECT his_face_seq FROM conversations WHERE id = ?1").bind(conversationId).first<{ his_face_seq: number | null }>();
   const seq = row && typeof row.his_face_seq === "number" && Number.isFinite(row.his_face_seq) ? row.his_face_seq : null;
@@ -230,7 +242,8 @@ export async function turnsSinceFaceShown(db: D1Database, conversationId: string
 }
 
 // Records that the photos rode along on the turn her reply `seq` closed. Best effort by
-// the caller (after the turn's batch), so a database without 0007 costs nothing but the cadence.
+// the caller (after the turn's batch): on a database without 0007 the write fails and is
+// logged, and the cadence read above already counts that shape as just shown.
 export function faceShownStmt(db: D1Database, conversationId: string, seq: number): D1PreparedStatement {
   return db.prepare("UPDATE conversations SET his_face_seq = ?2 WHERE id = ?1").bind(conversationId, seq);
 }

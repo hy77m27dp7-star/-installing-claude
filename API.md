@@ -431,7 +431,7 @@ The words reach every turn as the WHAT HE LOOKS LIKE section; the photos ride on
 | hisFaceInTogether | true | boolean (the photos on every Together turn) |
 | hisFaceApartEvery | 8 | 0 to 50 (Apart mode: every N of her replies; 0 = only his first turn of a conversation) |
 
-A database seeded before these keys existed reads them as the defaults; the deploy session inserts the four rows with INSERT OR IGNORE. Migration `0007_his_face.sql` adds `conversations.his_face_seq` (nullable; the Worker tolerates its absence).
+A database seeded before these keys existed reads them as the defaults; the deploy session inserts the four rows with INSERT OR IGNORE. Migration `0007_his_face.sql` adds `conversations.his_face_seq` (nullable; the Worker tolerates its absence: a failed cadence read counts as "just shown", so without the column the Apart cadence waits and the photos ride only on his first turn, on Together turns and on a mention of his looks). Apply it remotely before the deploy.
 
 ## Secrets added in v3 (optional)
 

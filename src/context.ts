@@ -23,7 +23,7 @@ import { listAsks, listWantLogRecent, listWants } from "./wants";
 import { outfitNow, todayRows } from "./grounding";
 import { getWeather } from "./weather";
 import { shapeCue, signature } from "./imperfection";
-import { himRefs, isHisFirstTurn, loadHisLook, performersCanSee, shouldShowFace, turnsSinceFaceShown } from "./hisFace";
+import { FACE_CADENCE_UNREADABLE, himRefs, isHisFirstTurn, loadHisLook, performersCanSee, shouldShowFace, turnsSinceFaceShown } from "./hisFace";
 import type { ImageRef } from "./vision";
 import type {
   AssembledContext, AskRow, ChatMessage, Correction, Env, HisLook, HistoryRow, MediaRow, OutfitNow, PromptCallback, PromptState, RecallPick,
@@ -398,9 +398,12 @@ export async function assembleContext(
     listRecentStoryMessages(db, conversationId, settings.contextRecentMessages),
     pendingMessageId ? Promise.resolve(0) : nextSeq(db, conversationId),
     weatherFor(opts.env, db, settings, now),
-    // v3.1 (JJ): her replies since his photos last rode along here (Infinity when never, or
-    // when the column is not there yet).
-    nicety("his face cadence", turnsSinceFaceShown(db, conversationId), Number.POSITIVE_INFINITY),
+    // v3.1 (JJ): her replies since his photos last rode along here, plus this turn: Infinity
+    // when never (the row says null). A failed read (the his_face_seq column not there yet,
+    // before 0007) counts as just shown (FACE_CADENCE_UNREADABLE, 0), the cheap failure: the
+    // Apart cadence then waits for the migration instead of the photos riding on every
+    // Apart turn (v3.1 fix 2; the first turn, Together turns and a mention still show them).
+    nicety("his face cadence", turnsSinceFaceShown(db, conversationId), FACE_CADENCE_UNREADABLE),
   ]);
   const turnKey = pendingMessageId ?? "s" + seq;
   const recentRows = recentAll.filter((r) => r.content.trim().length > 0 && r.id !== pendingMessageId);
