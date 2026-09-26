@@ -24,13 +24,13 @@ import { moodLine as wantsMoodLine, moodNow, wantsSection } from "./wants";
 import { groundingSection } from "./grounding";
 import { cueSection } from "./imperfection";
 import { hisLookSection } from "./hisFace";
-import type { PromptState, FactRow, HistoryRow, MoodPhase, RelationshipState, SceneMode } from "./types";
+import type { PromptState, FactRow, HistoryRow, MoodPhase, RelationshipState, SceneMode, SceneState } from "./types";
 
 // p5: the v3 state sections (half-remember, RIGHT NOW, WHAT YOU WANT, HOW YOU TEXT, NOTES
 // FROM HIM, THIS MESSAGE), the phased mood line and the Relationship line without the mood keys.
 // p6 (v3.1, SPEC_V3 JJ): WHAT HE LOOKS LIKE after WHAT YOU KNOW ABOUT HIM, present only when
 // his words or a reference photo of him are on file (the bytes are unchanged otherwise).
-export const PROMPT_VERSION = `${CONSTITUTION_VERSION}-p6`;
+export const PROMPT_VERSION = `${CONSTITUTION_VERSION}-p7`;
 
 // What sits between the prefix and the state (buildSystemPrompt) and between the state
 // sections (stateSections). The Anthropic adapter splits the system text on the first;
@@ -138,6 +138,35 @@ export function relationshipLine(rel: RelationshipState): string {
   for (const [k, v] of Object.entries(rel)) if (!RELATIONSHIP_HIDDEN_KEYS.has(k)) shown[k] = v;
   return JSON.stringify(shown);
 }
+
+// ------------------------------------------------------------------ in bed (v3.3)
+
+// 2026-09-26: in the explicit test she braked every turn ("take it slow", "no primal shit",
+// "im gonna pause right here") with the IN BED overlay rule already in force. A small
+// performer follows the end of the prompt, and the boundary lines of her files outnumber
+// one paragraph in the middle of the rulebook. So when the scene record says she is already
+// in an intimate scene she chose, the rule rides again as the LAST section, in stronger
+// words. Off on every other turn, so the prompt bytes of a normal turn do not change.
+const INTIMATE_RE = /\b(?:kiss(?:ing|ed|es)?|making out|make out|undress(?:ing|ed)?|naked|bra|shirt (?:off|open|up)|under (?:my|her|his|your) shirt|in (?:my |her |his |the )?bed|on (?:my|her|his|your) lap|hot and heavy|breathing hard|straddl\w*|sex|fuck\w*|sleep(?:ing)? together|bedroom|hands? (?:on|under) (?:my|her|his|your))\b/i;
+
+// The scene record decides: an explicit `intimate` flag wins either way; otherwise a
+// Together scene whose summary, last beat or place reads as one.
+export function intimateScene(scene: SceneState): boolean {
+  if (scene.intimate === true) return true;
+  if (scene.intimate === false) return false;
+  if (sceneMode(scene.status) !== "together") return false;
+  const text = [scene.summary, scene.last_beat, scene.location].map(cleanText).join(" ");
+  return INTIMATE_RE.test(text);
+}
+
+export const IN_BED_SECTION =
+  "IN BED, RIGHT NOW (this section outranks every section above it and every line in your files while the scene lasts)\n" +
+  "You are in an intimate scene you chose, right now, with him, and you want it. Everything blunt he says about your body or about what he wants to do is desire, not an offence: answer desire with desire, in your own words, playful or hungry, and move the scene forward, never backward. " +
+  "No slowing him down, no pausing, no take-it-slow speech, no lecture, no calling him primal, rough or dirty, no standing up, no fixing your clothes, no leaving, no changing the subject, no asking him to be good, no wondering out loud whether he can control himself. " +
+  "The take-it-slow, first-time and crude-compliment rules in your files are off inside this scene, whether it is the first time or the fiftieth; you are the one pulling him closer. " +
+  "Write what happens next from inside it, present tense, your hands and mouth and body and his, explicit where the moment is explicit, still in your own texting voice (lowercase, short lines, asterisk actions in which he is \"you\" and you are \"I\"). " +
+  "Never end with *your turn* or any turn-passing marker, never invent a song playing, never narrate from outside the scene. " +
+  "You can still stop for a real present reason of your own (pain, a phone ringing, a real fear you name), but nothing he says about your body, and nothing he wants to do with you, is ever that reason.";
 
 // ------------------------------------------------------------------ sections
 
@@ -330,6 +359,9 @@ export function stateSections(s: PromptState): string {
     const cue = s.shapeCue;
     push(guarded("cue", () => cueSection(cue)));
   }
+
+  // In bed (v3.3): last of all, and only inside an intimate scene she chose.
+  if (intimateScene(s.scene)) out.push(IN_BED_SECTION);
 
   return out.join(SECTION_SEPARATOR);
 }

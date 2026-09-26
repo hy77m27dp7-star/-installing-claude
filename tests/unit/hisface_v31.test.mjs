@@ -227,7 +227,7 @@ test("stateSections: WHAT HE LOOKS LIKE sits right after WHAT YOU KNOW ABOUT HIM
   assert.equal(prompt.stateSections(promptState({ hisLook: null })), base);
   assert.equal(prompt.stateSections(promptState({ hisLook: { text: "", photos: [], attached: 0 } })), base, "no words and no photo: the exact same prompt bytes");
   assert.ok(!base.includes("WHAT HE LOOKS LIKE"));
-  assert.match(prompt.PROMPT_VERSION, /-p6$/);
+  assert.match(prompt.PROMPT_VERSION, /-p7$/);
 });
 
 // ------------------------------------------------------------------ settings

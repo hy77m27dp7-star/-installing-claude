@@ -86,7 +86,7 @@ const RESOLVE_CUES: string[] = ["because", "actually", "it was"];
 
 // Codes whose fix is mechanical. types.ts has no "repair" severity, so these carry
 // severity "flag" and the action is derived from this set.
-export const REPAIR_CODES: ReadonlySet<string> = new Set(["em_dash", "emoji", "markdown_structure"]);
+export const REPAIR_CODES: ReadonlySet<string> = new Set(["em_dash", "emoji", "markdown_structure", "turn_marker"]);
 
 // Function words that appear in unknown topics but say nothing about the topic itself.
 const TOPIC_STOP = new Set([
@@ -236,6 +236,10 @@ function stripMarkdown(text: string): string {
 }
 
 const THIRD_PERSON_ACTION_RE = /\*[^*\n]*\b(him|he|his|her|herself|she)\b[^*\n]*\*/i;
+// A turn-passing marker, the chat-roleplay habit of a small performer ("*your turn*",
+// "(your move)"): never hers, mechanical, stripped in repair (2026-09-26).
+const TURN_MARKER_RE = /[ \t]*[*([]\s*(?:your (?:turn|move|go)|you'?re up|over to you)\s*[*)\]][ \t]*/i;
+const TURN_MARKER_ALL_RE = new RegExp(TURN_MARKER_RE.source, "gi");
 
 const WRITTEN_JOKE_PATTERNS: RegExp[] = [
   /\bsomehow (worse|better|more|less)\b/,
@@ -261,6 +265,7 @@ function flag(code: string, severity: FlagSeverity, detail: string): Flag {
 
 export function repairText(text: string): string {
   let out = text.replace(ELLIPSIS_ALL_RE, "...");
+  out = out.replace(TURN_MARKER_ALL_RE, "").replace(/\n{3,}/g, "\n\n");
   out = out.replace(DIGIT_DASH_RE, "$1-$2");
   // A dash that closes a line reads as a trailing thought; one that opens a line is noise.
   out = out.replace(TRAILING_DASH_RE, "...");
@@ -293,6 +298,9 @@ export function runChecks(text: string, ctx: CheckContext): CheckResult {
   }
   if (hasMarkdown(text)) {
     flags.push(flag("markdown_structure", "flag", "markdown marker present"));
+  }
+  if (TURN_MARKER_RE.test(text)) {
+    flags.push(flag("turn_marker", "flag", "a turn-passing marker (*your turn*) present"));
   }
 
   // flag
