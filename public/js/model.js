@@ -679,12 +679,13 @@ async function loadSpotify() {
   }
   card.classList.remove("hidden");
   if (!s || typeof s !== "object") return;
-  if (status) { clear(status); status.append(spotifyChips(s)); }
+  if (status) { clear(status); status.append(...spotifyChips(s)); }
   if (playlist) {
     clear(playlist);
     const name = s.playlist && s.playlist.name ? String(s.playlist.name) : s.playlistName ? String(s.playlistName) : "";
     if (name) playlist.append(chip(name, "accent"));
-    if (s.connected) playlist.append(chip(s.playlist && s.playlist.ok ? "ok" : "missing", s.playlist && s.playlist.ok ? "ok" : "amber"));
+    const listOk = !!(s.playlist && (s.playlist.ok || s.playlist.name || s.playlist.id)) || !!s.playlistId;
+    if (s.connected) playlist.append(chip(listOk ? "ok" : "missing", listOk ? "ok" : "amber"));
     if (s.playlistId) playlist.append(chip(String(s.playlistId).slice(0, 22), "mono"));
   }
   if (connect) {
