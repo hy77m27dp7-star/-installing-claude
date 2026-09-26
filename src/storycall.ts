@@ -211,13 +211,17 @@ function refileKey(kind: string, proposal: string): string {
 // One entry per input row, in order: the new proposal id, or null for a row skipped as a
 // refile of a pending, approved or edited proposal of the same kind and text in the last 30
 // days (or of an earlier row of the same call). Every nightly text carries its day, so this
-// only ever catches a refile of the same night.
+// only ever catches a refile of the same night. Review fix: for the kinds whose text carries
+// no day (a merge, a guess mark) and for her reads, a proposal he REJECTED also stops the
+// refile, so his no sticks for the month instead of coming back every night.
+const REJECTION_STICKS: readonly string[] = ["fact_merge", "fact_mark", "her_view"];
+
 export async function fileNightlyProposals(db: D1Database, rows: NightlyProposal[]): Promise<Array<string | null>> {
   const list = Array.isArray(rows) ? rows : [];
   if (!list.length) return [];
   const since = new Date(Date.now() - NIGHTLY_REFILE_DAYS * DAY_MS).toISOString();
   const existing = await db
-    .prepare("SELECT kind, proposal FROM proposals WHERE status IN ('pending','approved','edited') AND created_at >= ?1")
+    .prepare(`SELECT kind, proposal FROM proposals WHERE (status IN ('pending','approved','edited') OR (status = 'rejected' AND kind IN (${REJECTION_STICKS.map((k) => "'" + k + "'").join(",")}))) AND created_at >= ?1`)
     .bind(since)
     .all<{ kind: string; proposal: string }>();
   const seen = new Set<string>();

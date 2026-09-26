@@ -9,7 +9,7 @@ import {
   auditStmt, dayKey, getCurrentState, getProposal, getSettings, insertModelRunStmt, insertProposalStmt, listFacts, listProposals,
   listRecentStoryMessages, newId, nowIso, usageStmt,
 } from "./db";
-import { createFact, createHistory, createUnknown, putState, updateFact } from "./state";
+import { createFact, createHistory, createUnknown, putState, setFactInferred, updateFact } from "./state";
 import { WEEKDAYS, createThread, listThreads, localParts, logLife, safeTimezone, updateThread } from "./life";
 // v5 (SPEC_V5 section 4 and "Proposals"): the ladder and the scene record (standing.ts), the
 // story clock (the extractor's today and the occurred stamp), and the seven new kinds'
@@ -177,7 +177,10 @@ async function stateSummary(db: D1Database): Promise<string> {
   // only what is new or changed. Capped so a long memory never swamps the call.
   const threads = await listThreads(db, "active").catch(() => [] as LifeThread[]);
   const line = (t: string) => "- " + t.replace(/\s+/g, " ").trim().slice(0, SUMMARY_LINE_MAX);
-  const factLines = (rows: typeof him) => rows.filter((f) => f.status === "approved").slice(-SUMMARY_LIST_MAX).map((f) => line(f.fact));
+  // Review fix: a guess of hers about him is marked, so his own words saying it later are
+  // proposed again (with said_by "him") instead of read as already kept.
+  const guess = (f: FactRow): string => (Number((f as FactRow & { inferred?: unknown }).inferred) === 1 ? " (her guess)" : "");
+  const factLines = (rows: typeof him) => rows.filter((f) => f.status === "approved").slice(-SUMMARY_LIST_MAX).map((f) => line(f.fact) + guess(f));
   return [
     `Relationship: ${rel.state.summary ?? ""}`,
     `Scene: ${scene.state.summary ?? ""}`,
@@ -431,6 +434,19 @@ export function proposalPayload(p: ProposalRow): Record<string, unknown> {
   return {};
 }
 
+// The source a nightly pass filed a proposal with (payload_json.source, e.g. "nightly arcs
+// 2026-09-29 r_..."), or null for one the per-turn extractor filed.
+export function proposalSource(p: Pick<ProposalRow, "payload_json">): string | null {
+  if (!p || typeof p.payload_json !== "string" || !p.payload_json) return null;
+  try {
+    const outer: unknown = JSON.parse(p.payload_json);
+    if (!isPlainObject(outer)) return null;
+    return typeof outer.source === "string" && outer.source ? outer.source : null;
+  } catch {
+    return null;
+  }
+}
+
 // The weight a proposal carried (payload_json.weight, or raw.weight), or undefined.
 export function proposalWeight(p: ProposalRow): number | undefined {
   if (!p.payload_json) return undefined;
@@ -591,6 +607,31 @@ async function filedInstant(db: D1Database, p: ProposalRow, clockRef: { clock: S
   return new Date(Date.parse(filed)).toISOString();
 }
 
+// Review fix: his part in a step (encouraged, asked, came, forgot) is decided only by the
+// nightly arc step, which checks it against the record (a message of his after he knew, the
+// times they were together) and cleans its note; a beat_outcome the per-turn extractor filed
+// keeps her outcome and her note only.
+export function beatOutcomePayload(p: Pick<ProposalRow, "payload_json">, payload: Record<string, unknown>): Record<string, unknown> {
+  const clean: Record<string, unknown> = { ...(isPlainObject(payload) ? payload : {}) };
+  if (!/^nightly arcs\b/.test(proposalSource(p) ?? "")) {
+    delete clean.his_part;
+    delete clean.his_note;
+  }
+  return clean;
+}
+
+// The clock one promotion reads (lazily, once); a failed read is none.
+async function promotionClock(db: D1Database, clockRef: { clock: StoryClock | null }): Promise<StoryClock | null> {
+  if (!clockRef.clock) {
+    try {
+      clockRef.clock = await loadStoryClock(db, await getSettings(db));
+    } catch {
+      clockRef.clock = null;
+    }
+  }
+  return clockRef.clock;
+}
+
 function isoOf(v: unknown): string | null {
   if (typeof v !== "string" || !v.trim()) return null;
   const t = Date.parse(v.trim());
@@ -610,6 +651,19 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
     }
     case "justin_fact": {
       // v5 (SPEC_V5 section 7): a thing she worked out about him is held as her guess.
+      // Review fix: his own words saying what she had only guessed make the guess his: the
+      // guess (the same content words) is marked as said instead of kept twice.
+      if (payload.said_by === "him") {
+        const key = saidKey(text);
+        const guessed = key
+          ? (await listFacts(db, "justin")).find((f) => f.status === "approved" && Number((f as FactRow & { inferred?: unknown }).inferred) === 1 && saidKey(f.fact) === key)
+          : undefined;
+        if (guessed) {
+          const head = await setFactInferred(db, guessed.id, false, source, actor);
+          await weighRow(db, p, "fact", head.id, actor);
+          return head.id;
+        }
+      }
       const f = await createFact(db, { scope: "justin", fact: text, source, disclosed: true, inferred: payload.said_by === "inferred" }, actor);
       await weighRow(db, p, "fact", f.id, actor);
       return f.id;
@@ -724,7 +778,9 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
       // v5 (SPEC_V5 section 4): through the ladder; what it held back rides in the state
       // version's note (the proposal's own decision_note is left alone).
       const cur = await getCurrentState<RelationshipState>(db, "relationship");
-      const moved = moveRelationship(cur.state, payload, text, new Date(), { auto: actor === "auto" });
+      // Review fix: whether a cooling off still runs is read on story time.
+      const clock = await promotionClock(db, clockRef);
+      const moved = moveRelationship(cur.state, payload, text, new Date(), { auto: actor === "auto", clock });
       const note = (moved.notes.length ? source + " | " + moved.notes.join("; ") : source).slice(0, 1000);
       const r = await putState(db, "relationship", moved.next, note, actor, "proposal");
       return `relationship:v${r.version}`;
@@ -765,8 +821,10 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
       const settings = await getSettings(db);
       return createBeatFromProposal(db, payload, text, source, actor, settings.timezone);
     }
-    case "beat_outcome":
-      return applyBeatOutcome(db, payload, source, actor);
+    case "beat_outcome": {
+      const clock = await promotionClock(db, clockRef);
+      return applyBeatOutcome(db, beatOutcomePayload(p, payload), source, actor, clock ? storyNow(clock).getTime() : Date.now());
+    }
     case "her_view":
       return applyViewProposal(db, payload, source, actor);
     case "fact_merge":

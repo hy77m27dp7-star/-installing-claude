@@ -43,7 +43,17 @@ const IN_CHUNK = 90;
 const MERGE_TEXT_MAX = 300;
 const PROPOSAL_TEXT_MAX = 300;
 const HIS_TEXT_MAX = 600;
-const PROPOSAL_SOURCE_RE = /^proposal (p_[A-Za-z0-9]+)/;
+// Review fix: a merged head's source reads "merged: proposal p_..; ...", so the proposal id is
+// found anywhere in the source, not only at its start.
+const PROPOSAL_SOURCE_RE = /\bproposal (p_[A-Za-z0-9]+)/;
+// Review fix: mergeFacts takes a keep and at most ten merged ids.
+const EXACT_KEEP = 11;
+// Review fix: what the last nights already looked at (the facts asked "did he say it", the
+// near groups judged) is not asked again for this many nights, so each night reaches further
+// into the backlog instead of paying for the same newest few again.
+export const HYGIENE_MEMORY_NIGHTS = 30;
+const CHECKED_KEPT = 60;
+const JUDGED_KEPT = 36;
 
 // ------------------------------------------------------------------ pure helpers
 
@@ -90,9 +100,21 @@ export function exactDuplicateGroups(facts: FactRow[]): DupGroup[] {
       if (!list.some((x) => x.id === f.id)) list.push(f);
     } else buckets.set(k, [f]);
   }
-  const groups = Array.from(buckets.values()).filter((g) => g.length >= 2).map((g) => g.slice().sort(byAge));
+  const groups = Array.from(buckets.values()).filter((g) => g.length >= 2).map((g) => g.slice().sort(byAge).slice(0, EXACT_KEEP));
   groups.sort((a, b) => byAge(a[0] as FactRow, b[0] as FactRow));
   return groups.map((g, i) => group("g", "same_words", i + 1, g));
+}
+
+// A short stable key for a set of fact ids (FNV-1a over the sorted ids): what a judged near
+// group is remembered by. A group that gains or loses a member is a new group.
+export function groupKey(ids: readonly string[]): string {
+  const text = (Array.isArray(ids) ? ids : []).filter((x) => typeof x === "string").slice().sort().join(",");
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0") + ":" + String(ids.length);
 }
 
 function jaccard(a: Set<string>, b: Set<string>): number {
@@ -102,7 +124,7 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return inter / (a.size + b.size - inter);
 }
 
-export function nearDuplicateGroups(facts: FactRow[], exclude: ReadonlySet<string>, opts: { max?: number } = {}): DupGroup[] {
+export function nearDuplicateGroups(facts: FactRow[], exclude: ReadonlySet<string>, opts: { max?: number; judged?: ReadonlySet<string> } = {}): DupGroup[] {
   const max = typeof opts?.max === "number" && Number.isFinite(opts.max) ? Math.max(0, Math.floor(opts.max)) : NEAR_MAX_DEFAULT;
   if (max <= 0) return [];
   const seen = new Set<string>();
@@ -146,9 +168,21 @@ export function nearDuplicateGroups(facts: FactRow[], exclude: ReadonlySet<strin
     if (list) list.push(p.f);
     else byRoot.set(r, [p.f]);
   });
-  const groups = Array.from(byRoot.values())
-    .filter((g) => g.length >= 2)
-    .map((g) => g.slice().sort(byAge).slice(0, GROUP_KEEP));
+  // Review fix: a large group is shown in windows (its oldest member with the next four), and
+  // a window judged on an earlier night (opts.judged, by groupKey) gives way to the next one,
+  // so the sixth member of a big group and a newer real duplicate both reach the model.
+  const judged = opts && opts.judged ? opts.judged : null;
+  const groups: FactRow[][] = [];
+  for (const g of byRoot.values()) {
+    if (g.length < 2) continue;
+    const sorted = g.slice().sort(byAge);
+    const head = sorted[0] as FactRow;
+    const rest = sorted.slice(1);
+    const windows: FactRow[][] = [];
+    for (let i = 0; i < rest.length; i += GROUP_KEEP - 1) windows.push([head, ...rest.slice(i, i + GROUP_KEEP - 1)]);
+    const pick = judged ? windows.find((w) => !judged.has(groupKey(w.map((f) => f.id)))) : windows[0];
+    if (pick) groups.push(pick);
+  }
   groups.sort((a, b) => byAge(a[0] as FactRow, b[0] as FactRow));
   return groups.slice(0, max).map((g, i) => group("n", "near", i + 1, g));
 }
@@ -233,9 +267,12 @@ export function inferredCandidates(
   facts: FactRow[],
   proposals: ReadonlyMap<string, { evidence: string | null; userMessageId: string | null }>,
   hisTexts: ReadonlyMap<string, string>,
+  skip: ReadonlySet<string> = new Set(),
 ): InferredCandidate[] {
   const out: InferredCandidate[] = [];
-  const pool = (Array.isArray(facts) ? facts : []).filter((f) => hygieneScope(f) && f.scope === "justin" && !isInferred(f)).slice().sort((a, b) => byAge(b, a));
+  // Review fix: `skip` holds the facts a merge proposed tonight takes (a mark on one would
+  // name a superseded fact) and the ones asked on the last nights.
+  const pool = (Array.isArray(facts) ? facts : []).filter((f) => hygieneScope(f) && f.scope === "justin" && !isInferred(f) && !skip.has(f.id)).slice().sort((a, b) => byAge(b, a));
   for (const f of pool) {
     if (out.length >= INFERRED_MAX) break;
     const pid = proposalIdOf(f);
@@ -266,6 +303,68 @@ export function inferredUser(cands: ReturnType<typeof inferredCandidates>): stri
       `HIS MESSAGE: ${c.hisText ? saidLine(c.hisText, HIS_TEXT_MAX) : "(none)"}`,
     ].join("\n"))
     .join("\n\n");
+}
+
+// Every fact id the model answered for (said true or false): what the night checked.
+export function answeredInferredIds(text: string, ids: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  for (const raw of parseJsonArray(text)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const item = raw as Record<string, unknown>;
+    if (item.said !== true && item.said !== false) continue;
+    const id = typeof item.fact === "string" ? item.fact.trim() : "";
+    if (id && ids.has(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+// Every near group the model answered for (same true or false): what the night judged.
+export function answeredGroupIds(text: string, groups: DupGroup[]): string[] {
+  const known = new Set((Array.isArray(groups) ? groups : []).map((g) => g.id));
+  const out: string[] = [];
+  for (const raw of parseJsonArray(text)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const item = raw as Record<string, unknown>;
+    if (item.same !== true && item.same !== false) continue;
+    const gid = typeof item.group === "string" ? item.group.trim() : "";
+    if (gid && known.has(gid) && !out.includes(gid)) out.push(gid);
+  }
+  return out;
+}
+
+// The facts checked and the near groups judged on the last HYGIENE_MEMORY_NIGHTS nights,
+// read from the hygiene step's own nightly_runs rows (detail.checked, detail.judged). A
+// database behind 0009, or a row that does not parse, adds nothing.
+export async function recentHygieneMarks(db: D1Database, day: string): Promise<{ checked: Set<string>; judged: Set<string>; todayChecked: string[]; todayJudged: string[] }> {
+  const out = { checked: new Set<string>(), judged: new Set<string>(), todayChecked: [] as string[], todayJudged: [] as string[] };
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof day === "string" ? day : "");
+  if (!m) return out;
+  const since = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) - HYGIENE_MEMORY_NIGHTS)).toISOString().slice(0, 10);
+  let rows: Array<{ day: string; result_json: string | null }> = [];
+  try {
+    const r = await db.prepare("SELECT day, result_json FROM nightly_runs WHERE step = 'hygiene' AND day >= ?1 AND day <= ?2 ORDER BY day DESC LIMIT ?3")
+      .bind(since, day, HYGIENE_MEMORY_NIGHTS + 1).all<{ day: string; result_json: string | null }>();
+    rows = r.results ?? [];
+  } catch {
+    return out;
+  }
+  for (const row of rows) {
+    if (!row || typeof row.result_json !== "string") continue;
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.result_json); } catch { continue; }
+    const detail = parsed && typeof parsed === "object" ? (parsed as { detail?: unknown }).detail : null;
+    if (!detail || typeof detail !== "object") continue;
+    const d = detail as { checked?: unknown; judged?: unknown };
+    const checked = Array.isArray(d.checked) ? d.checked.filter((x): x is string => typeof x === "string") : [];
+    const judged = Array.isArray(d.judged) ? d.judged.filter((x): x is string => typeof x === "string") : [];
+    for (const x of checked) out.checked.add(x);
+    for (const x of judged) out.judged.add(x);
+    if (row.day === day) {
+      out.todayChecked = checked;
+      out.todayJudged = judged;
+    }
+  }
+  return out;
 }
 
 export function parseInferredAnswer(text: string, ids: ReadonlySet<string>): string[] {
@@ -342,8 +441,11 @@ export async function runHygienePass(env: Env, db: D1Database, settings: Setting
   const evidence = `nightly hygiene ${day}`;
   const problems: string[] = [];
 
-  // (1) the approved facts.
+  // (1) the approved facts, and what the last nights already looked at.
   const facts = await listFacts(db, undefined, "approved");
+  const marks = await recentHygieneMarks(db, day);
+  const judgedNow: string[] = [];
+  const checkedNow: string[] = [];
 
   // (2) exact duplicates: the same words in the same order once number words are digits. No model.
   const exact = exactDuplicateGroups(facts);
@@ -358,14 +460,22 @@ export async function runHygienePass(env: Env, db: D1Database, settings: Setting
 
   // (3) near duplicates (every exact id excluded), confirmed and worded by the cheap model.
   const exclude = new Set(exact.flatMap((g) => g.ids));
-  const near = nearDuplicateGroups(facts, exclude);
+  const near = nearDuplicateGroups(facts, exclude, { judged: marks.judged });
+  // The facts a merge proposed tonight takes are not asked "did he say it" (review fix).
+  const merging = new Set<string>(exclude);
   let mergedNear = 0;
   if (near.length) {
     const call = await paidJsonCall(env, db, settings, budget, {
       tag: "hygiene_merge", provider, model, system: mergeSystem(), user: mergeUser(near), maxTokens: 600, temperature: 0,
     });
     if (call.ok) {
+      const byGroup = new Map(near.map((g) => [g.id, g] as const));
+      for (const gid of answeredGroupIds(call.text, near)) {
+        const g = byGroup.get(gid);
+        if (g) judgedNow.push(groupKey(g.ids));
+      }
       for (const a of parseMergeAnswer(call.text, near)) {
+        for (const id of a.group.ids) merging.add(id);
         mergedNear++;
         rows.push({
           kind: "fact_merge",
@@ -388,13 +498,15 @@ export async function runHygienePass(env: Env, db: D1Database, settings: Setting
     const proposals = await readProposals(db, pids);
     const umids = Array.from(new Set(Array.from(proposals.values()).map((p) => p.userMessageId).filter((x): x is string => !!x)));
     const hisTexts = umids.length ? await readHisMessages(db, umids) : new Map<string, string>();
-    const cands = inferredCandidates(facts, proposals, hisTexts);
+    const skip = new Set<string>([...merging, ...marks.checked]);
+    const cands = inferredCandidates(facts, proposals, hisTexts, skip);
     if (cands.length) {
       const call = await paidJsonCall(env, db, settings, budget, {
         tag: "hygiene_inferred", provider, model, system: inferredSystem(), user: inferredUser(cands), maxTokens: 400, temperature: 0,
       });
       if (call.ok) {
         const byId = new Map(cands.map((c) => [c.factId, c] as const));
+        checkedNow.push(...answeredInferredIds(call.text, new Set(byId.keys())));
         for (const id of parseInferredAnswer(call.text, new Set(byId.keys()))) {
           const c = byId.get(id);
           if (!c) continue;
@@ -420,6 +532,10 @@ export async function runHygienePass(env: Env, db: D1Database, settings: Setting
   // Rows fileNightlyProposals skipped: the same proposal is already pending or kept this month.
   if (rows.length > proposalIds.length) detail.alreadyFiled = rows.length - proposalIds.length;
   detail.answered = { nearMerged: mergedNear, marked };
+  // What this night looked at (with what an earlier run of the same day did), for the nights after.
+  const union = (a: string[], b: string[], max: number): string[] => Array.from(new Set([...a, ...b])).slice(0, max);
+  detail.checked = union(checkedNow, marks.todayChecked, CHECKED_KEPT);
+  detail.judged = union(judgedNow, marks.todayJudged, JUDGED_KEPT);
   if (problems.length) detail.problems = problems;
   return {
     step: "hygiene",

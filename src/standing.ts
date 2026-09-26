@@ -291,12 +291,16 @@ const FRICTION_HEALED_WORD = /^(?:none|healed|no friction)$/i;
 // attraction taken when non-empty; friction stamped when it changed and cleared when it
 // healed; friction_days clamped 1..14; nicknames appended; a move into cooling off with none
 // running starts a 24-hour one. The notes say what the ladder held back.
+// Review fixes: the 24-hour default also writes `cooling_off_until` (the Now tab reads and
+// clears it); a status step out of "cooling off" with no hours in the payload ends the
+// cooling off; "cooling off" proposed again after the last one ran out (on story time, with
+// `opts.clock`) starts the default again.
 export function moveRelationship(
   cur: RelationshipState,
   payload: Record<string, unknown>,
   text: string,
   now: Date,
-  opts: { auto: boolean },
+  opts: { auto: boolean; clock?: StoryClock | null },
 ): { next: Record<string, unknown>; notes: string[] } {
   const p = isPlainObject(payload) ? payload : {};
   const notes: string[] = [];
@@ -307,15 +311,28 @@ export function moveRelationship(
     ...relationshipMood(p, now),
   };
 
+  const clock = opts && opts.clock ? opts.clock : null;
+  const hoursGiven = Number.isFinite(num(p.cooling_off_hours));
+  const running = coolingOffNow(cur, now, clock);
   let enteredCoolingOff = false;
+  let restartCoolingOff = false;
   if (str(p.status, STATUS_MAX)) {
     const step = stepStatus(cur, p.status, { auto: opts.auto === true });
+    const curLat = lateralOf(cur.status);
     if (step.changed) {
       next.status = step.status;
       next.status_before = step.statusBefore;
       enteredCoolingOff = step.status === "cooling off";
+      if (curLat === "cooling off" && step.status !== "cooling off" && !hoursGiven) {
+        next.cooling_off_until = null;
+        next.cooling_off_set_at = null;
+        next.cooling_off_hours = null;
+      }
+    } else if (curLat === "cooling off" && lateralOf(statusText(p.status)) === "cooling off" && !running) {
+      restartCoolingOff = true;
     }
-    if (step.note) notes.push(step.note);
+    if (restartCoolingOff) notes.push("cooling off again");
+    else if (step.note) notes.push(step.note);
   }
 
   if (p.his_name === null) next.his_name = null;
@@ -355,9 +372,12 @@ export function moveRelationship(
   const nick = str(p.nicknames, RELATIONSHIP_FIELD_MAX * 5);
   if (nick) next.nicknames = mergeNicknames(cur.nicknames, nick);
 
-  if (enteredCoolingOff && !Number.isFinite(num(p.cooling_off_hours)) && !coolingOffNow(cur, now, null)) {
-    next.cooling_off_set_at = now.toISOString();
-    next.cooling_off_hours = DEFAULT_COOLING_OFF_HOURS;
+  if ((enteredCoolingOff && !running) || restartCoolingOff) {
+    if (!hoursGiven) {
+      next.cooling_off_set_at = now.toISOString();
+      next.cooling_off_hours = DEFAULT_COOLING_OFF_HOURS;
+      next.cooling_off_until = new Date(now.getTime() + DEFAULT_COOLING_OFF_HOURS * HOUR_MS).toISOString();
+    }
   }
   return { next, notes };
 }
@@ -433,6 +453,10 @@ export function normalizeSceneFields(
     else if (opts.strict) throw new ApiHttpError(400, "validation", "a together scene needs a place");
     else status = curStatus ?? "none";
   }
+  // Review fix: leaving a together scene drops the place it was at unless the writer named a
+  // new one (the chat's toggle and a proposal's merge send the old place back); an apart or
+  // none scene's place is her own day, null unless the record names one.
+  if (status !== "together" && curStatus === "together" && location && curLocation && location === curLocation) location = null;
 
   let time = sceneText(n.time, SCENE_TIME_MAX);
   const statusBefore = c ? (curStatus ?? "none") : status;

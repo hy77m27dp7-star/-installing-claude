@@ -216,17 +216,23 @@ async function loadSettings() {
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
+  // A card's own Save (Spotify, Story, Nightly) submits this form from outside it: its result
+  // shows beside the button pressed too, not only at the top of the form.
+  const pressed = e.submitter && e.submitter !== $("saveBtn") ? e.submitter : null;
+  const near = pressed && pressed.parentElement ? pressed.parentElement.querySelector("[data-save-status]") : null;
+  const say = (text, kind) => { flash($("settings-status"), text, kind); if (near) flash(near, text, kind); };
+  const sayFail = (err) => { fail($("settings-status"), err); if (near) fail(near, err); };
   const btn = $("saveBtn");
   let patch;
   try {
     patch = collect();
   } catch (e0) {
-    fail($("settings-status"), e0);
+    sayFail(e0);
     return;
   }
   for (const k of NUMERIC) {
     if (k in patch && !Number.isFinite(patch[k])) {
-      flash($("settings-status"), k, "danger");
+      say(k, "danger");
       return;
     }
   }
@@ -234,15 +240,16 @@ form.addEventListener("submit", async (e) => {
   try {
     prices = collectPrices();
   } catch (e1) {
-    fail($("settings-status"), e1);
+    sayFail(e1);
     return;
   }
   if (JSON.stringify(normalizePrices(prices)) !== loadedPrices) patch.prices = prices;
   btn.disabled = true;
+  if (pressed) pressed.disabled = true;
   try {
     const s = await api("PUT", "/api/settings", patch);
     fill(s);
-    flash($("settings-status"), Object.keys(patch).length ? "saved" : "nothing to save", "ok");
+    say(Object.keys(patch).length ? "saved" : "nothing to save", "ok");
     loadUsage();
     loadSystem();
     loadGrounding();
@@ -251,9 +258,10 @@ form.addEventListener("submit", async (e) => {
     loadSpotify();
     loadClock();
   } catch (e2) {
-    fail($("settings-status"), e2);
+    sayFail(e2);
   } finally {
     btn.disabled = false;
+    if (pressed) pressed.disabled = false;
   }
 });
 

@@ -612,10 +612,12 @@ function songCard(m) {
 // ------------------------------------------------------------ the song loop (v5 section 9)
 
 // The same normalisation src/songs.ts uses for artist_norm: lowercase, a leading "the "
-// dropped, & read as "and", everything but letters and digits one space.
+// dropped, & read as "and", everything but letters and digits one space; when nothing is
+// left after dropping "the " (an artist named "The !!!"), the name with its "the".
 function artistNorm(a) {
-  return String(a || "").toLowerCase().trim().replace(/^the\s+/, "").replace(/&/g, " and ")
-    .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const lower = String(a || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const clean = (x) => x.replace(/&/g, " and ").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
+  return clean(lower.replace(/^the\s+/, "")) || clean(lower);
 }
 
 const FEEDBACK = [["known", "know it", "known"], ["disliked", "not for me", "not for me"]];

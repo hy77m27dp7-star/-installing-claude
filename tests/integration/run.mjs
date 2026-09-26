@@ -4349,16 +4349,28 @@ async function scenariosV5(report) {
     const relConv = await newConversation("integration v5 cooling");
     await turn(relConv, "[[REL:cooling off]] fine", key("v5-rel-cool"));
     await approve((await pendingProposal("relationship", "cooling off")).id);
-    const s1 = (await state()).relationship.state;
+    const b1 = await state();
+    const s1 = b1.relationship.state;
     assert.equal(s1.status, "cooling off", JSON.stringify(s1));
     assert.equal(s1.status_before, "friends");
+    // Review fix: the 24-hour default writes the deadline the Now tab reads, and the server's
+    // live read says it runs.
+    assert.ok(Number.isFinite(Date.parse(s1.cooling_off_until)), "cooling_off_until: " + s1.cooling_off_until);
+    assert.equal(b1.relationship.live && b1.relationship.live.coolingOff, true, JSON.stringify(b1.relationship.live));
     const { stateText } = await turnWithContext(relConv, "are we ok", "v5-rel-cool-turn");
     assert.ok(stateText.includes("You are still cooling off"), "the cooling-off paragraph");
     await turn(relConv, "[[REL:friends]] ok", key("v5-rel-friends"));
     await approve((await pendingProposal("relationship", "they are friends")).id);
-    const s2 = (await state()).relationship.state;
+    const b2 = await state();
+    const s2 = b2.relationship.state;
     assert.equal(s2.status, "friends", JSON.stringify(s2));
     assert.equal(s2.status_before, null);
+    // Review fix: a step out of cooling off ends it.
+    assert.equal(s2.cooling_off_set_at, null);
+    assert.equal(s2.cooling_off_until, null);
+    assert.equal(b2.relationship.live && b2.relationship.live.coolingOff, false, JSON.stringify(b2.relationship.live));
+    const { stateText: after } = await turnWithContext(relConv, "good", "v5-rel-friends-turn");
+    assert.ok(!after.includes("You are still cooling off"), "no cooling-off paragraph once they are friends");
   });
 
   await report.check("v5 state: [[FRICTION:the photo thing|2]] -> friction stamped; the next turn's state text has 'Friction: the photo thing (fresh' and its Relationship line has no friction key; [[NICK:Starbrite]] then [[NICK:trouble]] -> 'Starbrite; trouble'", async () => {
@@ -4486,6 +4498,23 @@ async function scenariosV5(report) {
     const at = stateText.indexOf("Your guesses about him");
     assert.ok(at >= 0 && stateText.indexOf("he works nights", at) > at, "listed as a guess");
     assert.ok((ctx.inferredFactIds ?? []).includes(fact.id));
+  });
+
+  await report.check("v5 review: PUT /api/facts/:id { inferred: false } makes her guess his own words (a new head, inferred 0); { inferred: true } on a fact of hers -> 400", async () => {
+    const guess = (await state()).facts.justin.find((f) => f.fact === "he works nights" && f.inferred === 1);
+    assert.ok(guess, "the guess from the check before");
+    const r = await api("PUT", "/api/facts/" + guess.id, { inferred: false });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.supersedes_id, guess.id);
+    const head = (await state()).facts.justin.find((f) => f.id === r.json.id);
+    assert.equal(head.inferred, 0);
+    const hers = (await state()).facts.avelie[0];
+    const bad = await api("PUT", "/api/facts/" + hers.id, { inferred: true });
+    assert.equal(bad.status, 400, bad.text);
+    // Back to her guess, as the checks after this one count it.
+    const back = await api("PUT", "/api/facts/" + head.id, { inferred: true });
+    assert.equal(back.status, 200, back.text);
+    assert.equal((await state()).facts.justin.find((f) => f.id === back.json.id).inferred, 1);
   });
 
   await report.check("v5 hygiene: [[HERSAYS:he hates mornings]] (evidence not in his message) -> approve -> the nightly hygiene -> a fact_mark -> approve -> inferred 1", async () => {

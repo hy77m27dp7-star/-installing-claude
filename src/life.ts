@@ -93,9 +93,26 @@ export const PLACEHOLDER_NAMES: readonly string[] = [
 ];
 const PLACEHOLDER_SET = new Set(PLACEHOLDER_NAMES);
 
+// Review fix: the bare relation words behind a leading her/my/the ("her mum", "my mama", "her
+// stepmom"), so a person titled by what she is to Avelie never locks as if it were a name.
+const PLACEHOLDER_BARE: ReadonlySet<string> = new Set([
+  "mother", "mom", "mum", "mama", "mamma", "ma", "mommy", "mummy", "momma",
+  "father", "dad", "papa", "pa", "daddy", "pop", "pops",
+  "stepmother", "stepmom", "stepmum", "stepfather", "stepdad",
+  "parents", "sister", "brother", "stepsister", "stepbrother", "sibling",
+  "grandmother", "grandma", "gran", "granny", "nana", "grandfather", "grandpa", "granddad", "grandad",
+  "aunt", "auntie", "uncle", "cousin",
+  "best friend", "bestie", "friend", "boss", "manager", "shop owner", "owner", "landlord", "landlady",
+  "coworker", "co worker", "roommate", "flatmate", "housemate", "ex", "ex boyfriend", "ex girlfriend", "neighbor", "neighbour",
+]);
+
 export function isPlaceholderName(name: unknown): boolean {
   if (typeof name !== "string") return false;
-  return PLACEHOLDER_SET.has(name.trim().toLowerCase().replace(/\s+/g, " "));
+  const k = name.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!k) return false;
+  if (PLACEHOLDER_SET.has(k)) return true;
+  const bare = k.replace(/^(?:her|my|the)\s+/, "").replace(/-/g, " ").replace(/^step\s+/, "step").trim();
+  return PLACEHOLDER_BARE.has(bare);
 }
 
 function titleKey(title: unknown): string {
@@ -379,6 +396,9 @@ export interface LifeSectionOptions {
   together?: boolean;
   clockWords?: string | null;
   deferAt?: ((iso: string) => string) | null;
+  // Review fix: the age in days of a note (prompt.ts passes story ages from the clock, so a
+  // note is "today" here as it is in her callbacks after a held scene). Absent: real days.
+  ageOf?: ((iso: string) => number) | null;
 }
 
 export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz: string, opts: LifeSectionOptions = {}): string {
@@ -401,6 +421,13 @@ export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz
 
   const o = opts && typeof opts === "object" ? opts : {};
   const together = o.together === true;
+  const ageOfNote = (iso: string): number => {
+    if (typeof o.ageOf === "function") {
+      const d = o.ageOf(iso);
+      if (Number.isFinite(d)) return Math.max(0, Math.floor(d));
+    }
+    return ageDays(new Date(iso), now);
+  };
   const words = typeof o.clockWords === "string" ? o.clockWords.replace(/\s+/g, " ").trim().replace(/[.]+$/, "") : "";
   const p = localParts(now, zone);
   let line = words
@@ -434,7 +461,7 @@ export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz
       const d = firstLine(t.detail);
       // v3 (section DD): the person's last two notes with their ages, so the arc moves.
       const arc = notes.filter((l) => l.thread_id === t.id).slice(0, PERSON_NOTES)
-        .map((l) => `${agoLabel(ageDays(new Date(l.occurred), now))}: ${firstLine(l.note, 160)}`);
+        .map((l) => `${agoLabel(ageOfNote(l.occurred))}: ${firstLine(l.note, 160)}`);
       return `- ${t.title}${rel}${d ? ": " + d : ""}${arc.length ? "; " + arc.join("; ") : ""}`;
     }).join("\n"));
   }
@@ -444,7 +471,7 @@ export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz
     out.push("Places:\n" + places.map((t) => {
       const d = firstLine(t.detail);
       const last = notes.find((l) => l.thread_id === t.id);
-      const lastText = last ? `; last time: ${firstLine(last.note)} (${agoLabel(ageDays(new Date(last.occurred), now))})` : "";
+      const lastText = last ? `; last time: ${firstLine(last.note)} (${agoLabel(ageOfNote(last.occurred))})` : "";
       return `- ${t.title}${d ? ": " + d : ""}${lastText}`;
     }).join("\n"));
   }
@@ -457,7 +484,7 @@ export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz
   if (notes.length) {
     out.push("Lately (your own notes, newest first):\n" + notes.slice(0, 5).map((l) => {
       const who = l.thread_id ? titles.get(l.thread_id) : undefined;
-      return `- ${agoLabel(ageDays(new Date(l.occurred), now))}${who ? " (" + who + ")" : ""}: ${firstLine(l.note, 300)}`;
+      return `- ${agoLabel(ageOfNote(l.occurred))}${who ? " (" + who + ")" : ""}: ${firstLine(l.note, 300)}`;
     }).join("\n"));
   }
 
@@ -715,7 +742,7 @@ export async function dropThread(db: D1Database, id: string, actor: string): Pro
 }
 
 // Restores any version as a new active head (a dropped head, or an older edit).
-export async function restoreThread(db: D1Database, id: string, actor: string): Promise<LifeThread> {
+export async function restoreThread(db: D1Database, id: string, actor: string, opts: { allowRename?: boolean } = {}): Promise<LifeThread> {
   const target = await requireThread(db, id);
   const chain = await chainRows(db, target.id);
   const latest = chain[chain.length - 1] ?? target;
@@ -725,7 +752,15 @@ export async function restoreThread(db: D1Database, id: string, actor: string): 
   // The portrait and the memory weight live on the latest head; an older version restored
   // as the new head inherits them from there (then from itself, if it ever had them).
   const portrait = latest.portrait_asset_id ?? target.portrait_asset_id ?? null;
-  const row: LifeThread = { ...target, id: newId("lt"), status: "active", version: maxVersion + 1, supersedes_id: latest.id, updated_at: t, portrait_asset_id: portrait };
+  // Review fix (SPEC_V5 section 8): a person's name is locked once she has one. Restoring an
+  // older version (to undo a detail) keeps the newest name in the chain; only the owner's
+  // Rename (allowRename) changes it.
+  let title = target.title;
+  if (target.kind === "person" && !(opts && opts.allowRename === true)) {
+    const named = [...chain].sort((a, b) => b.version - a.version).find((r) => typeof r.title === "string" && r.title.trim() && !isPlaceholderName(r.title));
+    if (named && titleKey(named.title) !== titleKey(target.title)) title = named.title;
+  }
+  const row: LifeThread = { ...target, title, id: newId("lt"), status: "active", version: maxVersion + 1, supersedes_id: latest.id, updated_at: t, portrait_asset_id: portrait };
   const stmts: D1PreparedStatement[] = chain.filter((r) => r.status !== "superseded").map((r) => supersedeStmt(db, r.id, r.status, t));
   stmts.push(insertThreadStmt(db, row));
   stmts.push(...headCarryStmts(db, row, [latest.id, target.id]));

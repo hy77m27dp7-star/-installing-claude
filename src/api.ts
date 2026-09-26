@@ -79,14 +79,15 @@ import {
 import { CALL_FACE_KINDS, callFaceState, makeCallFace } from "./callface";
 import { addSongForMessage, beginConnect, disconnect as spotifyDisconnect, finishConnect, statusResponse as spotifyStatus, tokenView as spotifyTokenView } from "./spotify";
 import { ALBUM_GROUPS, listAlbum } from "./album";
-import { DELAY_PUSH_MIN_MS, DUE_WINDOW_MS } from "./deliveries";
+import { DELAY_PUSH_MIN_MS, DUE_WINDOW_MS, deliverHeldRepliesStmt } from "./deliveries";
+import { coolingOffNow, frictionNow } from "./standing";
 import { memoryMap } from "./memory";
 import { ADAPTATIONS, ALWAYS_ON, CONSTITUTION_VERSION, OVERLAY } from "./generated/constitution";
 import { PROMPT_VERSION, sceneMode } from "./prompt";
 import { getCurrentState } from "./db";
 import { ProviderError } from "./types";
 // v5 modules (SPEC_V5 Build lanes L1, L2, L3, L6), by the export names the spec fixes.
-import { clockView, loadStoryClock, storyAgeDays } from "./clock";
+import { clockView, loadStoryClock, storyAgeDays, storyWindowStart } from "./clock";
 import { NIGHTLY_STEPS, listNightlyRuns, runNightlyStory } from "./nightly";
 import type { NightlyStep } from "./nightly";
 import { EVENT_OUTCOMES, HIS_PARTS, STEP_OUTCOMES, createBeat, listBeatViews, resolveBeat, updateBeat } from "./arcs";
@@ -96,7 +97,7 @@ import { addWorldFact, renamePerson, retireWorldFact, worldView } from "./world"
 import { listSent } from "./honest";
 import { listKnownArtists, removeKnownArtist, setKnownArtist, songFeedback } from "./songs";
 import type {
-  Channel, Env, FactScope, ImageProviderName, MessageRow, ProposalKind, ProposalRow, ProviderName, Settings, TurnResponse, VisualAssetRow, SceneState } from "./types";
+  Channel, Env, FactScope, ImageProviderName, MessageRow, ProposalKind, ProposalRow, ProviderName, RelationshipState, Settings, TurnResponse, VisualAssetRow, SceneState } from "./types";
 
 // ------------------------------------------------------------------ router
 
@@ -1146,7 +1147,33 @@ route("POST", "/api/operator", async (c) => {
 
 const ENTITIES = ["relationship", "scene"] as const;
 
-route("GET", "/api/state", async (c) => json(await getStateBundle(c.db)));
+// Review fix: the relationship carries `live`, the friction phase and whether a cooling off
+// runs as her prompt reads them (on story time, every held span counted), so the Now tab
+// never computes them from the ten spans GET /api/clock lists.
+async function relationshipLive(c: RouteCtx, state: RelationshipState, since: string | null): Promise<{ friction: string | null; coolingOff: boolean } | null> {
+  try {
+    const settings = await loadSettings(c);
+    const now = new Date();
+    const clock = await loadStoryClock(c.db, settings, now);
+    const f = frictionNow(state, now, settings, since, clock);
+    return { friction: f.phase === "none" ? null : f.phase, coolingOff: coolingOffNow(state, now, clock) };
+  } catch (e) {
+    console.warn("state: live skipped", e instanceof Error ? e.name : "error");
+    return null;
+  }
+}
+
+route("GET", "/api/state", async (c) => {
+  const bundle = await getStateBundle(c.db);
+  let since: string | null = null;
+  try {
+    since = (await getCurrentState<RelationshipState>(c.db, "relationship")).row?.created_at ?? null;
+  } catch {
+    since = null;
+  }
+  const live = await relationshipLive(c, bundle.relationship.state, since);
+  return json({ ...bundle, relationship: { ...bundle.relationship, live } });
+});
 
 async function putStateRoute(c: RouteCtx, entity: "relationship" | "scene"): Promise<Response> {
   const body = await readBody(c.request);
@@ -1156,7 +1183,15 @@ async function putStateRoute(c: RouteCtx, entity: "relationship" | "scene"): Pro
   // v5 (section 4): putState validates the relationship's six new keys, and refuses a
   // together scene with no place (400 validation "a together scene needs a place").
   const r = await putState(c.db, entity, state as Record<string, unknown>, note ?? null, c.actor);
-  if (entity !== "scene") return json(r);
+  if (entity !== "scene") return json({ ...r, live: await relationshipLive(c, r.state as RelationshipState, new Date().toISOString()) });
+  // Review fix: into a together scene, a reply still held for her day lands now (best effort).
+  if (r.state.status === "together") {
+    try {
+      await deliverHeldRepliesStmt(c.db, new Date()).run();
+    } catch (e) {
+      console.warn("held replies not delivered", e instanceof Error ? e.name : "error");
+    }
+  }
   // v4 (SPEC_V4 section 8): a Together scene at a known place touches the place's
   // last_used_at (best effort) and the response says which place, and whether it has a
   // picture, so the chat can paint it behind the thread.
@@ -1236,6 +1271,9 @@ route("PUT", "/api/facts/:id", async (c) => {
   if (disclosed !== undefined) patch.disclosed = disclosed;
   const provisional = optBool(body, "provisional");
   if (provisional !== undefined) patch.provisional = provisional;
+  // Review fix (SPEC_V5 section 7): he can say a guess of hers was his own words (or mark one).
+  const inferred = optBool(body, "inferred");
+  if (inferred !== undefined) patch.inferred = inferred;
   return json(await updateFact(c.db, id, patch, c.actor));
 });
 
@@ -2861,10 +2899,15 @@ route("POST", "/api/views/:id/retire", async (c) => {
 // and limit (the same read the turn makes).
 route("GET", "/api/sent", async (c) => {
   const settings = await loadSettings(c);
+  const now = new Date();
+  const windowDays = v5Int(settings, "sentWindowDays", 7, 1, 60);
+  // Review fix: the window on story time, as the turn reads it.
+  const clock = await loadStoryClock(c.db, settings, now);
   const items = await listSent(c.db, {
-    now: new Date(),
-    windowDays: v5Int(settings, "sentWindowDays", 7, 1, 60),
+    now,
+    windowDays,
     limit: v5Int(settings, "sentShown", 12, 0, 30),
+    since: storyWindowStart(clock, windowDays * 86_400_000),
   });
   return json({ items });
 });

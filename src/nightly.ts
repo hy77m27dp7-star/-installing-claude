@@ -10,7 +10,7 @@
 // auto-keep switch, decides. Justin's rule: while a together scene is held, nothing happens
 // to her, so her_day and arcs skip (views and hygiene only read the record, so they run).
 import { runArcPass } from "./arcs";
-import { HER_DAY_MIN_APART_MS, dayBounds, herDayKey, loadStoryClock, localInstant, storyElapsedMs } from "./clock";
+import { HER_DAY_MIN_APART_MS, dayBounds, herDayKey, loadStoryClock, localInstant, storyElapsedMs, storyInstantOf } from "./clock";
 import type { StoryClock } from "./clock";
 import { auditStmt, getCurrentState, listFacts, nowIso } from "./db";
 import { runHygienePass } from "./hygiene";
@@ -122,6 +122,54 @@ function namesHim(note: string, hisName: string | null): boolean {
   return new RegExp("(^|[^A-Za-z0-9])" + escapeRe(n) + "($|[^A-Za-z0-9])", "i").test(note);
 }
 
+// Review fixes: a her-day note is her day, never him and never waiting on him. A line with
+// he/him/his, or about her phone, texts, messages or waiting, is dropped (the system text
+// forbids it; this is the mechanical half, as namesHim is for his name).
+const ABOUT_HIM_RE = /\b(?:he|him|his|himself)\b/i;
+const WAITING_RE = /\b(?:phone|texts?|texted|texting|messages?|messaged|no answer|never answered|heard back|wrote back|write back|text back|waiting on|waited on|waiting for|waited for|waited up)\b/i;
+
+function aboutHimOrWaiting(note: string): boolean {
+  return ABOUT_HIM_RE.test(note) || WAITING_RE.test(note);
+}
+
+// Never a new person or place with a name: a capitalised word that does not open a sentence
+// must be a word she already has (her threads' titles and details, her facts) or one of the
+// calendar's and her city's own words. A capitalised first word is not read (it can be any word).
+const NAME_ALLOW: ReadonlySet<string> = new Set([
+  "i", "portland", "maine", "avelie",
+  "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+  "sun", "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat",
+  "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
+  "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+]);
+
+function knownWords(texts: ReadonlyArray<string | null | undefined>): Set<string> {
+  const out = new Set<string>();
+  for (const t of texts) {
+    if (typeof t !== "string") continue;
+    for (const w of t.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []) out.add(w);
+  }
+  return out;
+}
+
+function bringsNewName(note: string, known: ReadonlySet<string>): boolean {
+  const re = /[\p{L}\p{N}][\p{L}\p{N}'\u2019-]*/gu;
+  let m: RegExpExecArray | null;
+  let first = true;
+  while ((m = re.exec(note)) !== null) {
+    const word = m[0];
+    const before = note.slice(0, m.index).trimEnd();
+    const opens = first || /[.!?]$/.test(before);
+    first = false;
+    if (opens || !/^\p{Lu}/u.test(word)) continue;
+    const parts = word.toLowerCase().split(/['\u2019-]/).filter(Boolean);
+    const head = parts[0] ?? "";
+    if (!head || NAME_ALLOW.has(head) || known.has(head)) continue;
+    return true;
+  }
+  return false;
+}
+
 function readTime(v: unknown): string {
   const m = typeof v === "string" ? TIME_RE.exec(v.trim()) : null;
   if (!m) return "12:00";
@@ -139,16 +187,20 @@ export function parseHerDay(
   max: number,
   hisName: string | null,
   nowMs: number,
+  known: ReadonlyArray<string> = [],
 ): Array<{ thread: string | null; note: string; occurred: string }> {
   const cap = Number.isFinite(max) ? Math.max(0, Math.trunc(max)) : 0;
   if (cap <= 0) return [];
   const titles = new Map<string, string>();
+  const words: Array<string | null | undefined> = [...(Array.isArray(known) ? known : [])];
   for (const t of Array.isArray(threads) ? threads : []) {
     if (!t || typeof t.title !== "string") continue;
     if (t.status !== undefined && t.status !== "active") continue;
     const k = t.title.trim().toLowerCase();
     if (k && !titles.has(k)) titles.set(k, t.title.trim());
+    words.push(t.title, t.detail, t.relation);
   }
+  const knownSet = knownWords(words);
   const out: Array<{ thread: string | null; note: string; occurred: string }> = [];
   const seen = new Set<string>();
   for (const item of parseJsonArray(text)) {
@@ -165,6 +217,8 @@ export function parseHerDay(
     const note = cleanLine(o.note, HER_DAY_NOTE_MAX);
     if (!note) continue;
     if (namesHim(note, hisName)) continue;
+    if (aboutHimOrWaiting(note)) continue;
+    if (bringsNewName(note, knownSet)) continue;
     let occurred: string;
     try {
       occurred = localInstant(day, readTime(o.time), tz);
@@ -252,7 +306,10 @@ export async function runHerDay(env: Env, db: D1Database, settings: Settings, cl
     return { step: "her_day", status: call.reason === "provider_failed" ? "failed" : "skipped", reason: call.reason, proposalIds: [] };
   }
 
-  const items = parseHerDay(call.text, threads, day, tz, max, hisName, realMs);
+  // Review fix: nothing is written for an hour she spent inside a held scene with him (the
+  // day may have been apart for six hours and held for the rest).
+  const items = parseHerDay(call.text, threads, day, tz, max, hisName, realMs, her)
+    .filter((it) => storyInstantOf(clock, it.occurred).getTime() === Date.parse(it.occurred));
   const rows: NightlyProposal[] = items.map((it) => ({
     kind: "life_update",
     proposal: `${weekday} ${day}, ${it.thread ?? "her day"}: ${it.note}`,

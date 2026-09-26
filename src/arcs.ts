@@ -320,6 +320,9 @@ function beatLine(view: BeatView, now: Date, tz: string, clock: StoryClock | nul
     return { kind: "was", line: `  ${title} was ${day}. How it went is yours to say if he asks; once you say it, that is what happened.`, at: due };
   }
   if (run.status === "resolved" && run.outcome && isOutcome(run.outcome)) {
+    // Review fix: an opener or a first text never carries a setback of hers (the picker keeps
+    // them out; so does the state text), only the good and the neutral outcomes.
+    if (opts?.opener && OUTCOME_LOG[run.outcome].kind === "setback") return null;
     const age = ageDaysOf(run.due_at, now, clock);
     if (age > memory) return null;
     // The label reads Portland's calendar ("yesterday" for last night's step) unless held
@@ -370,7 +373,8 @@ export function arcSystem(hasVariants: boolean): string {
     + "Never a coin toss: the choice that fits her. "
     + (hasVariants ? "VARIANTS are listed: pick exactly one variant id; its outcome is the outcome. " : "")
     + "Output strictly one JSON object, no prose, no fences: {\"variant_id\": the variant id or omitted, \"outcome\": one of OUTCOMES, \"note\": what happened in one plain line, past tense, her life only, \"his_part\": \"encouraged\"|\"asked\"|\"came\"|\"forgot\"|\"none\", \"his_note\": one short line or \"\", \"evidence\": the ids in brackets of the messages behind his_part}. "
-    + "\"came\" only when TOGETHER shows them together around that time; \"forgot\" only when a message shows he knew about it AND he wrote to her after that message before the day was over without asking or saying anything about it (him not writing at all is never \"forgot\"; it is \"none\"); \"none\" when he did not know or did not write.";
+    + "\"came\" only when TOGETHER shows them together around that time; \"forgot\" only when a message shows he knew about it AND he wrote to her after that message before the day was over without asking or saying anything about it (him not writing at all is never \"forgot\"; it is \"none\"); \"none\" when he did not know or did not write. "
+    + "An empty WITH HIM means decide from her alone: his absence never makes it go worse.";
 }
 
 function block(header: string, items: string[]): string {
@@ -409,6 +413,25 @@ export function arcUser(args: {
   lines.push(block("WITH HIM:", (args.withHim ?? []).map((m) => `[${m.id}] ${m.role === "user" || m.role === "him" ? "him" : "her"}: ${saidLine(m.content, 240)}`)));
   lines.push(block("TOGETHER:", (args.together ?? []).map((t) => `${t.frozenAt} to ${t.resumedAt ?? "now"}: ${saidLine(t.location ?? "", 120) || "(no place)"}`)));
   return lines.join("\n");
+}
+
+// For each evidence message, how many of his story messages came after BOTH it and the step's
+// time, by the day after the step (review fix): he talked to her after it happened and never
+// asked. A message of his before the step, then days away, is a closed app, never forgetting.
+export function hisAfterCounts(evidence: ReadonlyArray<{ id: string; created_at: string }>, hisTimes: readonly number[], dueMs: number): Map<string, number> {
+  const out = new Map<string, number>();
+  const times = (Array.isArray(hisTimes) ? hisTimes : []).filter((x) => Number.isFinite(x));
+  for (const m of Array.isArray(evidence) ? evidence : []) {
+    if (!m || typeof m.id !== "string") continue;
+    const t = Date.parse(m.created_at);
+    if (!Number.isFinite(t) || !Number.isFinite(dueMs)) {
+      out.set(m.id, 0);
+      continue;
+    }
+    const from = Math.max(t, dueMs);
+    out.set(m.id, times.filter((x) => x > from && x <= dueMs + DAY_MS).length);
+  }
+  return out;
 }
 
 export function parseArcAnswer(
@@ -718,7 +741,7 @@ export async function createBeatFromProposal(db: D1Database, payload: Record<str
   return view.beat.id;
 }
 
-export async function applyBeatOutcome(db: D1Database, payload: Record<string, unknown>, source: string, actor: string): Promise<string> {
+export async function applyBeatOutcome(db: D1Database, payload: Record<string, unknown>, source: string, actor: string, nowMs: number = Date.now()): Promise<string> {
   const p = payload && typeof payload === "object" ? payload : {};
   let beatId: string | null = null;
   let runId: string | null = null;
@@ -731,7 +754,9 @@ export async function applyBeatOutcome(db: D1Database, payload: Record<string, u
       "SELECT b.id AS beat_id, r.id AS run_id, r.due_at AS due_at FROM arc_beats b JOIN beat_runs r ON r.beat_id = b.id AND r.reader = ?2 WHERE b.status = 'active' AND lower(trim(b.title)) = lower(trim(?1)) ORDER BY r.due_at ASC LIMIT 50",
     ).bind(p.beat.trim(), OWNER_READER).all<{ beat_id: string; run_id: string; due_at: string }>();
     const rows = (r.results ?? []).filter((x) => x && Number.isFinite(parseMs(x.due_at)));
-    const now = Date.now();
+    // Review fix: "now" is the story's (the caller passes storyNow), so a step that fell due
+    // inside a held scene is still in her future and is not the one resolved.
+    const now = Number.isFinite(nowMs) ? nowMs : Date.now();
     const past = rows.filter((x) => parseMs(x.due_at) <= now);
     const pick = past.length ? past[past.length - 1] : rows.find((x) => parseMs(x.due_at) > now);
     if (pick) { beatId = pick.beat_id; runId = pick.run_id; }
@@ -854,10 +879,7 @@ export async function runArcPass(env: Env, db: D1Database, settings: Settings, c
         "SELECT created_at FROM messages WHERE channel = 'story' AND role = 'user' AND created_at > ?1 AND created_at <= ?2 ORDER BY created_at ASC LIMIT ?3",
       ).bind(earliest, windowEnd, HIS_READ_MAX).all<{ created_at: string }>();
       const times = (his.results ?? []).map((h) => Date.parse(h.created_at)).filter((x) => Number.isFinite(x));
-      for (const m of withHim) {
-        const t = Date.parse(m.created_at);
-        hisAfter.set(m.id, times.filter((x) => x > t).length);
-      }
+      for (const [id, n] of hisAfterCounts(withHim, times, dueMs)) hisAfter.set(id, n);
     }
     const together = (clock?.spans ?? [])
       .filter((s) => {

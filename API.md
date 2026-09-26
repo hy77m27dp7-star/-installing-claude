@@ -29,13 +29,13 @@ Owner-gate errors carry no reason: a refused Access token is always `{ error: "f
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | /api/state | | `{ relationship: {version, state}, scene: {version, state}, facts: { fixed, avelie, justin }, history, unknowns, hasSharedHistory }` |
-| PUT | /api/state/relationship | `{ state, note? }` | `{ version, state }` |
+| GET | /api/state | | `{ relationship: {version, state, live}, scene: {version, state}, facts: { fixed, avelie, justin }, history, unknowns, hasSharedHistory }` (v5 review: `live` is `{ friction: "fresh"\|"healing"\|"faint"\|"healed"\|null, coolingOff: boolean }` read on story time as her prompt reads it, or null) |
+| PUT | /api/state/relationship | `{ state, note? }` | `{ version, state, live }` (v5 review: a changed `cooling_off_until` with the story-time pair left as it was becomes the pair, set now for the hours until it; a cleared or past one drops it) |
 | PUT | /api/state/scene | `{ state, note? }` | `{ version, state }` |
 | GET | /api/state/versions/:entity | | `StateVersionRow[]` (desc) |
 | POST | /api/state/restore | `{ entity, version }` | `{ version, state }` |
 | POST | /api/facts | `{ scope, subject?, fact, source?, disclosed?, provisional? }` | `FactRow` (201) |
-| PUT | /api/facts/:id | `{ fact?, subject?, disclosed?, provisional?, source? }` | `FactRow` (new version) |
+| PUT | /api/facts/:id | `{ fact?, subject?, disclosed?, provisional?, source?, inferred? }` | `FactRow` (new version; v5 review: `inferred` marks a fact about him as her guess or clears it; 400 on a fact of hers) |
 | DELETE | /api/facts/:id | | `{ ok }` (superseded with status rejected) |
 | POST | /api/facts/:id/restore | | `FactRow` |
 | GET | /api/facts/:id/versions | | `FactRow[]` (the supersedes chain) |
@@ -97,7 +97,7 @@ Same rules as v1: owner only, JSON unless noted, the one error shape, UTC timest
 | GET /api/conversations/:id/messages | Hides her replies whose `deliver_at` is still in the future. `?includePending=1` shows them (the Chat page asks for them so it can hold the dots until their time). |
 | POST /api/conversations/:id/turn | Also accepts multipart: `content`, `idempotencyKey`, up to 3 `image` files (jpeg, png, webp, 8 MB each). JSON works as before. `TurnResponse.deliverAt` is the ISO time her reply arrives (null when it is already there). `TurnResponse.userMessage` is `null` on an opener turn. |
 | MessageRow | New columns: `deliver_at` (ISO or null), `song_json` (`{ artist, title, searchUrl }` or null), `audio_key` (R2 key of a voice note, hers or his), `images_json` (keys and sizes of the photos he sent), `media_id` (a library item she sent). |
-| PUT /api/state/scene | `status` is one of `together`, `apart`, `none`. `location` is where they both are (together) or where she is (apart). The Chat header toggle sends `{ status, location?, note: "toggle" }`. |
+| PUT /api/state/scene | `status` is one of `together`, `apart`, `none`. `location` is where they both are (together) or where she is (apart). The Chat header toggle sends `{ status, location?, note: "toggle" }`. v5 review: leaving together drops the place the scene was at unless the write names a new one; a write into together lands any reply of hers still held for her day at once (stamped pushed, so it never buzzes). |
 | PUT /api/state/relationship | The state may carry `mood` (free text, up to 200 characters) and `cooling_off_until` (ISO time or null). Both are validated; anything else in the object passes through as before. |
 | GET /api/proposals | New kind `life` (payload: `kind`, `title`, `detail?`, `schedule_json?`, `relation?`). A `relationship` proposal may carry `mood` and `cooling_off_hours` (0 ends a cooling-off). An `opinion_change` proposal carries `subject`; approving it supersedes the approved opinion with the same subject instead of adding a second one. |
 | PUT /api/settings | Validates the new settings (table below). |
@@ -597,7 +597,7 @@ A run due inside a held span moves, when the span closes, to the same distance a
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | /api/views | `?status=active\|proven_wrong\|all&limit=` | `{ views: HerViewRow[] }` (`id, subject, subject_norm, view, confidence, evidence_json, status, version, supersedes_id, source, wrong_note, wrong_evidence_json, created_at, updated_at`) |
+| GET | /api/views | `?status=active\|proven_wrong\|all&limit=` | `{ views: HerViewRow[] }` (`id, subject, subject_norm, view, confidence, evidence_json, status, version, supersedes_id, source, wrong_note, wrong_evidence_json, created_at, updated_at`; `all` is every read that is not a superseded version) |
 | POST | /api/views/:id/retire | `{ note? }` | `HerViewRow` with status `retired` (404; 409 `not_current` on a superseded version) |
 
 ### The stable world (section 8)

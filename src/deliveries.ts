@@ -75,6 +75,16 @@ export function dueReplies(rows: ReadonlyArray<DueRow>, now: Date): DueSplit {
   return { push, skip };
 }
 
+// Review fix: when a scene moves into together, a reply of hers still held for her day lands
+// now, before the scene, and is stamped so it never buzzes his phone (she is in the room with
+// him; it never surfaces later in the middle of the scene). She still answers: only when.
+export function deliverHeldRepliesStmt(db: D1Database, now: Date): D1PreparedStatement {
+  const t = now.toISOString();
+  return db
+    .prepare("UPDATE messages SET deliver_at = ?1, pushed_at = COALESCE(pushed_at, ?1) WHERE channel = 'story' AND deliver_at IS NOT NULL AND deliver_at > ?1")
+    .bind(t);
+}
+
 function chunk<T>(list: ReadonlyArray<T>, size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));

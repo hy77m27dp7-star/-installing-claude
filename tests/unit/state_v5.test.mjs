@@ -48,16 +48,27 @@ t("putState relationship: a new friction is stamped now; the same friction keeps
   assert.ok(!("friction_set_at" in stored(healed)));
 });
 
-t("putState relationship: the owner's cooling-off clear (cooling_off_until only) drops the story-time pair; a write that sets the pair keeps it", async () => {
+t("putState relationship: the owner's cooling-off clear (cooling_off_until only) drops the story-time pair; his new deadline becomes the pair; a write that sets the pair keeps it", async () => {
   const cur = relationshipState({ mood: "annoyed", cooling_off_until: "2026-09-26T00:00:00.000Z", cooling_off_set_at: SET, cooling_off_hours: 12 });
   const cleared = stateDb("relationship", cur);
   await state.putState(cleared, "relationship", { ...cur, cooling_off_until: null }, null, "owner");
   assert.equal(stored(cleared).cooling_off_until, null);
   assert.equal(stored(cleared).cooling_off_set_at, null);
   assert.equal(stored(cleared).cooling_off_hours, null);
+  // Review fix: his own deadline runs on story time too (held days never run it out): it is
+  // written as the pair, set now, for the hours until it.
+  const before = Date.now();
+  const deadline = new Date(before + 48 * 3600 * 1000).toISOString();
   const moved = stateDb("relationship", cur);
-  await state.putState(moved, "relationship", { ...cur, cooling_off_until: "2026-09-27T00:00:00.000Z" }, null, "owner");
-  assert.equal(stored(moved).cooling_off_set_at, null, "his new deadline holds, not the pair he overrode");
+  await state.putState(moved, "relationship", { ...cur, cooling_off_until: deadline }, null, "owner");
+  assert.equal(stored(moved).cooling_off_until, deadline);
+  const setAt = Date.parse(stored(moved).cooling_off_set_at);
+  assert.ok(setAt >= before && setAt <= Date.now(), "set when he saved it, not the pair he overrode");
+  assert.ok(Math.abs(stored(moved).cooling_off_hours - 48) < 0.01, "the hours until his deadline");
+  const past = stateDb("relationship", cur);
+  await state.putState(past, "relationship", { ...cur, cooling_off_until: new Date(before - 3600 * 1000).toISOString() }, null, "owner");
+  assert.equal(stored(past).cooling_off_set_at, null, "a deadline already past is no cooling off");
+  assert.equal(stored(past).cooling_off_hours, null);
   const proposal = stateDb("relationship", cur);
   const later = "2026-09-26T06:00:00.000Z";
   await state.putState(proposal, "relationship", { ...cur, cooling_off_until: "2026-09-26T18:00:00.000Z", cooling_off_set_at: later, cooling_off_hours: 12 }, null, "auto", "proposal");

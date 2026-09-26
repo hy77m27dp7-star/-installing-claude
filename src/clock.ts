@@ -76,6 +76,12 @@ const SNAPSHOT_TODAY_MAX = 30;
 const RECENT_SPANS = 10;
 const SPANS_LIMIT = 500;
 const SHIFT_LIMIT = 200;
+// Review fixes: the closed spans whose beats were never moved (a failed shift, a Worker that
+// died between the close and the claim, a run written by the backfill) retried per sync; the
+// scene versions one backfill reads.
+const RETRY_SHIFT_LIMIT = 3;
+const BACKFILL_VERSIONS_LIMIT = 2000;
+const BACKFILL_BATCH = 50;
 const TIME_SINCE_FLOOR_MINUTES = 15;
 
 export const TIME_SINCE_HEADER =
@@ -155,16 +161,46 @@ export function storyInstantOf(clock: StoryClock, iso: string): Date {
 // span, before or after every span, with no clock or an unreadable stamp: unchanged.
 export function deferredInstant(clock: StoryClock | null | undefined, iso: string): string {
   if (!clock || !clock.enabled) return iso;
-  const t = typeof iso === "string" ? Date.parse(iso) : NaN;
-  if (!Number.isFinite(t)) return iso;
-  for (const s of Array.isArray(clock.spans) ? clock.spans : []) {
-    if (!s || !s.resumed_at) continue;
-    const start = spanStart(s);
-    const end = Date.parse(s.resumed_at);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-    if (start < t && t <= end) return new Date(end + (t - start)).toISOString();
+  const t0 = typeof iso === "string" ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t0)) return iso;
+  // Review fix: the closed spans oldest first, the shifted instant carried through each one,
+  // so a thing pushed out of one held span that lands inside the next is pushed past it too.
+  const closed = (Array.isArray(clock.spans) ? clock.spans : [])
+    .filter((s): s is ClockSpan => !!s && typeof s.resumed_at === "string" && !!s.resumed_at)
+    .map((s) => ({ start: spanStart(s), end: Date.parse(s.resumed_at as string) }))
+    .filter((x) => Number.isFinite(x.start) && Number.isFinite(x.end))
+    .sort((a, b) => a.start - b.start);
+  let t = t0;
+  for (const x of closed) {
+    if (x.start < t && t <= x.end) t = x.end + (t - x.start);
   }
-  return iso;
+  return t === t0 ? iso : new Date(t).toISOString();
+}
+
+// The real instant a story-time window of `windowMs` reaching back from the clock's real now
+// starts at: held spans inside it do not count, so a week of story time after a three-day
+// held scene reaches ten real days back. No clock or a disabled one: plain real time.
+export function storyWindowStart(clock: StoryClock | null | undefined, windowMs: number): Date {
+  const realMs = clock ? Date.parse(clock.real) : Date.now();
+  const base = Number.isFinite(realMs) ? realMs : Date.now();
+  const want = Number.isFinite(windowMs) ? Math.max(0, windowMs) : 0;
+  if (!clock || !clock.enabled) return new Date(base - want);
+  const spans = (Array.isArray(clock.spans) ? clock.spans : [])
+    .filter((s): s is ClockSpan => !!s)
+    .map((s) => ({ start: spanStart(s), end: spanEnd(s, base) }))
+    .filter((x) => Number.isFinite(x.start) && Number.isFinite(x.end) && x.end > x.start)
+    .sort((a, b) => b.start - a.start);
+  let cursor = base;
+  let remaining = want;
+  for (const x of spans) {
+    if (x.start >= cursor) continue;
+    const end = Math.min(x.end, cursor);
+    const apart = cursor - end;
+    if (apart >= remaining) return new Date(cursor - remaining);
+    remaining -= apart;
+    cursor = x.start;
+  }
+  return new Date(cursor - remaining);
 }
 
 // The reference the sync is tested against: every maximal run of together versions is a span.
@@ -258,7 +294,12 @@ export function gapWords(ms: number): string {
 export function timeSince(clock: StoryClock, last: LastExchange, tz: string): TimeSince {
   const hisAgoMs = last && last.hisAt ? storyElapsedMs(clock, last.hisAt) : null;
   const lastAgoMs = last && last.lastAt ? storyElapsedMs(clock, last.lastAt) : null;
-  const newDay = last && last.lastAt ? localDayKeyOf(storyInstantOf(clock, last.lastAt), tz) !== localDayKeyOf(storyNow(clock), tz) : false;
+  // Review fix: the day of the last exchange is read back from the story time since it, so a
+  // scene held from Tuesday night to Friday morning is not "a new day" three hours later.
+  const nowStory = storyNow(clock);
+  const newDay = last && last.lastAt && typeof lastAgoMs === "number"
+    ? localDayKeyOf(new Date(nowStory.getTime() - lastAgoMs), tz) !== localDayKeyOf(nowStory, tz)
+    : false;
   return { hisAgoMs, lastAgoMs, newDay };
 }
 
@@ -445,6 +486,46 @@ async function snapshotFor(
   return out;
 }
 
+// Claims a closed span's one-time beat move and runs it. A failed read of the beats or a
+// failed batch releases the claim (review fix, L1 deviation 7), so the next sync retries
+// it; the batch is atomic, so a retry never moves a beat twice.
+async function shiftClosedSpan(
+  db: D1Database,
+  span: ClockSpan,
+  resumedAt: string,
+  tz: string,
+  t: string,
+  action: "clock.resume" | "clock.shift",
+  after: Record<string, unknown>,
+): Promise<number> {
+  const claim = await db
+    .prepare("UPDATE story_clock SET beats_shifted_at = ?2 WHERE id = ?1 AND beats_shifted_at IS NULL")
+    .bind(span.id, t)
+    .run();
+  if (changed(claim) === 0) return 0;
+  const release = async (): Promise<void> => {
+    try {
+      await db.prepare("UPDATE story_clock SET beats_shifted_at = NULL WHERE id = ?1 AND beats_shifted_at = ?2").bind(span.id, t).run();
+    } catch (e) {
+      console.error("clock: claim not released", errorClass(e));
+    }
+  };
+  const stmts = await shiftStmtsOrNull(db, { frozenAt: span.frozen_at, resumedAt }, tz);
+  if (stmts === null) {
+    await release();
+    return 0;
+  }
+  const moved = Math.floor(stmts.length / 2);
+  try {
+    await db.batch([...stmts, auditStmt(db, CLOCK_ACTOR, action, "story_clock", span.id, span, { ...after, beats_shifted_at: t, beatsMoved: moved })]);
+  } catch (e) {
+    console.error("clock: beats not moved", errorClass(e), moved);
+    await release();
+    return 0;
+  }
+  return moved;
+}
+
 async function closeSpan(
   db: D1Database,
   span: ClockSpan,
@@ -457,21 +538,69 @@ async function closeSpan(
     .bind(span.id, closer.version, closer.created_at, t)
     .run();
   if (changed(r) === 0) return { closed: null, shifted: 0 };
-  const claim = await db
-    .prepare("UPDATE story_clock SET beats_shifted_at = ?2 WHERE id = ?1 AND beats_shifted_at IS NULL")
-    .bind(span.id, t)
-    .run();
-  if (changed(claim) === 0) return { closed: span.id, shifted: 0 };
-  const stmts = await shiftBeatsForSpan(db, { frozenAt: span.frozen_at, resumedAt: closer.created_at }, tz);
-  const moved = Math.floor(stmts.length / 2);
-  const after = { ...span, closed_version: closer.version, resumed_at: closer.created_at, beats_shifted_at: t, updated_at: t, beatsMoved: moved };
-  try {
-    await db.batch([...stmts, auditStmt(db, CLOCK_ACTOR, "clock.resume", "story_clock", span.id, span, after)]);
-  } catch (e) {
-    console.error("clock: beats not moved", errorClass(e), moved);
-    return { closed: span.id, shifted: 0 };
-  }
+  const after = { ...span, closed_version: closer.version, resumed_at: closer.created_at, updated_at: t };
+  const moved = await shiftClosedSpan(db, span, closer.created_at, tz, t, "clock.resume", after);
   return { closed: span.id, shifted: moved };
+}
+
+// The closed spans whose beats were never moved, retried a few per sync (review fix).
+async function retryShifts(db: D1Database, tz: string, t: string): Promise<number> {
+  const r = await db
+    .prepare("SELECT * FROM story_clock WHERE resumed_at IS NOT NULL AND beats_shifted_at IS NULL ORDER BY frozen_at ASC LIMIT ?1")
+    .bind(RETRY_SHIFT_LIMIT)
+    .all<ClockSpan>();
+  let moved = 0;
+  for (const span of r.results ?? []) {
+    if (!span || typeof span.id !== "string" || typeof span.resumed_at !== "string" || !span.resumed_at) continue;
+    moved += await shiftClosedSpan(db, span, span.resumed_at, tz, t, "clock.shift", { ...span });
+  }
+  return moved;
+}
+
+// Every together run that CLOSED among the scene versions in (after, upTo] written as a
+// closed span (review fix): the runs a single read missed (the record went together, apart,
+// together, apart between two reads), and after an import that carried no clock, every held
+// run of the restored record. `shiftedAt` null leaves the beat move to the retry; a stamp
+// marks it done (an import's beats were never inside these spans on this database).
+export async function backfillClosedSpans(
+  db: D1Database,
+  opts: { after: number; upTo: number | null; shiftedAt: string | null; now: string },
+): Promise<number> {
+  const after = Number.isFinite(opts.after) ? Math.max(0, Math.trunc(opts.after)) : 0;
+  const r = opts.upTo === null
+    ? await db
+      .prepare(`SELECT version, created_at, ${STATUS_EXPR} AS status, json_extract(state_json, '$.location') AS location FROM state_versions WHERE entity = 'scene' AND version > ?1 ORDER BY version ASC LIMIT ?2`)
+      .bind(after, BACKFILL_VERSIONS_LIMIT)
+      .all<{ version: number; created_at: string; status: string; location: unknown }>()
+    : await db
+      .prepare(`SELECT version, created_at, ${STATUS_EXPR} AS status, json_extract(state_json, '$.location') AS location FROM state_versions WHERE entity = 'scene' AND version > ?1 AND version <= ?2 ORDER BY version ASC LIMIT ?3`)
+      .bind(after, opts.upTo, BACKFILL_VERSIONS_LIMIT)
+      .all<{ version: number; created_at: string; status: string; location: unknown }>();
+  const versions = (r.results ?? [])
+    .filter((v) => v && typeof v.version === "number" && typeof v.created_at === "string")
+    .map((v) => ({
+      version: v.version,
+      status: typeof v.status === "string" ? v.status : "",
+      created_at: v.created_at,
+      location: typeof v.location === "string" && v.location.trim() ? v.location.trim() : null,
+    }));
+  const runs = spansFromVersions(versions).filter((x) => x.closedVersion !== null && typeof x.resumedAt === "string");
+  if (!runs.length) return 0;
+  const stmts: D1PreparedStatement[] = [];
+  for (const x of runs) {
+    stmts.push(
+      db.prepare("DELETE FROM story_clock WHERE opened_version = ?1 AND frozen_at != ?2").bind(x.openedVersion, x.frozenAt),
+      db.prepare("INSERT OR IGNORE INTO story_clock (id, opened_version, frozen_at, closed_version, resumed_at, location, weather_json, outfit_json, today_json, prior_time, beats_shifted_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, ?7, ?8, ?8)")
+        .bind("sc_v" + x.openedVersion, x.openedVersion, x.frozenAt, x.closedVersion, x.resumedAt, x.location, opts.shiftedAt, opts.now),
+    );
+  }
+  let written = 0;
+  for (let i = 0; i < stmts.length; i += BACKFILL_BATCH * 2) {
+    const res = await db.batch(stmts.slice(i, i + BACKFILL_BATCH * 2));
+    for (let j = 1; j < res.length; j += 2) written += changed(res[j]);
+  }
+  if (written) await auditStmt(db, CLOCK_ACTOR, "clock.backfill", "story_clock", null, null, { after, upTo: opts.upTo, spans: written }).run();
+  return written;
 }
 
 async function openSpan(
@@ -571,29 +700,31 @@ export async function syncStoryClock(
 
   if (together && open) {
     // (A) Still together. When the record left together and came back, close the old span at
-    // the break and open one for the current run.
+    // the break and open one for the current run; every run that opened and closed between
+    // the two reads is written too (review fix).
     const brk = await firstBreakAfter(open.opened_version);
-    if (!brk) return result;
-    const c = await closeSpan(db, open, brk, tz, t);
-    result.closed = c.closed;
-    result.shifted = c.shifted;
-    result.opened = await openSpan(db, settings, cur, tz, t);
-    return result;
-  }
-  if (together && !open) {
+    if (brk) {
+      const c = await closeSpan(db, open, brk, tz, t);
+      result.closed = c.closed;
+      result.shifted = c.shifted;
+      await backfillClosedSpans(db, { after: brk.version, upTo: cur.version, shiftedAt: null, now: t });
+      result.opened = await openSpan(db, settings, cur, tz, t);
+    }
+  } else if (together && !open) {
     // (B) Together and nothing held yet.
     result.opened = await openSpan(db, settings, cur, tz, t);
-    return result;
-  }
-  if (!together && open) {
-    // (C) The record left together: close the span at the first version after it that is not.
+  } else if (!together && open) {
+    // (C) The record left together: close the span at the first version after it that is not,
+    // and write every run that opened and closed after it (review fix).
     const brk = (await firstBreakAfter(open.opened_version)) ?? { version: cur.version, created_at: cur.created_at };
     const c = await closeSpan(db, open, brk, tz, t);
     result.closed = c.closed;
     result.shifted = c.shifted;
-    return result;
+    if (brk.version < cur.version) await backfillClosedSpans(db, { after: brk.version, upTo: cur.version, shiftedAt: null, now: t });
   }
-  // (D) Apart and nothing held.
+  // (D) Apart and nothing held: nothing. In every case, a closed span whose beats were never
+  // moved is retried (review fix).
+  result.shifted += await retryShifts(db, tz, t);
   return result;
 }
 
@@ -609,11 +740,15 @@ export async function loadStoryClock(db: D1Database, settings: Partial<Settings>
   }
   try {
     const since = new Date(at.getTime() - CLOCK_HORIZON_DAYS * DAY_MS).toISOString();
+    // Review fix: the NEWEST spans within the horizon (past 500, the oldest are the ones cut,
+    // never the open span), then oldest first.
     const r = await db
-      .prepare("SELECT * FROM story_clock WHERE resumed_at IS NULL OR resumed_at >= ?1 ORDER BY frozen_at ASC LIMIT ?2")
+      .prepare("SELECT * FROM story_clock WHERE resumed_at IS NULL OR resumed_at >= ?1 ORDER BY frozen_at DESC LIMIT ?2")
       .bind(since, SPANS_LIMIT)
       .all<ClockSpan>();
-    const spans = (r.results ?? []).filter((s) => s && typeof s.id === "string" && typeof s.frozen_at === "string");
+    const spans = (r.results ?? [])
+      .filter((s) => s && typeof s.id === "string" && typeof s.frozen_at === "string")
+      .sort((a, b) => (Date.parse(a.frozen_at) || 0) - (Date.parse(b.frozen_at) || 0) || a.opened_version - b.opened_version);
     let open: ClockSpan | null = null;
     for (const s of spans) if (s.resumed_at === null || s.resumed_at === undefined) open = s;
     return { enabled: true, real: at.toISOString(), frozen: open !== null, open, spans };
@@ -647,6 +782,12 @@ export function holdWeatherStmt(db: D1Database, spanId: string, weather: Weather
 // the span move, to the same distance after it, to the millisecond; a run due after the span
 // keeps its day. Each move leaves a note on its want. [] on nothing or a pre-0009 database.
 export async function shiftBeatsForSpan(db: D1Database, span: { frozenAt: string; resumedAt: string }, tz: string): Promise<D1PreparedStatement[]> {
+  return (await shiftStmtsOrNull(db, span, tz)) ?? [];
+}
+
+// The same statements, or null when the beats could not be read (so the caller can release
+// its claim and retry instead of marking the move done).
+async function shiftStmtsOrNull(db: D1Database, span: { frozenAt: string; resumedAt: string }, tz: string): Promise<D1PreparedStatement[] | null> {
   const frozen = Date.parse(span.frozenAt);
   const resumed = Date.parse(span.resumedAt);
   if (!Number.isFinite(frozen) || !Number.isFinite(resumed) || resumed <= frozen) return [];
@@ -659,7 +800,7 @@ export async function shiftBeatsForSpan(db: D1Database, span: { frozenAt: string
     rows = r.results ?? [];
   } catch (e) {
     console.warn("clock: beats not read", errorClass(e));
-    return [];
+    return null;
   }
   const zone = safeTimezone(tz);
   const heldMs = resumed - frozen;

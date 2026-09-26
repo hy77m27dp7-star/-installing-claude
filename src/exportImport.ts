@@ -22,6 +22,7 @@ import { CONSTITUTION_VERSION } from "./generated/constitution";
 import { PROMPT_VERSION } from "./prompt";
 import { DEFAULT_SETTINGS, auditStmt, getSettings, listMessages, newId, nowIso, putSettings } from "./db";
 import { ApiHttpError } from "./errors";
+import { backfillClosedSpans } from "./clock";
 import type { ConversationRow, Env, MessageRow, Settings } from "./types";
 
 const LOG_LIMIT = 5000;
@@ -190,6 +191,8 @@ const CONVERSATIONS: TableSpec = {
     { name: "created_at", type: "time", max: TIME_MAX },
     { name: "last_message_at", type: "text", max: TIME_MAX },
     { name: "status", type: "text", default: "active", oneOf: ["active", "deleted"] },
+    // Review fix: 0007_his_face.sql's cadence of his reference photos (a restore kept it null).
+    { name: "his_face_seq", type: "int" },
   ],
 };
 
@@ -1096,6 +1099,19 @@ export async function importAll(
   }));
 
   await db.batch(stmts);
+
+  // Review fix (SPEC_V5 section 1 rule 6): with the clock cleared, every together run of the
+  // restored record that CLOSED is written back as a held span now (its held time never
+  // counts toward decay, mood or callbacks); the run still open, if any, is opened by the
+  // next clock read with its snapshot. Marked shifted: no beat on this record was ever inside
+  // them here. Best effort: the next read still derives the open span without it.
+  if (counts.storyClockCleared) {
+    try {
+      counts.storyClockBackfilled = await backfillClosedSpans(db, { after: 0, upTo: null, shiftedAt: at, now: at });
+    } catch (e) {
+      console.warn("import: held spans not rebuilt", e instanceof Error ? e.name : "error");
+    }
+  }
 
   if (Object.keys(settings).length) await putSettings(db, settings);
 

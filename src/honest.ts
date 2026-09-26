@@ -195,13 +195,17 @@ function clampInt(v: unknown, lo: number, hi: number, dflt: number): number {
 
 // Every send of hers inside the window, newest first, at most `limit` items (one message may
 // give several: a song and a photo). A read that fails answers [].
-export async function listSent(db: D1Database, args: { now: Date; windowDays: number; limit: number }): Promise<SentItem[]> {
+// `since` (review fix): the window's start on the story clock (context.ts passes the real
+// instant `windowDays` of story time reach back to, so a long held scene never empties what
+// she sent minutes before it in story time); absent, `windowDays` of real time.
+export async function listSent(db: D1Database, args: { now: Date; windowDays: number; limit: number; since?: Date | null }): Promise<SentItem[]> {
   try {
     const now = args?.now instanceof Date && Number.isFinite(args.now.getTime()) ? args.now : new Date();
     const limit = clampInt(args?.limit, 0, 200, 12);
     if (limit === 0) return [];
     const windowDays = clampInt(args?.windowDays, 1, 60, 7);
-    const since = new Date(now.getTime() - windowDays * DAY_MS).toISOString();
+    const given = args?.since instanceof Date && Number.isFinite(args.since.getTime()) ? args.since.getTime() : NaN;
+    const since = new Date(Number.isFinite(given) && given <= now.getTime() ? given : now.getTime() - windowDays * DAY_MS).toISOString();
     const r = await db.prepare(
       "SELECT id, conversation_id, content, created_at, song_json, image_id, audio_key, media_id FROM messages WHERE channel = 'story' AND role = 'assistant' AND created_at >= ?1 AND (deliver_at IS NULL OR deliver_at <= ?2) AND (song_json IS NOT NULL OR image_id IS NOT NULL OR audio_key IS NOT NULL OR media_id IS NOT NULL) ORDER BY created_at DESC LIMIT ?3",
     ).bind(since, now.toISOString(), Math.min(200, limit * 3)).all<SentMessageRow>();

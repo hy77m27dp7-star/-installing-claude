@@ -216,15 +216,22 @@ function stampFriction(next: Record<string, unknown>, current: Record<string, un
 // The cooling-off control (v5 integration): the Now tab and the v2 flow write only
 // `cooling_off_until`, while a v5 proposal also writes the story-time pair that coolingOffNow
 // (src/standing.ts) reads first. When a write changes `cooling_off_until` and leaves the pair
-// exactly as it was, the pair is dropped, so his own deadline (or his clear) is what holds; a
-// write that sets the pair itself (a proposal, moveRelationship) keeps what it wrote.
-function stampCooling(next: Record<string, unknown>, current: Record<string, unknown>): Record<string, unknown> {
+// exactly as it was, his own deadline becomes the pair (review fix: set now, for the hours
+// until his deadline, capped at 336), so held days of a together scene never run his
+// deadline out either; his clear (or a deadline already past) drops the pair. A write that
+// sets the pair itself (a proposal, moveRelationship) keeps what it wrote.
+const COOLING_HOURS_MAX = 336;
+
+function stampCooling(next: Record<string, unknown>, current: Record<string, unknown>, now: Date): Record<string, unknown> {
   const until = (s: Record<string, unknown>): string | null => (typeof s.cooling_off_until === "string" && s.cooling_off_until ? s.cooling_off_until : null);
   const same = (a: unknown, b: unknown): boolean => (a ?? null) === (b ?? null);
   if (until(next) === until(current)) return next;
   if (!same(next.cooling_off_set_at, current.cooling_off_set_at) || !same(next.cooling_off_hours, current.cooling_off_hours)) return next;
-  if ((next.cooling_off_set_at ?? null) === null && (next.cooling_off_hours ?? null) === null) return next;
-  return { ...next, cooling_off_set_at: null, cooling_off_hours: null };
+  const u = until(next);
+  const untilMs = u ? Date.parse(u) : NaN;
+  const hours = Number.isFinite(untilMs) ? Math.min(COOLING_HOURS_MAX, (untilMs - now.getTime()) / 3_600_000) : NaN;
+  if (!(hours > 0)) return { ...next, cooling_off_set_at: null, cooling_off_hours: null };
+  return { ...next, cooling_off_set_at: now.toISOString(), cooling_off_hours: Math.round(hours * 1000) / 1000 };
 }
 
 // ------------------------------------------------------------------ version chains
@@ -309,7 +316,7 @@ export async function putState(
   // decided the time words from its payload, so it passes through the non-strict form with
   // the time kept as given (the result is the same object for an already normal state).
   const normalized = entity === "relationship"
-    ? stampCooling(stampFriction(stampMood(normalizeRelationshipFields(state), curState, at), curState, at), curState)
+    ? stampCooling(stampFriction(stampMood(normalizeRelationshipFields(state), curState, at), curState, at), curState, at)
     : source === "proposal"
       ? normalizeSceneFields(state, curState, { strict: false, timeSet: true })
       : normalizeSceneFields(state, curState, { strict: true });
@@ -330,8 +337,13 @@ export async function restoreState(db: D1Database, entity: Entity, version: numb
   if (!Number.isInteger(version) || version < 1) throw new ApiHttpError(400, "validation", "version must be a positive integer");
   const row = await db.prepare("SELECT * FROM state_versions WHERE entity = ?1 AND version = ?2").bind(entity, version).first<StateVersionRow>();
   if (!row) throw new ApiHttpError(404, "not_found", `${entity} version ${version} not found`);
-  const state = JSON.parse(row.state_json) as Record<string, unknown>;
+  const raw = JSON.parse(row.state_json) as Record<string, unknown>;
   const current = await getCurrentState(db, entity);
+  // Review fix (SPEC_V5 section 4): a restored scene version is written in the v5 shape (the
+  // four keys, apart's carried place dropped), the restored time words kept as that scene's.
+  const state = entity === "scene"
+    ? normalizeSceneFields(raw, current.state as Record<string, unknown>, { strict: false, timeSet: true })
+    : raw;
   const next = current.version + 1;
   await db.batch([
     appendStateStmt(db, entity, next, state, "restore", `restored from version ${version}`),
@@ -396,6 +408,9 @@ export async function updateFact(
   const old = await requireFact(db, id);
   assertFixed(old.scope, "edited");
   if (old.status !== "approved") throw new ApiHttpError(409, "not_current", "only the current version of a fact can be edited");
+  if (patch.inferred === true && old.scope !== "justin" && old.scope !== "shared") {
+    throw new ApiHttpError(400, "validation", "only a fact about him can be her guess");
+  }
   const t = nowIso();
   const row: FactRowV5 = {
     ...old,

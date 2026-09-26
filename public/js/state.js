@@ -224,7 +224,19 @@ function moodPhase(st, versionCreatedAt) {
   return "gone";
 }
 
+// Whether a cooling off runs, as src/standing.ts coolingOffNow reads it: the story-time pair
+// when it is there, else the deadline. Only when the server sent no `live` view.
+function coolingLocal(st) {
+  const setAt = st && st.cooling_off_set_at ? String(st.cooling_off_set_at) : "";
+  const hours = Number(st && st.cooling_off_hours);
+  if (setAt && Number.isFinite(Date.parse(setAt)) && Number.isFinite(hours) && hours > 0) return storyElapsed(setAt) < hours * 3600000;
+  const until = st && st.cooling_off_until ? Date.parse(st.cooling_off_until) : NaN;
+  return Number.isFinite(until) && until > Date.now();
+}
+
 // Mood, mood days and cooling off: fields of the relationship state with their own controls.
+// `version.live` (GET /api/state, PUT /api/state/relationship) is the server's own read of the
+// cooling off and the friction phase on story time; the page computes them only without it.
 function fillMood(st, version) {
   $("moodInput").value = st.mood ? String(st.mood) : "";
   $("moodDays").value = st.mood_days !== undefined && st.mood_days !== null ? String(st.mood_days) : "";
@@ -233,8 +245,9 @@ function fillMood(st, version) {
   clear(chips);
   const phase = moodPhase(st, version && version.created_at);
   if (phase) chips.append(chip(phase, phase === "gone" ? "" : phase === "fresh" ? "amber" : "accent"));
-  const until = st.cooling_off_until ? Date.parse(st.cooling_off_until) : NaN;
-  if (Number.isFinite(until) && until > Date.now()) chips.append(chip("cooling off", "amber"));
+  const live = version && version.live && typeof version.live === "object" ? version.live : null;
+  const cooling = live ? live.coolingOff === true : coolingLocal(st);
+  if (cooling) chips.append(chip("cooling off", "amber"));
   fillFriction(st, version);
 }
 
@@ -285,7 +298,8 @@ function fillFriction(st, version) {
   $("frictionDays").value = st.friction_days !== undefined && st.friction_days !== null ? String(st.friction_days) : "";
   const chips = $("frictionChips");
   clear(chips);
-  const phase = frictionPhase(st, version && version.created_at);
+  const live = version && version.live && typeof version.live === "object" ? version.live : null;
+  const phase = live ? (typeof live.friction === "string" && live.friction ? live.friction : null) : frictionPhase(st, version && version.created_at);
   if (phase) chips.append(chip(phase, phase === "fresh" ? "amber" : phase === "healed" ? "" : "accent"));
   const lateral = lateralOf(st.status);
   $("statusBeforeField").classList.toggle("hidden", !lateral);
@@ -357,9 +371,13 @@ $("moodSave").addEventListener("click", () => {
   const daysRaw = $("moodDays").value.trim();
   const days = daysRaw ? Number(daysRaw) : null;
   if (daysRaw && (!Number.isInteger(days) || days < 1 || days > 14)) { flash($("moodStatus"), "mood days 1 to 14", "danger"); return; }
-  const patch = { mood: orNull($("moodInput").value), cooling_off_until: fromLocalInput($("coolInput").value) };
+  const until = fromLocalInput($("coolInput").value);
+  const patch = { mood: orNull($("moodInput").value), cooling_off_until: until };
   if (days !== null) patch.mood_days = days;
-  saveMood(patch, days === null ? ["mood_days"] : [], "mood");
+  // An empty cooling-off field ends any cooling off, the story-time pair too.
+  const remove = days === null ? ["mood_days"] : [];
+  if (until === null) remove.push("cooling_off_set_at", "cooling_off_hours");
+  saveMood(patch, remove, "mood");
 });
 $("moodClear").addEventListener("click", () => {
   $("moodInput").value = "";
@@ -972,15 +990,36 @@ let wantsData = { wants: [], asks: [] };
 filterGroup("wantsFilter", "status", (v) => { wantsStatus = v; loadWants(); });
 filterGroup("asksFilter", "status", (v) => { asksStatus = v; renderAsks(); });
 
+// Every want's beats, read once per load (GET /api/beats?status=all) and handed to its card.
+let beatsByWant = null;
+
 async function loadWants() {
   const box = $("wantsList");
   clear(box);
+  let beats = null;
   try {
-    const r = await api("GET", "/api/wants?status=" + encodeURIComponent(wantsStatus));
+    const [r, settings, allBeats] = await Promise.all([
+      api("GET", "/api/wants?status=" + encodeURIComponent(wantsStatus)),
+      loadSettingsOnce(),
+      api("GET", "/api/beats?status=all&limit=500").catch(() => null),
+    ]);
     wantsData = { wants: listOf(r && r.wants !== undefined ? r.wants : r, ["wants"]), asks: listOf(r && r.asks, ["asks"]) };
+    // The beats read in her timezone even when the Life tab was never opened.
+    if (settings && typeof settings.timezone === "string" && settings.timezone) lifeTz = settings.timezone;
+    beats = allBeats;
   } catch (e) {
     flash(status("wants"), e.code, "danger");
     return;
+  }
+  beatsByWant = null;
+  if (beats) {
+    beatsByWant = new Map();
+    for (const v of listOf(beats, ["beats"])) {
+      const id = v && v.beat ? v.beat.want_id : null;
+      if (!id) continue;
+      if (!beatsByWant.has(id)) beatsByWant.set(id, []);
+      beatsByWant.get(id).push(v);
+    }
   }
   if (!wantsData.wants.length) box.append(h("div", { class: "chips" }, chip("none")));
   for (const w of wantsData.wants) box.append(wantCard(w));
@@ -1141,6 +1180,10 @@ function variantsEditor(kind, initial) {
     value() {
       return rows.map((r) => ({ outcome: r.sel.value, note: r.note.value.trim() })).filter((v) => v.note);
     },
+    // A variant row he added and left without a note (the server needs one).
+    missingNote() {
+      return rows.some((r) => !r.note.value.trim());
+    },
   };
 }
 
@@ -1161,6 +1204,7 @@ function beatForm(w, view, done, cancel) {
       const t = title.value.trim();
       if (!t) { flash(slot, "title", "danger"); return; }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date.value)) { flash(slot, "date", "danger"); return; }
+      if (variants.missingNote()) { flash(slot, "note", "danger"); return; }
       const body = { title: t, dueOn: date.value, dueTime: time.value ? time.value.slice(0, 5) : null, variants: variants.value() };
       save.disabled = true;
       try {
@@ -1281,16 +1325,24 @@ function beatRow(w, view, reload) {
 function beatsBlock(w) {
   const list = h("div", { class: "beat-list" });
   const formBox = h("div", { class: "hidden" });
+  // The first render takes the beats loadWants read for every want at once; a reload after
+  // an edit reads this want's own.
+  let initial = beatsByWant ? beatsByWant.get(w.id) || [] : null;
   const reload = async () => {
     clear(list);
     closeForm();
     let beats = [];
-    try {
-      const r = await api("GET", "/api/wants/" + encode(w.id) + "/beats?status=all");
-      beats = listOf(r, ["beats"]);
-    } catch (e) {
-      list.append(chip(e.code || "error", "danger"));
-      return;
+    if (initial) {
+      beats = initial;
+      initial = null;
+    } else {
+      try {
+        const r = await api("GET", "/api/wants/" + encode(w.id) + "/beats?status=all");
+        beats = listOf(r, ["beats"]);
+      } catch (e) {
+        list.append(chip(e.code || "error", "danger"));
+        return;
+      }
     }
     if (!beats.length) list.append(h("div", { class: "chips" }, chip("no beats")));
     for (const v of beats) if (v && v.beat) list.append(beatRow(w, v, reload));
@@ -1698,6 +1750,8 @@ function factCard(f) {
   const fact = h("textarea", { placeholder: "Fact", value: f.fact || "" });
   const disclosed = h("input", { type: "checkbox", checked: !!f.disclosed });
   const provisional = h("input", { type: "checkbox", checked: !!f.provisional });
+  // A fact about him can be her guess or his own words; he unticks it once he has said it.
+  const guess = f.scope === "justin" || f.scope === "shared" ? h("input", { type: "checkbox", checked: Number(f.inferred) === 1 || f.inferred === true }) : null;
   const slot = h("span", { class: "chips" });
   const versions = h("div", { class: "stack tight hidden" });
   const save = h("button", {
@@ -1707,12 +1761,14 @@ function factCard(f) {
       if (!text) { flash(slot, "fact", "danger"); return; }
       save.disabled = true;
       try {
-        await api("PUT", "/api/facts/" + encode(f.id), {
+        const body = {
           fact: text,
           subject: orNull(subject.value),
           disclosed: disclosed.checked,
           provisional: provisional.checked,
-        });
+        };
+        if (guess) body.inferred = guess.checked;
+        await api("PUT", "/api/facts/" + encode(f.id), body);
         loadFacts();
       } catch (e) {
         save.disabled = false;
@@ -1751,7 +1807,8 @@ function factCard(f) {
     fact,
     h("div", { class: "row" },
       h("label", { class: "check" }, disclosed, "Disclosed"),
-      h("label", { class: "check" }, provisional, "Provisional")),
+      h("label", { class: "check" }, provisional, "Provisional"),
+      guess ? h("label", { class: "check" }, guess, "Guess") : null),
     h("div", { class: "row" }, save, showVersions, del, slot),
     versions);
 }

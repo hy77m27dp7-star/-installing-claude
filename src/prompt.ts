@@ -35,7 +35,7 @@ import { cueSection, rhythmSection } from "./imperfection";
 import { hisLookSection } from "./hisFace";
 // v5: the clock (L1), dated beats (L2), her read of him (L3), state that moves (L4), the
 // record and the world (L6).
-import { deferredInstant, timeSinceSection } from "./clock";
+import { deferredInstant, storyAgeDays, timeSinceSection } from "./clock";
 import { beatLinesByWant } from "./arcs";
 import { viewsSection } from "./views";
 import { RELATIONSHIP_V5_HIDDEN_KEYS, coolingOffNow, displayStatus, frictionLine, frictionNow } from "./standing";
@@ -378,7 +378,8 @@ export function stateSections(s: PromptState): string {
   let moodLines = "";
   const mood = guarded("mood", () => moodLine(s.relationship, now, s.moodDaysDefault, s.relationshipSince ?? null, clock));
   if (mood) moodLines += mood + "\n";
-  const friction = guarded("friction", () => frictionLine(frictionNow(s.relationship, now, { frictionDaysDefault: s.frictionDaysDefault }, s.relationshipSince ?? null, clock)));
+  // Review fix: an opener or a first text never carries a sore spot (it never leads with one).
+  const friction = opener ? "" : guarded("friction", () => frictionLine(frictionNow(s.relationship, now, { frictionDaysDefault: s.frictionDaysDefault }, s.relationshipSince ?? null, clock)));
   if (friction) moodLines += friction + "\n";
   let cooling = false;
   try {
@@ -427,7 +428,9 @@ export function stateSections(s: PromptState): string {
   if (s.life) {
     const life = s.life;
     const deferAt = clock ? (iso: string): string => deferredInstant(clock, iso) : null;
-    push(guarded("life", () => lifeSection(life.threads, life.log, now, tz, { together: mode === "together", clockWords, deferAt })));
+    // Review fix: the notes' ages on story time, as the callbacks and WHAT YOU WANT read them.
+    const ageOf = clock ? (iso: string): number => storyAgeDays(clock, iso) : null;
+    push(guarded("life", () => lifeSection(life.threads, life.log, now, tz, { together: mode === "together", clockWords, deferAt, ageOf })));
   }
 
   // The people and places in this (v5 section 8): their names and fixed facts.
@@ -566,7 +569,7 @@ export function proposalSystemPrompt(opts: { today?: string | null; weekday?: st
     "A \"scene\" proposal describes where they are when a shared scene starts, moves or ends. Its payload: {\"status\": \"together\"|\"apart\"|\"none\", \"location\": the place in a few words or omitted when it did not change, \"time\": time of day or omitted, \"present\": the people there as a list of names or omitted}. Never omit \"location\" when the scene moved somewhere new.",
     "An \"opinion_change\" is Avelie changing or first stating a view of her own (his song, a band, a place, a plan). Its payload: {\"subject\": \"opinion: \" plus what the opinion is about, in a few words}, so a changed mind replaces the old opinion instead of sitting beside it.",
     "APPROVED STATE lists what is already kept about him, about her and in her life. Never propose anything already there, even in other words (\"has no boyfriend\" and \"is single\" are the same fact; \"the coffee shop\" and \"her coffee place two streets away\" are the same place). Propose only what is new, or a real change to a kept item as a life_update or opinion_change. When in doubt that something is new, propose nothing.",
-    "A \"justin_fact\" carries the payload {\"said_by\": \"him\"|\"inferred\"}: \"him\" only when his own words in the exchange state it; \"inferred\" when it was worked out from hints, guessed, or said by her about him.",
+    "A \"justin_fact\" carries the payload {\"said_by\": \"him\"|\"inferred\"}: \"him\" only when his own words in the exchange state it; \"inferred\" when it was worked out from hints, guessed, or said by her about him. A line under APPROVED STATE marked \"(her guess)\" is not his words yet: when his own words now state it, propose it again as a justin_fact with said_by \"him\" (the one exception to never proposing what is already there).",
     "A dated step on one of HER wants (a sign-up deadline, a show night, an audition) is a \"want_beat\". Its payload: {\"want\": the want's title or id, \"title\": the step in a few words, \"due_on\": the date as YYYY-MM-DD (resolve a weekday from today's date below), \"due_time\": \"HH:MM\" or omitted, \"kind\": \"step\" for a thing she must do by then, \"event\" for a thing that happens then}.",
     "When SHE tells him how one of her dated steps went, that is a \"beat_outcome\": only what she said happened. Its payload: {\"beat\": the step's title, \"outcome\": \"did_it\"|\"missed\"|\"went\"|\"went_well\"|\"went_badly\"|\"chickened_out\"|\"postponed\", \"note\": one line}.",
     "A lasting fact about a person or place in HER life that is not news (what her mother does, where her friend lives, what the shop sells) is a \"world_fact\". Its payload: {\"entity\": the person's name or the place's title as the record has it, \"fact\": one line}. A person already in her life keeps the name they have: a \"life\" person proposal for someone she already has uses that same name, or, when the record has no name for them yet, the name she just gave.",

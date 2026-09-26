@@ -62,11 +62,14 @@ const PASS_MESSAGES_MIN = 4;
 const PASS_READS_MAX = 30;
 const PASS_FALLBACK_MS = 24 * 60 * 60 * 1000;
 const WRONG_SHOWN_MAX = 2;
+const RETIRED_SHOWN_MAX = 20;
 
 // A read about his body, his age, his work or money, a diagnosis, or built from his absence or
 // his reply times is never hers to hold (the last group is a guilt read: skeptic 12). "answer" is
 // deliberately not in it: "you answer fast when it matters" is about how he talks with her.
-const VIEW_DROP_RE = /\b(?:body|fat|thin|skinny|weight|age|older|younger|ugly|handsome|bald|job|money|salary|diagnos\w*|narciss\w*|trauma\w*|toxic|red flag|away|disappear\w*|vanish\w*|ghost\w*|busy|repl(?:y|ies|ied)|texts? back|texted back|writes? back|wrote back|take forever|takes forever)\b/i;
+// Review fix: the frequency and waiting reads too ("you never text first", "you go quiet for
+// days", "you leave me hanging", "you make me wait").
+const VIEW_DROP_RE = /\b(?:body|fat|thin|skinny|weight|age|older|younger|ugly|handsome|bald|job|money|salary|diagnos\w*|narciss\w*|trauma\w*|toxic|red flag|away|disappear\w*|vanish\w*|ghost\w*|busy|repl(?:y|ies|ied)|texts? back|texted back|writes? back|wrote back|take forever|takes forever|texts? first|text(?:ed|ing) first|writes? first|go(?:es)? quiet|went quiet|going quiet|silent|silence|for days|days without|hanging|make me wait|made me wait|makes me wait|keep me waiting|kept me waiting|waiting|leave me|leaves me|left me)\b/i;
 
 // ------------------------------------------------------------------ pure helpers
 
@@ -155,14 +158,22 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-export function viewsUser(views: HerViewRow[], messages: Array<{ id: string; role: string; content: string }>): string {
+export function viewsUser(views: HerViewRow[], messages: Array<{ id: string; role: string; content: string }>, retired: HerViewRow[] = []): string {
   const reads = (Array.isArray(views) ? views : [])
     .filter((v) => !!v && typeof v.id === "string")
     .map((v) => `- [${v.id}] ${saidLine(v.view, VIEW_MAX)} (confidence ${round2(Number(v.confidence) || 0)})`);
   const msgs = (Array.isArray(messages) ? messages : [])
     .filter((m) => !!m && typeof m.id === "string" && typeof m.content === "string")
     .map((m) => `- [${m.id}] ${m.role === "user" ? "him" : "her"}: ${saidLine(m.content, MESSAGE_CHARS)}`);
-  return ["CURRENT READS:", ...(reads.length ? reads : ["(none)"]), "", "MESSAGES:", ...(msgs.length ? msgs : ["(none)"])].join("\n");
+  // Review fix: the reads he said are not true (and the ones that faded out) are shown so a
+  // night never brings one back as a new read.
+  const gone = (Array.isArray(retired) ? retired : [])
+    .filter((v) => !!v && typeof v.view === "string" && v.view.trim())
+    .map((v) => `- ${saidLine(v.view, VIEW_MAX)}`);
+  const out = ["CURRENT READS:", ...(reads.length ? reads : ["(none)"])];
+  if (gone.length) out.push("", "NOT TRUE (he said so, or it faded; never bring one back as a new read):", ...gone);
+  out.push("", "MESSAGES:", ...(msgs.length ? msgs : ["(none)"]));
+  return out.join("\n");
 }
 
 export function parseViewOps(
@@ -170,6 +181,7 @@ export function parseViewOps(
   known: ReadonlyMap<string, HerViewRow>,
   messageIds: ReadonlySet<string>,
   max: number,
+  blocked: ReadonlySet<string> = new Set(),
 ): ViewOpParsed[] {
   const cap = typeof max === "number" && Number.isFinite(max) ? Math.max(0, Math.floor(max)) : 0;
   if (cap <= 0) return [];
@@ -193,6 +205,9 @@ export function parseViewOps(
     } else {
       if (!subjectOk) continue;
       if (evidence.length < (confidence >= 0.8 ? 1 : 2)) continue;
+      // Review fix: a read he said is not true never comes back as a new one (by its subject
+      // or its words).
+      if (blocked.size && (blocked.has(subjectNorm(subjectRaw)) || blocked.has(subjectNorm(typeof raw.view === "string" ? raw.view : "")))) continue;
     }
     let view = cleanLine(raw.view, VIEW_MAX);
     if (!view && base) view = cleanLine(base.view, VIEW_MAX);
@@ -216,7 +231,9 @@ export async function listViews(db: D1Database, status: "active" | "proven_wrong
     ? await db.prepare("SELECT * FROM her_views WHERE status = 'active' ORDER BY confidence DESC, updated_at DESC, id LIMIT ?1").bind(n).all<HerViewRow>()
     : status === "proven_wrong"
       ? await db.prepare("SELECT * FROM her_views WHERE status = 'proven_wrong' ORDER BY updated_at DESC, id LIMIT ?1").bind(n).all<HerViewRow>()
-      : await db.prepare("SELECT * FROM her_views ORDER BY updated_at DESC, id LIMIT ?1").bind(n).all<HerViewRow>();
+      // Review fix: "all" is every read she holds or held, never the superseded versions
+      // behind them (a busy month of confirms would push a quiet active read off the page).
+      : await db.prepare("SELECT * FROM her_views WHERE status != 'superseded' ORDER BY updated_at DESC, id LIMIT ?1").bind(n).all<HerViewRow>();
   return (r.results ?? []).filter((v) => !!v && typeof v.id === "string");
 }
 
@@ -422,13 +439,26 @@ export async function runViewPass(env: Env, db: D1Database, settings: Settings, 
   const reads = await listViews(db, "active", PASS_READS_MAX);
   const known = new Map(reads.map((v) => [v.id, v] as const));
   const messageIds = new Set(messages.map((m) => m.id));
+  let retired: HerViewRow[] = [];
+  try {
+    const rr = await db.prepare("SELECT * FROM her_views WHERE status = 'retired' ORDER BY updated_at DESC, id LIMIT ?1").bind(RETIRED_SHOWN_MAX).all<HerViewRow>();
+    retired = (rr.results ?? []).filter((v) => !!v && typeof v.id === "string");
+  } catch {
+    retired = [];
+  }
+  const blocked = new Set<string>();
+  for (const v of retired) {
+    if (v.subject_norm) blocked.add(v.subject_norm);
+    const n = subjectNorm(v.view ?? "");
+    if (n) blocked.add(n);
+  }
 
   const call = await paidJsonCall(env, db, settings, budget, {
     tag: "views",
     provider: (s.nightlyProvider ?? "anthropic") as ProviderName,
     model: typeof s.nightlyModel === "string" && s.nightlyModel ? s.nightlyModel : "claude-sonnet-5",
     system: viewsSystem(perNight),
-    user: viewsUser(reads, messages),
+    user: viewsUser(reads, messages, retired),
     maxTokens: 700,
     temperature: 0.3,
   });
@@ -436,7 +466,7 @@ export async function runViewPass(env: Env, db: D1Database, settings: Settings, 
     const stopped = call.reason === "nightly budget" || call.reason === "caps";
     return { step: "views", status: stopped ? "skipped" : "failed", reason: call.reason, proposalIds: [], detail: { messages: messages.length } };
   }
-  const ops = parseViewOps(call.text, known, messageIds, perNight);
+  const ops = parseViewOps(call.text, known, messageIds, perNight, blocked);
   const rows: NightlyProposal[] = ops.map((o) => {
     const oldView = o.viewId ? known.get(o.viewId)?.view ?? o.view : o.view;
     const text = o.op === "new"

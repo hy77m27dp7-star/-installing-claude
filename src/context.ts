@@ -33,7 +33,7 @@ import { hisTextIsSubstantive, rhythmAsShapeCue, rhythmCue, signature } from "./
 // the world and the songs (L6), places and portraits (unchanged modules).
 import {
   clockWordsFor, disabledClock, heldGrounding, lastExchange as readLastExchange, loadStoryClock, localDayKeyOf, storyAgeDays,
-  storyNow as storyNowOf, timeSince,
+  storyNow as storyNowOf, storyWindowStart, timeSince,
 } from "./clock";
 import type { LastExchange, StoryClock } from "./clock";
 import { listBeatViews } from "./arcs";
@@ -353,7 +353,8 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     // v5 (section 8): the fixed facts about her people and places.
     nicety("world facts", listWorldFacts(db, { status: "approved" }), [] as WorldFactRow[]),
     // v5 (section 6): what she sent him, on the wall clock's window.
-    nicety("sent", sentShown > 0 ? listSent(db, { now: realNow, windowDays: sentWindowDays, limit: sentShown }) : Promise.resolve([] as SentItem[]), [] as SentItem[]),
+    // Review fix: the window is story time (held spans do not use it up).
+    nicety("sent", sentShown > 0 ? listSent(db, { now: realNow, windowDays: sentWindowDays, limit: sentShown, since: clock ? storyWindowStart(clock, sentWindowDays * DAY_MS) : null }) : Promise.resolve([] as SentItem[]), [] as SentItem[]),
     // v5 (section 9): the artists he knows or did not like, and a pick of hers that is not anywhere.
     nicety("known artists", knownArtistsShown > 0 ? listKnownArtists(db, undefined, knownArtistsShown) : Promise.resolve([] as KnownArtistRow[]), [] as KnownArtistRow[]),
     nicety("missing song", knownArtistsShown > 0 ? missingSongNotice(db, realNow) : Promise.resolve(null), null as Awaited<ReturnType<typeof missingSongNotice>>),
