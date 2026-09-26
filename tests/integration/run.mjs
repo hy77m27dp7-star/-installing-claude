@@ -3618,7 +3618,10 @@ async function scenariosV4(report) {
     assert.ok(map.json.sealed.length >= 1, "her seeded untold facts are sealed");
     for (const s of map.json.sealed) assert.deepEqual(Object.keys(s).sort(), ["createdAt", "id", "subject"]);
     const untold = (await state()).facts.avelie.filter((f) => Number(f.disclosed) === 0);
-    assert.equal(map.json.sealed.length, untold.length, "every untold fact, subject only");
+    // 2026-09-26: one tile per subject (the untold list repeated "singing" four times); a
+    // repeated subject carries its count as " xN".
+    const subjects = new Set(untold.map((f) => (typeof f.subject === "string" && f.subject.trim() ? f.subject.trim() : "untitled").toLowerCase()));
+    assert.equal(map.json.sealed.length, subjects.size, "one sealed tile per untold subject");
     for (const f of untold) assert.ok(!JSON.stringify(map.json).includes(f.fact.slice(0, 40)), "the text of an untold fact never leaves: " + f.subject);
     assert.equal(map.json.counts.sealed, map.json.sealed.length);
     assert.deepEqual(map.json.keptToday, [], "auto-keep is off");
