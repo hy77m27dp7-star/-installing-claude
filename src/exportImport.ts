@@ -187,6 +187,14 @@ const MESSAGES: TableSpec = {
     { name: "image_status", type: "text", max: 40 },
     // v3 (0005_v3.sql): the call a transcript row belongs to.
     { name: "call_id", type: "text", max: ID_MAX },
+    // 2026-09-26: these five were never exported, so every snapshot restore and a restore of
+    // the nightly backup dropped her song cards, both sides' voice-note recordings, the photos
+    // he sent, her media and the delivery times (two song cards were lost that day).
+    { name: "deliver_at", type: "text", max: TIME_MAX },
+    { name: "song_json", type: "text", max: 2000 },
+    { name: "audio_key", type: "text", max: 400 },
+    { name: "images_json", type: "text", max: 8000 },
+    { name: "media_id", type: "text", max: ID_MAX },
     // v4 (0008_v4.sql): the song's Spotify outcome and the delayed reply's notification stamp.
     // pushed_at is a nullable time: type text (as decided_at is), so a never-pushed reply
     // stays never pushed instead of being stamped with the import time.
