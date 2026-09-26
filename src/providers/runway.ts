@@ -276,6 +276,8 @@ function trimToWords(text: string, max: number): string {
 // words: OpenAI's filter refused one this morning and Runway moderates text too), then
 // " Scene: " and her description, the whole thing within the 1000-unit cap (the scene is
 // cut at a word if it must be; the identity line never is).
+const BED_SCENE_RE = /\b(bed|bedroom|sheets?|pillows?|lying|lie down|blanket|under the covers|duvet)\b/i;
+
 export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWAY_REFERENCE_TAGS): string {
   const list = tags.length ? tags : RUNWAY_REFERENCE_TAGS;
   const head = "@" + list[0];
@@ -295,8 +297,14 @@ export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWA
   // The body references are the first two tags (the black dress and the blazer); the third is
   // the face crop, which shows no figure.
   const bodyRefs = rest.length ? head + " and " + rest[0] : head;
-  const suffix = " Her figure here as " + bodyRefs + " show it: a small slim frame, slim waist, flat stomach, with a full bust and a full shapely backside, an hourglass under any outfit, never heavy.";
   const clean = scene.replace(/\s+/g, " ").trim();
+  // 2026-09-26: in a bed or bedroom scene the body words of the figure clause read as sexual
+  // to Runway's input moderation and every picture was refused (three in a row, "in his shirt,
+  // the sheet to her waist" included), while the same clause passed at a sandwich shop. In
+  // those scenes the figure is left to the references alone.
+  const suffix = BED_SCENE_RE.test(clean)
+    ? " Her figure here exactly as " + bodyRefs + " show it, never slimmed, never heavy."
+    : " Her figure here as " + bodyRefs + " show it: a small slim frame, slim waist, flat stomach, with a full bust and a full shapely backside, an hourglass under any outfit, never heavy.";
   return prefix + trimToWords(clean, MAX_PROMPT_UNITS - prefix.length - suffix.length) + suffix;
 }
 
