@@ -153,13 +153,27 @@ async function stateSummary(db: D1Database): Promise<string> {
     listFacts(db, "justin"),
     listFacts(db, "avelie"),
   ]);
+  // 2026-09-26: the extractor saw only the counts, so every time a topic came up it proposed
+  // it again in new words and auto-keep stored it (the coffee place six times, "no boyfriend"
+  // six times). It now sees what is already kept, and the system prompt tells it to propose
+  // only what is new or changed. Capped so a long memory never swamps the call.
+  const threads = await listThreads(db, "active").catch(() => [] as LifeThread[]);
+  const line = (t: string) => "- " + t.replace(/\s+/g, " ").trim().slice(0, SUMMARY_LINE_MAX);
+  const factLines = (rows: typeof him) => rows.filter((f) => f.status === "approved").slice(-SUMMARY_LIST_MAX).map((f) => line(f.fact));
   return [
     `Relationship: ${rel.state.summary ?? ""}`,
     `Scene: ${scene.state.summary ?? ""}`,
-    `Facts about him: ${him.length}`,
-    `Facts about her: ${her.length}`,
+    "Already kept about him:",
+    ...factLines(him),
+    "Already kept about her:",
+    ...factLines(her),
+    "Already in her life (kind: title: detail):",
+    ...threads.slice(-SUMMARY_LIST_MAX).map((t) => line(t.kind + ": " + t.title + (t.detail ? ": " + t.detail : ""))),
   ].join("\n");
 }
+
+const SUMMARY_LIST_MAX = 120;
+const SUMMARY_LINE_MAX = 180;
 
 function errorClass(e: unknown): string {
   if (e instanceof ProviderError) return e.kind;
