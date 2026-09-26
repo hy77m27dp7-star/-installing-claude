@@ -2262,3 +2262,8 @@ a.btn, a.btn:hover { text-decoration: none; }
   .place-row .place-actions .btn.small, .song-card .song-retry, .queue-control .btn.small { min-height: var(--tap); }
   .now-playing .icon-btn, .song-card .song-play { width: var(--tap); height: var(--tap); }
 }
+
+/* Play on my Spotify (2026-09-26): the button and its status note sit in the song card row. */
+.song-card .song-remote { margin-left: 6px; }
+.song-card .song-remote-note:empty { display: none; }
+.song-card .song-remote-note { margin-left: 6px; }

@@ -298,7 +298,40 @@ export async function ensurePlayer() {
   }
 }
 
+// "Play on my Spotify" (2026-09-26): starts the song on a Spotify he already has open, the app on
+// his Mac or his phone, through Spotify Connect. The side pane cannot play protected audio, so the
+// SDK device never works there; his own app always can. Pure pick: the active device first, then a
+// computer, then a phone, never this page's own "Avelie" device.
+export function pickDevice(devices) {
+  const list = (Array.isArray(devices) ? devices : []).filter((d) => d && d.id && d.name !== DEVICE_NAME && !d.is_restricted);
+  return list.find((d) => d.is_active)
+    || list.find((d) => String(d.type).toLowerCase() === "computer")
+    || list.find((d) => String(d.type).toLowerCase() === "smartphone")
+    || list[0] || null;
+}
+
+function remoteEvent(detail) {
+  window.dispatchEvent(new CustomEvent("avelie:remote", { detail }));
+}
+
+export async function playOnMySpotify(detail) {
+  const uri = detail && typeof detail.uri === "string" ? detail.uri.trim() : "";
+  if (!uri) return;
+  try {
+    const res = await spotifyCall("GET", "/me/player/devices");
+    const body = await res.json().catch(() => ({}));
+    const d = pickDevice(body && body.devices);
+    if (!d) { remoteEvent({ ok: false, uri, code: "no_device" }); return; }
+    const ctx = contextOf(uri);
+    await spotifyCall("PUT", "/me/player/play?device_id=" + encodeURIComponent(d.id), ctx ? { context_uri: ctx.uri } : { uris: [uri] });
+    remoteEvent({ ok: true, uri, device: String(d.name || "Spotify") });
+  } catch (e) {
+    remoteEvent({ ok: false, uri, code: (e && e.code) || "error" });
+  }
+}
+
 if (typeof window !== "undefined" && typeof document !== "undefined") {
+  window.addEventListener("avelie:play-remote", (e) => { playOnMySpotify(e.detail); });
   window.addEventListener("avelie:play", (e) => { play(e.detail); });
   window.addEventListener("avelie:pause", () => { pause(); });
   window.addEventListener("avelie:resume", () => { resume(); });

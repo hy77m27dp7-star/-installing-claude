@@ -593,11 +593,34 @@ function songCard(m) {
       if (mine && p.state === "playing") window.dispatchEvent(new CustomEvent("avelie:pause"));
       else window.dispatchEvent(new CustomEvent("avelie:play", { detail: { uri, target: embed } }));
     });
-    card.append(play, embed);
+    // Play on my Spotify: the song starts on his own Spotify app (Mac or phone), which always
+    // plays the whole track, even where this page cannot (the side pane has no protected audio).
+    const remote = h("button", { type: "button", class: "btn small song-remote", "aria-label": "Play on my Spotify", text: "my Spotify" });
+    const remoteNote = h("span", { class: "song-remote-note" });
+    remote.addEventListener("click", () => {
+      clear(remoteNote);
+      remoteNote.append(chip("starting"));
+      window.dispatchEvent(new CustomEvent("avelie:play-remote", { detail: { uri } }));
+    });
+    card.append(play, remote, remoteNote, embed);
     paintPlayButton(play);
   }
   return card;
 }
+
+// Where "my Spotify" landed, shown on the card that asked: the device's name, or what to do.
+window.addEventListener("avelie:remote", (e) => {
+  const d = e.detail || {};
+  for (const card of document.querySelectorAll(".song-card")) {
+    if (card.getAttribute("data-uri") !== d.uri) continue;
+    const note = card.querySelector(".song-remote-note");
+    if (!note) continue;
+    clear(note);
+    if (d.ok) note.append(chip("on " + d.device, "ok"));
+    else if (d.code === "no_device") note.append(chip("open Spotify on your phone or Mac first", "amber"));
+    else note.append(chip(d.code || "error", "danger"));
+  }
+});
 
 // One more read of the message after a moment: the add runs after the reply was stored.
 // Once per message per page load; a status still pending after that waits for a reload.
