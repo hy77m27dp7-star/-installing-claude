@@ -22,6 +22,9 @@ const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_VOICE_MS = 60000;
 const MAX_VOICE_BYTES = 4 * 1024 * 1024;
 const MIN_VOICE_MS = 600;
+// A press shorter than this is a tap: the recording keeps going until the next tap (2026-09-26:
+// the first hold always died when he let go to click Allow on the permission prompt).
+const TAP_MS = 350;
 const DESC_CHARS = 60;
 // The Note sheet's kinds: label on screen, kind on the wire (the first maps to `ai`).
 const NOTE_KINDS = [
@@ -1265,12 +1268,24 @@ function initMic() {
   els.micBtn.addEventListener("pointerdown", (e) => {
     if (e.button !== undefined && e.button !== 0) return;
     e.preventDefault();
+    // A recording left running by a tap stops (and sends) on the next press.
+    if (state.rec) { stopRecording(); return; }
     if (els.micBtn.setPointerCapture) {
       try { els.micBtn.setPointerCapture(e.pointerId); } catch { /* not needed */ }
     }
     startRecording();
   });
-  for (const ev of ["pointerup", "pointercancel"]) els.micBtn.addEventListener(ev, () => stopRecording());
+  for (const ev of ["pointerup", "pointercancel"]) els.micBtn.addEventListener(ev, () => {
+    const rec = state.rec;
+    if (!rec) return;
+    // Let go while the permission prompt is up, or a short tap: keep recording until the next tap.
+    if (!rec.stream || Date.now() - rec.pressedAt < TAP_MS) {
+      rec.tap = true;
+      els.micBtn.setAttribute("aria-label", "Tap to stop");
+      return;
+    }
+    stopRecording();
+  });
   els.micBtn.addEventListener("keydown", (e) => {
     if (e.key === " " || e.key === "Enter") {
       e.preventDefault();
@@ -1283,7 +1298,7 @@ function initMic() {
 
 async function startRecording() {
   if (state.rec || state.inFlight || state.operator || state.tasting) return;
-  const rec = { stream: null, recorder: null, chunks: [], startedAt: Date.now(), released: false, timer: null };
+  const rec = { stream: null, recorder: null, chunks: [], startedAt: Date.now(), pressedAt: Date.now(), released: false, tap: false, timer: null };
   state.rec = rec;
   els.micBtn.classList.add("recording");
   els.micBtn.setAttribute("aria-pressed", "true");
@@ -1339,6 +1354,7 @@ function resetRecording(rec) {
   }
   els.micBtn.classList.remove("recording");
   els.micBtn.setAttribute("aria-pressed", "false");
+  els.micBtn.setAttribute("aria-label", "Hold to record");
 }
 
 async function sendVoice(blob, mime) {
