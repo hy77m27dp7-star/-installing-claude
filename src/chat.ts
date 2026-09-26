@@ -19,12 +19,22 @@
 // the provenance with its state text, the exemplar uses, the memory touches, the recall
 // row, the asks she brought up again, the conversation touch). runTurn is prepare,
 // generate, commit, then the after-response work (her voice note, the proposal pass).
+//
+// v4 (SPEC_V4 sections 3 and 4, amendment A3): the flag photo_with_him when her photo line
+// puts him in the picture (the pipeline then reaches for his reference photo); a song's
+// spotify_status starts as pending and the add runs after the reply is stored, best
+// effort; her [clip: ...] line starts a clip bound to the message after the reply is
+// committed (the message carries it in image_id / image_status, a photo or a clip, never
+// both), or is stripped with the flag clip_unavailable when clips are off or have no key.
 import { assembleContext, keywords } from "./context";
 import { SYSTEM_SEPARATOR, moodPhase } from "./prompt";
 import { getTextProvider, providerConfigured } from "./providers/index";
 import { repairText, runChecks } from "./checks";
 import { photoRequestRow } from "./images";
-import { stripAllMarkers } from "./markers";
+import { photoIncludesHim, stripAllMarkers } from "./markers";
+import { startClipForMessage } from "./video";
+import { videoProviderConfigured } from "./providers/index";
+import { addSongForMessage } from "./spotify";
 import { computeDeliverAt } from "./life";
 import { contextStmt } from "./provenance";
 import { resolveMediaTitle } from "./media";
@@ -308,15 +318,29 @@ export interface Draft {
   raw?: string;
   mediaId?: string | null;
   runId?: string | null;
+  // v4 (A3): the clip she is sending, in her own words (null or absent = none).
+  clip?: string | null;
 }
 
 // Markers off, checks on, mechanical repair applied when the checks asked for one. The
 // two v2 flags (song named twice, both callbacks forced in) never change the action.
 function evaluate(call: CallOk, checkCtx: CheckContext, callbacks: PromptCallback[]): Draft {
-  const { clean, photo, song, voice, media } = stripAllMarkers(call.result.text);
+  const stripped = stripAllMarkers(call.result.text);
+  const { clean, song, voice, media } = stripped;
+  let photo = stripped.photo;
+  const clip = stripped.clip;
   const checks = runChecks(clean, checkCtx);
   if (call.result.stopReason === "max_tokens") {
     checks.flags.push({ code: "truncated", severity: "flag", detail: "reply stopped at max_tokens" });
+  }
+  // v4 (A3): a message carries a photo or a clip, never both; the clip wins and the reply says so.
+  if (clip && photo) {
+    checks.flags.push({ code: "clip_with_photo", severity: "flag", detail: "both a photo line and a clip line; the clip is kept" });
+    photo = null;
+  }
+  // v4 (section 3): her line puts him in the picture; the pipeline reaches for his photo.
+  if (photo && photoIncludesHim(photo)) {
+    checks.flags.push({ code: "photo_with_him", severity: "flag", detail: "the picture has him in it" });
   }
   if (songNamedTwice(clean, song)) {
     checks.flags.push({ code: "song_marker_dup", severity: "flag", detail: "the prose names the song the marker sends" });
@@ -343,6 +367,7 @@ function evaluate(call: CallOk, checkCtx: CheckContext, callbacks: PromptCallbac
     raw: call.result.text,
     mediaId: null,
     runId: null,
+    clip,
   };
 }
 
@@ -432,6 +457,8 @@ export async function pendingTastingGate(db: D1Database, conversationId: string,
 export interface Prepared {
   conversationId: string;
   actor: string;
+  // v4: the env the turn runs in, so the commit can start the clip her line asked for.
+  env: Env;
   now: Date;
   settings: Settings;
   opener: boolean;
@@ -575,6 +602,7 @@ export async function prepareTurn(
   return {
     conversationId,
     actor,
+    env,
     now,
     settings,
     opener,
@@ -749,6 +777,7 @@ export function draftFromStored(args: { text: string; flags: Flag[]; photo: stri
     raw: args.text,
     mediaId: null,
     runId: args.runId,
+    clip: null,
   };
 }
 
@@ -772,6 +801,8 @@ function provenance(args: {
   deliverAt: string | null;
   song: SongRef | null;
   photoRequested: boolean;
+  // v4 (A3): her line asked for a clip (whether or not one could be started).
+  clipRequested: boolean;
   opener: boolean;
   voice: boolean;
   mediaId: string | null;
@@ -808,6 +839,7 @@ function provenance(args: {
     deliverAt: args.deliverAt,
     song: args.song ? { artist: args.song.artist, title: args.song.title } : null,
     photoRequested: args.photoRequested,
+    clipRequested: args.clipRequested,
     opener: args.opener,
     voice: args.voice,
     mediaId: args.mediaId,
@@ -964,6 +996,19 @@ export async function commitReply(
     ? photoRequestRow(conversationId, assistantId, chosen.photo, settings.imageProvider, settings.imageModel)
     : null;
 
+  // v4 (A3): her clip line. With the switch off, the video provider off or its key
+  // missing, the line is stripped and the message says so; nothing else changes. With it
+  // available, the clip is started after the batch below (the message must exist first).
+  const clipWanted = typeof chosen.clip === "string" && chosen.clip.trim() ? chosen.clip.trim() : null;
+  const clipAvailable = clipWanted !== null && prepared.env !== undefined && clipsAvailable(prepared.env, settings);
+  if (clipWanted && !clipAvailable) {
+    flags.push({ code: "clip_unavailable", severity: "flag", detail: clipUnavailableReason(settings) });
+  }
+
+  // v4 (section 4): a song's Spotify outcome starts as pending when the playlist is on;
+  // the add runs in afterReply and writes the outcome.
+  const spotifyStatus: string | null = chosen.song && settings.spotifyEnabled === true ? "pending" : null;
+
   // Her timing (SPEC_V2 section B): in real mode the reply exists now and arrives later,
   // from her day when it says she is busy, otherwise a short jitter. An opener is hers to
   // send now. Never explained in-story.
@@ -1011,6 +1056,7 @@ export async function commitReply(
     audio_key: null,
     images_json: null,
     media_id: mediaId,
+    spotify_status: spotifyStatus,
   };
   const context = provenance({
     state,
@@ -1023,6 +1069,7 @@ export async function commitReply(
     deliverAt,
     song: chosen.song,
     photoRequested: photoRequest !== null,
+    clipRequested: clipWanted !== null,
     opener,
     voice: wantsVoice,
     mediaId,
@@ -1115,6 +1162,15 @@ export async function commitReply(
     }
   }
 
+  // v4 (A3): the clip, after the reply is committed. The row is role video, bound to the
+  // conversation and this message; the message carries it in image_id / image_status
+  // (pending until pollClip marks it ready or failed, the statements video.ts writes). A
+  // start that fails (the caps, the size gate, the provider) costs the clip, never the
+  // reply: the message is flagged and stays as it is.
+  if (clipWanted && clipAvailable && prepared.env) {
+    assistantRow = await attachClip(prepared.env, db, settings, assistantRow, flags, clipWanted, prepared.actor);
+  }
+
   return {
     conversationId,
     userMessage: userRow,
@@ -1154,6 +1210,66 @@ export function afterReply(env: Env, ctx: ExecutionContext, db: D1Database, sett
       extractProposals(env, db, settings, response.conversationId, response.userMessage, assistantRow)
         .catch((e: unknown) => console.warn("proposal extraction failed", errorClass(e))),
     );
+  }
+  // v4 (SPEC_V4 section 4): the song she sent lands on his playlist, after the voice note
+  // and the proposal pass, best effort; the outcome is a status on the message. A tasting
+  // pick commits through the same commitReply and afterReply, so a picked song is added too.
+  if (settings.spotifyEnabled === true && typeof assistantRow.song_json === "string" && assistantRow.song_json) {
+    ctx.waitUntil(
+      addSongForMessage(env, db, settings, assistantRow.id)
+        .then((status) => { if (status !== "added" && status !== "already") console.log("spotify add", status, assistantRow.id); })
+        .catch((e: unknown) => console.warn("spotify add failed", errorClass(e))),
+    );
+  }
+}
+
+// ------------------------------------------------------------------ her clip (v4, amendment A3)
+
+// Whether her clip line can become a clip: the switch, the provider and its key.
+function clipsAvailable(env: Env, settings: Settings): boolean {
+  if (settings.videoMarkerEnabled === false) return false;
+  const provider = settings.videoProvider;
+  if (!provider || provider === "off") return false;
+  try {
+    return videoProviderConfigured(env, provider);
+  } catch {
+    return false;
+  }
+}
+
+function clipUnavailableReason(settings: Settings): string {
+  if (settings.videoMarkerEnabled === false) return "clips are off (videoMarkerEnabled)";
+  if (!settings.videoProvider || settings.videoProvider === "off") return "the video provider is off";
+  return "the video provider has no key";
+}
+
+// Starts the clip for a committed reply and binds it to the message. Returns the row as
+// the response should carry it; the flags array is the message's own (already stored) and
+// is rewritten on the row when it changes.
+async function attachClip(env: Env, db: D1Database, settings: Settings, row: MessageRow, flags: Flag[], description: string, actor: string): Promise<MessageRow> {
+  const rewriteFlags = async (): Promise<void> => {
+    try {
+      await db.prepare("UPDATE messages SET flags_json = ?2 WHERE id = ?1").bind(row.id, JSON.stringify(flags)).run();
+    } catch (e) {
+      console.warn("clip flags not written", errorClass(e));
+    }
+  };
+  try {
+    const asset = await startClipForMessage(env, db, settings, { conversationId: row.conversation_id, messageId: row.id, description, actor });
+    flags.push({ code: "clip_pending", severity: "flag", detail: asset.id });
+    try {
+      await db.prepare("UPDATE messages SET image_id = ?2, image_status = 'pending', flags_json = ?3 WHERE id = ?1 AND image_id IS NULL")
+        .bind(row.id, asset.id, JSON.stringify(flags)).run();
+    } catch (e) {
+      console.warn("clip not bound to the message", errorClass(e));
+    }
+    return { ...row, image_id: asset.id, image_status: "pending", flags_json: JSON.stringify(flags) };
+  } catch (e) {
+    const cls = e instanceof ApiHttpError ? e.code : errorClass(e);
+    console.warn("clip start failed", cls);
+    flags.push({ code: "clip_failed", severity: "flag", detail: cls });
+    await rewriteFlags();
+    return { ...row, flags_json: JSON.stringify(flags) };
   }
 }
 

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#060a13">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Avelie">
+<title>Avelie Memory</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="page-memory">
+<header class="top">
+  <a class="brand" href="/" aria-label="Avelie, home">
+    <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
+    <span class="wordmark">AVELIE</span>
+  </a>
+  <nav class="nav" aria-label="Sections"></nav>
+</header>
+
+<main class="page memory">
+  <div class="row between">
+    <div class="row">
+      <h2 class="section-title">What she remembers</h2>
+      <span class="chips" id="memoryStatus"></span>
+    </div>
+    <div class="memory-legend" id="memoryLegend" aria-label="Legend"></div>
+  </div>
+
+  <section class="card stack" aria-label="About him">
+    <h2 class="section-title">About him</h2>
+    <div class="memory-field" id="memoryFacts"></div>
+  </section>
+
+  <div class="cols-2">
+    <section class="card stack" aria-label="Fading">
+      <h2 class="section-title">Fading</h2>
+      <div class="mem-list" id="memoryFading"></div>
+    </section>
+    <section class="card stack" aria-label="Returned">
+      <h2 class="section-title">Came back</h2>
+      <div class="mem-list" id="memoryReturned"></div>
+    </section>
+  </div>
+
+  <section class="card stack" aria-label="History">
+    <h2 class="section-title">Shared history</h2>
+    <div class="mem-timeline" id="memoryHistory"></div>
+  </section>
+
+  <section class="card stack" aria-label="Sealed">
+    <h2 class="section-title">Untold</h2>
+    <div class="memory-field" id="memorySealed"></div>
+  </section>
+
+  <section class="card stack" aria-label="Kept today">
+    <h2 class="section-title">Kept today</h2>
+    <div id="memoryKept"></div>
+  </section>
+</main>
+
+<script type="module" src="/js/nav.js"></script>
+<script type="module" src="/js/memory.js"></script>
+</body>
+</html>

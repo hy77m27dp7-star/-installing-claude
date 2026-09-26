@@ -8,12 +8,25 @@
 //
 // The client secret is returned once, in the start response, and nowhere else: never
 // stored, never logged, never in the audit row, never in GET /api/calls/:id.
+//
+// v4 (SPEC_V4 Amendment A2, lane L10): callProvider "elevenlabs" is built, not reserved.
+// The Worker mints the session credential (a WebRTC conversation token, or a signed
+// WebSocket URL when the token endpoint is not served for the account) through
+// providers/elevenlabs.ts, and the start response carries `transport`, `agentId` and the
+// `overrides` the page passes to the vendored client: her instructions as the agent's
+// prompt (compact or full by callSystemMode), an empty first message, her voice id. The
+// page stores the transcript through the same tick and end routes as the OpenAI path;
+// the meter charges elevenLabsCallPricePerMinute per started minute (the page reports no
+// token usage, so the priced side is zero and the floor is the whole cost). The OpenAI
+// path is untouched.
 import { assembleSystemOnly } from "./context";
 import { PROMPT_VERSION } from "./prompt";
 import { repairText, runChecks } from "./checks";
 import { contextStmt } from "./provenance";
 import { extractProposals } from "./proposals";
 import { callProviderConfigured } from "./providers/index";
+import { elevenLabsCallConfigured, elevenLabsOverrides, elevenLabsProviderFor, elevenLabsSettingsOf } from "./providers/elevenlabs";
+import type { ElevenOverrides, ElevenTransport } from "./providers/elevenlabs";
 import { REALTIME_SDP_URL, mintRealtimeSecret } from "./providers/openai";
 import { safeErrorMessage } from "./providers/types";
 import { assertBudget, callPricesOf, priceUsage, spendAgainstCaps } from "./budget";
@@ -112,6 +125,12 @@ export interface StartCallResponse {
   voice: string;
   maxSeconds: number;
   tickSeconds: number;
+  // v4 A2, present only when the provider is elevenlabs: which transport the credential
+  // is for (`clientSecret` is then the conversation token or the signed URL), the agent,
+  // and the overrides the page hands the client at session start.
+  transport?: ElevenTransport;
+  agentId?: string;
+  overrides?: ElevenOverrides;
 }
 
 // The route adds `ok: true` in front of these (SPEC_V3 route table).
@@ -131,12 +150,18 @@ export interface EndCallResponse {
 
 // The call settings as stored (SPEC_V3 Settings table), with the spec's defaults for a
 // value that is missing or malformed (a database seeded before the key existed).
-export function callSettingsOf(settings: Settings): CallSettings {
+// `provider` (v4 A2) names the provider the settings are read for, the stored one by
+// default; a tick or an end passes the call row's own provider, so a switch on the Model
+// page during a call never changes that call's meter. For elevenlabs the per-minute price
+// is elevenLabsCallPricePerMinute, the four token prices are zero (the page reports no
+// usage; the floor is the cost), the model is the agent id and the voice her voice id.
+export function callSettingsOf(settings: Settings, provider?: string): CallSettings {
   const str = (v: unknown, fallback: string, max: number): string => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : fallback);
   const num = (v: unknown, fallback: number, min: number, max: number): number =>
     typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
-  return {
-    provider: str(settings.callProvider, "openai", 40),
+  const name = str(provider, str(settings.callProvider, "openai", 40), 40);
+  const base: CallSettings = {
+    provider: name,
     model: str(settings.callModel, "gpt-realtime", 120),
     voice: str(settings.callVoice, "marin", 40),
     transcribeModel: str(settings.callTranscribeModel, "gpt-4o-mini-transcribe", 120),
@@ -144,6 +169,15 @@ export function callSettingsOf(settings: Settings): CallSettings {
     maxMinutes: Math.round(num(settings.callMaxMinutes, 20, 1, 60)),
     pricePerMinute: num(settings.callPricePerMinute, 0.3, 0, 100),
     prices: callPricesOf(settings),
+  };
+  if (name !== "elevenlabs") return base;
+  const es = elevenLabsSettingsOf(settings);
+  return {
+    ...base,
+    model: es.agentId || "elevenlabs-agent",
+    voice: es.voiceId,
+    pricePerMinute: es.callPricePerMinute,
+    prices: { audioInPerMTok: 0, audioOutPerMTok: 0, textInPerMTok: 0, textOutPerMTok: 0 },
   };
 }
 
@@ -378,8 +412,13 @@ export async function startCall(
   if (conv.status !== "active") throw new ApiHttpError(400, "validation", "conversation is not active");
 
   if (cs.provider === "off") throw new ApiHttpError(503, "provider_not_configured", "calls are off", false, "off");
-  if (cs.provider === "elevenlabs") throw new ApiHttpError(503, "provider_not_configured", "the ElevenLabs call path is reserved for v3.1", false, "reserved_v3_1");
-  if (!callProviderConfigured(env, cs.provider)) {
+  // v4 A2: elevenlabs needs ELEVENLABS_API_KEY and an agent id; providers/index.ts still
+  // answers false for it, so the check is the adapter's own.
+  if (cs.provider === "elevenlabs") {
+    if (!elevenLabsCallConfigured(env, settings)) {
+      throw new ApiHttpError(503, "provider_not_configured", "elevenlabs is not configured for calls: set ELEVENLABS_API_KEY and the agent id on the Model page", false, "elevenlabs");
+    }
+  } else if (!callProviderConfigured(env, cs.provider)) {
     throw new ApiHttpError(503, "provider_not_configured", `${cs.provider} is not configured for calls`, false, cs.provider);
   }
 
@@ -408,10 +447,27 @@ export async function startCall(
   let expiresAt: number;
   let sdpUrl: string;
   let model = cs.model;
+  let eleven: { transport: ElevenTransport; agentId: string; overrides: ElevenOverrides } | null = null;
   if (cs.provider === "stub") {
     clientSecret = STUB_SECRET;
     expiresAt = Math.floor(now.getTime() / 1000) + STUB_SECRET_TTL_S;
     sdpUrl = "";
+  } else if (cs.provider === "elevenlabs") {
+    // v4 A2: the credential is minted with the API key; the instructions ride to the
+    // page as the agent's prompt override (the token endpoint takes none), never to the
+    // audit row. No SDP exchange: the vendored client connects on its own.
+    const es = elevenLabsSettingsOf(settings);
+    let session: Awaited<ReturnType<ReturnType<typeof elevenLabsProviderFor>["mintSession"]>>;
+    try {
+      session = await elevenLabsProviderFor(env).mintSession(env, { agentId: es.agentId });
+    } catch (e) {
+      throw providerToApi(e);
+    }
+    clientSecret = session.credential;
+    expiresAt = session.expiresAt;
+    sdpUrl = "";
+    model = session.agentId;
+    eleven = { transport: session.transport, agentId: session.agentId, overrides: elevenLabsOverrides({ instructions, voiceId: es.voiceId }) };
   } else {
     const mint = async (): Promise<{ value: string; expiresAt: number; model: string }> =>
       mintRealtimeSecret(env, { model: cs.model, voice: cs.voice, instructions, transcribeModel: cs.transcribeModel });
@@ -456,13 +512,13 @@ export async function startCall(
     prompt_version: PROMPT_VERSION,
     created_at: t,
   };
-  // The audit row carries the call row only: no secret, no instructions.
+  // The audit row carries the call row only: no secret, no instructions, no overrides.
   await db.batch([
     callRowStmt(db, call),
-    auditStmt(db, args.actor, "call.start", "call", call.id, null, { ...call, instructionsMode: mode }),
+    auditStmt(db, args.actor, "call.start", "call", call.id, null, { ...call, instructionsMode: mode, ...(eleven ? { transport: eleven.transport } : {}) }),
   ]);
 
-  return {
+  const out: StartCallResponse = {
     call,
     provider: cs.provider,
     clientSecret,
@@ -473,6 +529,12 @@ export async function startCall(
     maxSeconds: cs.maxMinutes * 60,
     tickSeconds: TICK_SECONDS,
   };
+  if (eleven) {
+    out.transport = eleven.transport;
+    out.agentId = eleven.agentId;
+    out.overrides = eleven.overrides;
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ tick
@@ -483,10 +545,11 @@ export async function tickCall(
   id: string,
   body: { seconds: unknown; usage?: unknown },
 ): Promise<TickResponse> {
-  const cs = callSettingsOf(settings);
   const row = await getCall(db, id);
   if (!row) throw new ApiHttpError(404, "not_found", "call not found");
   if (row.status !== "starting" && row.status !== "live") throw new ApiHttpError(409, "call_over", "the call is " + row.status, false);
+  // The row's own provider (v4 A2): the meter of a call never changes with the setting.
+  const cs = callSettingsOf(settings, row.provider);
   const secondsRaw = body.seconds;
   if (typeof secondsRaw !== "number" || !Number.isFinite(secondsRaw) || secondsRaw < 0) throw new ApiHttpError(400, "validation", "seconds must be a non-negative number");
   const seconds = Math.min(MAX_TICK_SECONDS, Math.floor(secondsRaw));
@@ -581,9 +644,9 @@ export async function endCall(
   actor: string,
   ctx?: ExecutionContext,
 ): Promise<EndCallResponse> {
-  const cs = callSettingsOf(settings);
   const row = await getCall(db, id);
   if (!row) throw new ApiHttpError(404, "not_found", "call not found");
+  const cs = callSettingsOf(settings, row.provider);
   const now = new Date();
   if (row.status === "ended" || row.status === "failed") throw new ApiHttpError(409, "call_over", "the call is " + row.status, false);
   if (row.status === "expired") {

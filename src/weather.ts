@@ -133,8 +133,9 @@ export function forecastUrl(lat: number, lon: number, tz: string, units: Weather
   return FORECAST_URL + "?" + q.toString();
 }
 
-export function geocodeUrl(name: string): string {
-  const q = new URLSearchParams({ name, count: String(GEOCODE_MAX), language: "en", format: "json" });
+export function geocodeUrl(name: string, count: number = GEOCODE_MAX): string {
+  const n = Number.isInteger(count) && count >= 1 && count <= 100 ? count : GEOCODE_MAX;
+  const q = new URLSearchParams({ name, count: String(n), language: "en", format: "json" });
   return GEOCODE_URL + "?" + q.toString();
 }
 
@@ -296,14 +297,16 @@ export async function getWeather(_env: Env, db: D1Database, settings: WeatherSet
 
 // Up to five places for a name, for the owner to pick from. The stub answers Stubtown
 // (none for a name starting "zzzz"); Open-Meteo otherwise. A failed call is a 502.
-export async function geocode(_env: Env, settings: WeatherSettings | null | undefined, name: string): Promise<GeoResult[]> {
+// `count`: how many results to ask for (default GEOCODE_MAX; the places geocode asks for
+// more and lets its own distance filter pick).
+export async function geocode(_env: Env, settings: WeatherSettings | null | undefined, name: string, count: number = GEOCODE_MAX): Promise<GeoResult[]> {
   const n = typeof name === "string" ? name.trim() : "";
   if (!n) throw new ApiHttpError(400, "validation", "name is required");
   if (n.length > MAX_CITY) throw new ApiHttpError(400, "validation", `name exceeds ${MAX_CITY} characters`);
   if (weatherProviderOf(settings) === "stub") return stubGeocode(n);
   let json: unknown;
   try {
-    json = await fetchJson(geocodeUrl(n), GEOCODE_TIMEOUT_MS);
+    json = await fetchJson(geocodeUrl(n, count), GEOCODE_TIMEOUT_MS);
   } catch (e) {
     const cls = e instanceof Error ? e.name : "error";
     throw new ApiHttpError(502, "provider_failed", "geocoding did not answer", true, cls === "TimeoutError" ? "timeout" : "network");

@@ -16,6 +16,7 @@ import {
   dayKey, getConversation, getCurrentState, insertMessageStmt, insertModelRunStmt, newId, nextSeq, nowIso,
   touchConversationStmt, usageStmt,
 } from "./db";
+import { spotifyConfigured } from "./spotify";
 import { ProviderError } from "./types";
 import type { ChatMessage, Env, MessageRow, ModelRunRow, RelationshipState, SceneState, Settings } from "./types";
 
@@ -46,21 +47,31 @@ export async function systemInfo(env: Env, db: D1Database, settings: Settings): 
     "SELECT COUNT(*) AS n FROM calls WHERE started_at >= ?1",
     "SELECT COUNT(*) AS n FROM tastings WHERE status = 'pending'",
   ];
-  const [counts, spend, rel, scene, v3Counts, finetune] = await Promise.all([
+  // v4 counts (SPEC_V4 "Routes added"), their own batch for the same reason: a database
+  // behind migration 0008 answers zeros. The Spotify row is counted, never read.
+  const v4Sql = [
+    "SELECT COUNT(*) AS n FROM places WHERE picture_key IS NOT NULL",
+    "SELECT COUNT(*) AS n FROM visual_assets WHERE role = 'callface' AND approval_status = 'approved'",
+    "SELECT COUNT(*) AS n FROM spotify_auth WHERE id = 'owner' AND status = 'connected'",
+  ];
+  const [counts, spend, rel, scene, v3Counts, finetune, v4Counts] = await Promise.all([
     db.batch<{ n: number }>(countSql.map((s) => db.prepare(s))),
     usageSummary(db, settings),
     getCurrentState<RelationshipState>(db, "relationship"),
     getCurrentState<SceneState>(db, "scene"),
     db.batch<{ n: number }>(v3Sql.map((s) => (s.includes("?1") ? db.prepare(s).bind(dayKey()) : db.prepare(s)))).catch(() => null),
     finetuneStatus(db, settings).catch(() => null),
+    db.batch<{ n: number }>(v4Sql.map((s) => db.prepare(s))).catch(() => null),
   ]);
   const n = (i: number): number => Number(counts[i]?.results[0]?.n ?? 0);
   const v = (i: number): number => Number(v3Counts?.[i]?.results[0]?.n ?? 0);
+  const w = (i: number): number => Number(v4Counts?.[i]?.results[0]?.n ?? 0);
   return {
     constitutionVersion: CONSTITUTION_VERSION,
     promptVersion: PROMPT_VERSION,
     settings: { ...settings },
-    providerKeys: { anthropic: !!env.ANTHROPIC_API_KEY, openai: !!env.OPENAI_API_KEY, runway: !!env.RUNWAY_API_KEY },
+    // v4: spotify is true when both secrets are present (the stub flag counts locally).
+    providerKeys: { anthropic: !!env.ANTHROPIC_API_KEY, openai: !!env.OPENAI_API_KEY, runway: !!env.RUNWAY_API_KEY, spotify: spotifyConfigured(env) },
     counts: {
       conversations: n(0),
       messages: n(1),
@@ -78,6 +89,10 @@ export async function systemInfo(env: Env, db: D1Database, settings: Settings): 
       callsToday: v(5),
       tastingsPending: v(6),
       finetuneApproved: finetune ? finetune.approved : 0,
+      // v4 (SPEC_V4 "Routes added")
+      placesWithPicture: w(0),
+      callFaceClips: w(1),
+      spotifyConnected: w(2) > 0 ? 1 : 0,
     },
     spend: {
       todayUsd: spend.todayUsd,

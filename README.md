@@ -9,6 +9,7 @@ Avelie is a private, single-owner character runtime that runs inside your own Cl
 - An Anthropic API key for her text. Claude Opus 5 is the default model.
 - A Runway API key for her photos (`RUNWAY_API_KEY`, since 2026-09-25): photos use Runway's Gen-4 Image (`gen4_image`) with the three strongest master images as tagged character references (the tight face crop first). An OpenAI API key stays the fallback (`imageProvider: "openai"`, gpt-image-1 with the same references). Without the key of the selected provider she still talks; a photo line in her reply fails quietly and the message shows a failed photo instead of a picture.
 - Optional, v2: an ElevenLabs API key if you want her voice notes from ElevenLabs instead of Cloudflare's own voice (the default needs no key), and a VAPID key pair (made by `node scripts/gen_vapid.mjs`, no account needed) if you want a phone notification when she texts first. Without them those two features stay off and everything else works.
+- Optional, v4: a Spotify developer app (`SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, redirect URI `https://avelie.bladepharoh.com/api/spotify/callback`) if you want the songs she sends to land in one private playlist on your Spotify and to play inside the chat (a Spotify Premium account for full playback; the embed plays previews otherwise); the VAPID pair for the notification when a delayed reply lands or she texts first; an ElevenLabs key, voice id and agent id for her own voice on calls and voice notes (docs/ELEVENLABS.md). Without them the Model page shows Spotify as not configured, the notification is skipped, and her voice stays on OpenAI and Workers AI.
 - Optional, v3: a Runway API key if you want short clips of her (`RUNWAY_API_KEY`; without it the clip controls stay hidden). Calls, portraits and the fine-tuned texter all use the OpenAI key you already have. The weather needs no key (Open-Meteo).
 
 ## Run it on your machine
@@ -41,6 +42,12 @@ To run one of the cron jobs by hand on your machine: start the app with `npx wra
 - State: what is true right now. Now (relationship and scene, plus her mood, how many days it lingers, the phase chip and Clear mood), Life (her routines, events, people with their faces, places and arcs, with a weekly grid for routine blocks, the Today list of what she ate, wore and ran out for, and the life log), History, Facts (with an Opinions filter, each opinion's version chain, and a weight select), Unknowns, Inbox (the proposal queue, now including life, mood, want, ask, grounding and life-update proposals), Voice (the bank: approve or reject a line, a selection, a tag, or all of them; edit; add your own), Notes (the corrections ledger), Memory (weight, last touched, score and a Remind her button per row; the recalls list), Wants (her wants with progress, setbacks and asks), Rulebook, Export (the full JSON, the Character JSON and the Character bible) and Import.
 - Model: provider, model, effort, max tokens; Timing (instant or real reply delay, its cap in minutes, her timezone); Her first texts (per day, quiet hours, Send one now); Voice (provider, mode, ElevenLabs voice id, transcribe provider); the proposal pass; image settings (now with the clip settings); the two spending caps and the Weekly drift check switch; Notifications; the last four drift reports with Run now; the last eight voiceprints with Run now; the usage meter. v3 cards: Grounding (her city with a Find button, units, weather provider, the Now line), Calls (provider, model, voice, transcribe model, instructions mode, max minutes, the prices; the reserved ElevenLabs fields), Tastings (Enabled, the second performer, its daily cap, the ledger with Promote), Texter (the readiness meter, Leave him out of the state, Export training set, Export record, the model id and prices, Use, Back to Claude), Memory (the five numbers and the recall switch) and Text (texture cues, typo share).
 - Images: the five masters with their hashes and a Verify button, the candidate queue with Approve, Reject and Regenerate, approved scene images, the rejected list, the Library tab (upload a clip, video or image she may send; list; delete), and in v3 the Clips tab (a source, a motion line, Make clip, the player, Approve and Reject) and the Portraits tab (the faces of the people in her life, by person).
+- v4, every page: her face next to her name at the top (a face-centred crop of a master; pick which one on Images > Photos > Avatar) and beside her bubbles; the chat reads as a messaging thread (timestamps in runs, typing dots with her avatar, photo bubbles, song cards with a play control and a now-playing strip, video bubbles, call cards, the place behind the thread under a dark veil when you are together somewhere she knows).
+- Phone (phone.html, and the Phone button in the chat): where she is right now, the weather she is standing in, what she is wearing, her mood on its clock, what she wants and the asks still open, today's rows, what she is listening to (one small line a day, off on the Model page), a drawn map of her city with her places on it (tap the map to pin one, Geocode, Make picture, Remake), and the playlist embed and queue when Spotify is connected.
+- Album (album.html): every picture she sent, newest first, as Polaroid cards with the date and the place, the two-of-you pictures under `us`, candidates marked with Approve and Reject, Save, a tap on the date opening that chat, and her clips beside the photos.
+- Memory (memory.html): what she remembers about you, read-only: every fact with its weight and phase (vivid, firm, fading, faded), what came back, the history timeline, the things she has not told you yet shown sealed (the subject only), and what was kept automatically today.
+- Images, v4: the Avatar picker on the Photos tab and the Call face card on the Clips tab (a source master, Make her call face, the three slots idle / listening / talking with Approve and Reject, a `ready` chip).
+- Model, v4: the Spotify card (Connect, Disconnect, the playlist name and id, the player), "Get her texts on this phone" in Her first texts, the call face provider in Calls, the place price and the listening switch in Images, the his-face-in-photos switch in His face, the clip switch, the ElevenLabs model and price.
 - Timeline (timeline.html): one read-only scroll, newest at the bottom, of history entries, approved photos, media she sent, life log notes, relationship and scene versions and her first texts, each with a date chip and a link.
 
 ## What v2 adds, one line each
@@ -83,7 +90,22 @@ To run one of the cron jobs by hand on your machine: start the app with `npx wra
 - GG. Imperfection: she texts like a person, not a writer (one word, a fragment, lowercase, two bubbles, a typo she fixes herself); prompt-driven, never post-processed; the scheduled typo cue ships off (`typoCueShare` 0).
 - HH. Tastings: the same turn on two performers, shown blind, you pick, a ledger keeps score, a winner can be promoted with one click.
 - II. The texter: every exchange you Keep, every rewrite, every tasting pick is an approved exchange; export them as fine-tuning data, train on the Mac with your own key, paste the model id into the panel; judgment (proposals, checks, the operator) stays on Claude.
-- Not in v3, by his word: a day engine. Nothing makes her unavailable, late on purpose or silent. She always answers.
+- Not in v3, by his word: a day engine.
+
+## What v4 adds, one line each (SPEC_V4, 2026-09-26; his words: "this UI sucks", "i want ALL those features")
+
+- 0. Her face in the shell: a design pass with tokens, one header on every page, the avatar next to her name and beside her bubbles, the thread as a messaging app, three new pages cut from the same cloth; one accent, nothing lightened, phone width first.
+- 1. Her phone, live: one route for the whole panel, a drawn map of Portland with her places (pinned by a tap, typed, or one Open-Meteo geocode within 30 km), and a "listening to" line from her own taste, one paid call a day.
+- 2. The call face: three short looped clips of her (idle, listening, talking) made once from a master through Runway, approved like any clip, switched on the call by her audio level and his speech; a lip-synced face is reserved for v4.1.
+- 3. The first picture of us: when her photo line says he is in it, his reference photo rides as one more tagged reference; the row says `with_him`; the Images page, the outfit rule and the exports still leave him out.
+- 4. Her playlist and player on his Spotify: the songs she sends land in one private playlist made by the app, and play inside the chat through the Web Playback SDK on his account (a device named Avelie); a song he sends her is never added; the tokens never leave the Worker.
+- 5. The album: every picture she sent, with the place from the scene record at that time, the two-of-you pictures grouped, her clips beside the photos.
+- 6. Real texting rhythm: in real mode the dots start twenty seconds before a delayed reply lands, one notification when a reply held two minutes or more lands while the page is closed, and one button that turns her first texts on at 2 a day within quiet hours; the defaults still ship off.
+- 7. A memory you can see: read-only, from the same weights and scores she reads.
+- 8. The scene as a place: one picture of the place behind the chat (no person in it), a picker that is never empty, and the promotion merge fixed so an approved scene or relationship proposal takes what it carries and keeps the rest.
+- A1. The player through his account; A2. her own voice on ElevenLabs (calls and voice notes); A3. she sends clips from the chat with `[clip: ...]`, the way she sends a photo.
+- Still not in v4: a day engine, a retention hook of any kind, a change to who she is (the prefix moved once, for the CLIPS rule; PROMPT_VERSION stays `-p7`).
+ Nothing makes her unavailable, late on purpose or silent. She always answers.
 
 ## The cron jobs
 
@@ -93,7 +115,7 @@ Four jobs run inside the Worker on Cloudflare's clock (UTC). They deploy with th
 |---|---|---|
 | every day 07:00 | 3am EDT / 2am EST | backup: the full export to R2 `backups/avelie-<YYYY-MM-DD>.json`, the last 30 kept; then the v3 maintenance pass (stale weather cache, asks let go after `askLetGoDays`, tastings expired after 30 minutes, dead calls) |
 | Monday 13:00 | 9am EDT / 8am EST | drift check: five scenarios on the current performer, only when the Weekly drift check switch is on |
-| every 20 minutes | | her first texts: one decision per tick (off at 0 per day) |
+| every 20 minutes | | v4: the delayed replies that landed since the last tick (one notification for the batch, only for a reply held two minutes or more); then her first texts: one decision per tick (off at 0 per day) |
 | Monday 14:00 | 10am EDT / 9am EST | voiceprint: the week's numbers |
 
 ## Where the backups are
@@ -109,13 +131,16 @@ src/                the Worker (index.ts entry with fetch and scheduled, auth, a
                     vision, media, timeline, voiceprint, exportCharacter
                     v3: voicebank, corrections, imperfection, memory, wants, grounding, weather,
                     portraits, maintenance, calls, video, tastings, finetune, providers/runway
+                    v4: phone, places, callface, spotify, album, deliveries, providers/elevenlabs
 src/generated/      constitution.ts, built from canon/ by npm run build:canon; never hand-edit
-public/             the pages (index, state, model, images, timeline), css/, js/, images/masters/,
-                    icons/, manifest.webmanifest, sw.js
+public/             the pages (index, phone, album, memory, state, model, images, timeline), css/, js/
+                    (v4: nav with the avatar, phone, map, callface, player, album, memory,
+                    call_elevenlabs, vendor/), images/masters/, icons/, manifest.webmanifest, sw.js
 migrations/         0001_init.sql (schema), 0002_seed.sql (generated from canon/seed),
                     0003_messages_seq_unique.sql, 0004_life.sql, 0004b_push.sql, 0004c_voiceprint.sql,
                     0004d_media.sql, 0005_v3.sql (hand-written), 0005b_voicebank_seed.sql (generated
-                    from canon/seed/voicebank.json by scripts/build_voicebank.mjs)
+                    from canon/seed/voicebank.json by scripts/build_voicebank.mjs),
+                    0006_tasting_context.sql, 0007_his_face.sql, 0008_v4.sql (hand-written, additive)
 canon/              the frozen constitution, the seed JSON, the asset manifest, the reference docs
 scripts/            build_constitution, build_seed, build_voicebank, check_typography, verify_assets,
                     check_deploy, gen_vapid, finetune_run (Mac-side)

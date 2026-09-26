@@ -11,12 +11,16 @@
 import assert from "node:assert/strict";
 import { deflateSync } from "node:zlib";
 import {
-  BASE, DEV_ACTOR_EMAIL, EM_DASH, BAD_TYPOGRAPHY, PORT, STATE_DIR, api, fetchBytes, waitFor, Report, removeDir,
+  BASE, DEV_ACTOR_EMAIL, EM_DASH, BAD_TYPOGRAPHY, PORT, STATE_DIR, ROOT, api, fetchBytes, waitFor, Report, removeDir,
   ensureDevVars, runCommand, startWrangler, stopWrangler, sleep,
 } from "./helpers.mjs";
 
 const BOOT_TIMEOUT_MS = 90_000;
 const STATE_ARG = "tests/integration/.state";
+// v4 runs on its own fresh state (see scenariosV4): the stub image and video bytes are
+// blacklisted on the shared state by the v1 and v3 rejection checks.
+const STATE_ARG_V4 = "tests/integration/.state-v4";
+const STATE_DIR_V4 = STATE_DIR + "-v4";
 const STUB_ENV = { DEV_ACTOR_EMAIL, DEFAULT_PROVIDER: "stub", DEFAULT_IMAGE_PROVIDER: "stub" };
 
 const stamp = Date.now().toString(36);
@@ -2008,7 +2012,7 @@ async function scenariosV3(report) {
     assert.equal(again.json.code, "call_over");
   });
 
-  await report.check("callProvider off -> start 503; callProvider elevenlabs -> start 503 with detail reserved_v3_1", async () => {
+  await report.check("callProvider off -> start 503; callProvider elevenlabs without its key -> start 503 with detail elevenlabs (built in v4 A2, no longer reserved)", async () => {
     await settingsPut({ callProvider: "off" });
     const off = await api("POST", "/api/calls/start", { conversationId: callConv });
     assert.equal(off.status, 503, off.text);
@@ -2016,7 +2020,8 @@ async function scenariosV3(report) {
     await settingsPut({ callProvider: "elevenlabs" });
     const reserved = await api("POST", "/api/calls/start", { conversationId: callConv });
     assert.equal(reserved.status, 503, reserved.text);
-    assert.equal(reserved.json.detail, "reserved_v3_1");
+    assert.equal(reserved.json.code, "provider_not_configured");
+    assert.equal(reserved.json.detail, "elevenlabs");
     await settingsPut({ callProvider: "stub" });
   });
 
@@ -2920,6 +2925,24 @@ async function gateScenarios(report) {
     }
   });
 
+  await report.check("ACCESS_AUD set: the v4 routes and the place media path are gated too -> 401", async () => {
+    for (const path of V4_ROUTES_GET) {
+      const r = await api("GET", path);
+      assert.equal(r.status, 401, path + " -> " + r.status + " " + r.text.slice(0, 100));
+      assert.ok(!r.text.includes("refresh_token") && !r.text.includes("accessToken"), path + " leaked a token shape through the gate");
+    }
+    for (const path of V4_ROUTES_POST) {
+      const r = await api("POST", path, {});
+      assert.equal(r.status, 401, path + " -> " + r.status + " " + r.text.slice(0, 100));
+    }
+    const cb = await apiRaw("GET", "/api/spotify/callback?code=x&state=y");
+    assert.equal(cb.status, 401, "the callback is gated before the state is read: " + cb.text.slice(0, 100));
+    for (const path of ["/phone", "/album", "/memory", "/js/phone.js", "/js/player.js"]) {
+      const r = await api("GET", path);
+      assert.equal(r.status, 401, path + " -> " + r.status);
+    }
+  });
+
   await report.check("ACCESS_AUD set: v2 media paths, the timeline, the character export and the cron routes are gated -> 401", async () => {
     for (const path of ["/media/audio/m_nothing", "/media/inbox/m_nothing/0", "/media/library/md_nothing", "/api/timeline", "/api/export/character", "/api/export/character.md", "/api/drift", "/api/life", "/api/push/latest", "/sw.js", "/manifest.webmanifest"]) {
       const r = await api("GET", path);
@@ -2929,6 +2952,971 @@ async function gateScenarios(report) {
       const r = await api("POST", path, {});
       assert.equal(r.status, 401, path + " -> " + r.status + " " + r.text.slice(0, 100));
     }
+  });
+}
+
+// ------------------------------------------------------------------ v4 scenarios (SPEC_V4 sections 0 to 8, amendments A1 and A3)
+
+// Its own phase on a FRESH local state (main() applies 0001 to 0008 to a second directory
+// and boots with --var SPOTIFY_STUB:1): the stub image and video providers return the same
+// bytes on purpose, and the v1 and v3 blocks reject one photo and one clip so their
+// blacklist checks hold, which would blacklist every v4 photo and clip on the shared state.
+// Everything the block needs (a photo of him, a faded fact, her places) it makes itself,
+// on a fresh conversation, with the caps raised and every setting it touches put back.
+const V4_ROUTES_GET = ["/api/avatar", "/api/phone", "/api/places", "/api/callface", "/api/album", "/api/memory/map", "/api/spotify", "/api/spotify/connect", "/api/spotify/token", "/media/place/x"];
+const V4_ROUTES_POST = ["/api/places", "/api/places/pl_nothing/geocode", "/api/places/pl_nothing/picture", "/api/callface/make", "/api/spotify/disconnect", "/api/messages/m_nothing/spotify"];
+const V4_PAGES = ["/", "/phone", "/album", "/memory", "/state", "/model", "/images", "/timeline"];
+const V4_SCRIPTS = ["/js/api.js", "/js/nav.js", "/js/chat.js", "/js/bubbles.js", "/js/call.js", "/js/callface.js", "/js/phone.js", "/js/map.js", "/js/album.js", "/js/memory.js", "/js/images.js", "/js/model.js", "/js/state.js", "/js/timeline.js"];
+const V4_SETTINGS_TABLE = {
+  avatarAssetId: ["master-05", "master-02", "master-09"],
+  callFaceProvider: ["clips", "off", "hedra"],
+  callFaceSourceAssetId: ["master-00", "master-04", "master-6"],
+  hisFaceInPhotos: [true, false, "yes"],
+  spotifyEnabled: [false, true, "on"],
+  spotifyPlaylistId: ["", "37i9dQZF1DXcBWIGoYBM5M", "not a playlist id!"],
+  spotifyPlaylistName: ["songs from avelie", "her songs", "x".repeat(101)],
+  placeCostUsd: [0.08, 1, -1],
+  listeningLineEnabled: [true, false, 1],
+};
+const V4_AMENDMENT_TABLE = {
+  spotifyPlayer: ["sdk", "embed", "cast"],
+  elevenLabsModel: ["eleven_multilingual_v2", "eleven_turbo_v2_5", "x".repeat(61)],
+  elevenLabsTtsPricePer1kChars: [0.3, 1, -1],
+  videoMarkerEnabled: [true, false, "yes"],
+};
+
+// A fetch that never follows a redirect, for the two Spotify 302s.
+async function apiRaw(method, path, body) {
+  const init = { method, redirect: "manual", headers: {} };
+  if (body !== undefined) {
+    init.headers["content-type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  const res = await fetch(BASE + path, init);
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch { json = null; }
+  return { status: res.status, headers: res.headers, json, text };
+}
+
+// The audit row's `after`, as an object whether the route stored it as JSON text or not.
+function auditAfter(row) {
+  const v = row && (row.after ?? row.after_json ?? null);
+  if (typeof v === "string") {
+    try { return JSON.parse(v); } catch { return null; }
+  }
+  return v && typeof v === "object" ? v : null;
+}
+
+// Polls a clip to its candidate (the stub answers RUNNING once, SUCCEEDED after). A 422
+// blacklisted here means the stub's bytes were rejected earlier in this state: the v4 phase
+// runs on a fresh state for exactly that reason, and never rejects a clip itself.
+async function pollToCandidate(id) {
+  let last = null;
+  for (let i = 0; i < 8; i++) {
+    last = await api("POST", `/api/video/${id}/poll`);
+    if (last.status === 422) throw new Error("clip " + id + " blacklisted at poll: the stub mp4's hash was rejected earlier in this state; the v4 phase must run on a fresh state and never reject a clip (" + last.text.slice(0, 120) + ")");
+    if (last.status !== 200 || last.json.status !== "running") break;
+    await sleep(200);
+  }
+  assert.equal(last.status, 200, last.text);
+  assert.equal(last.json.status, "candidate", "the clip became a candidate: " + last.text.slice(0, 200));
+  return last.json.asset;
+}
+
+async function scenariosV4(report) {
+  const probe = await api("GET", "/api/avatar");
+  if (probe.status === 404) {
+    console.log("v4: GET /api/avatar -> 404 on this server; skipping the v4 block");
+    return;
+  }
+  const original = (await api("GET", "/api/settings")).json;
+  const restore = {};
+  for (const k of ["dailyCapUsd", "monthlyCapUsd", "avatarAssetId", "callFaceProvider", "callFaceSourceAssetId", "hisFaceInPhotos", "spotifyEnabled", "spotifyPlaylistId", "spotifyPlaylistName", "placeCostUsd", "listeningLineEnabled", "videoMarkerEnabled", "videoProvider", "weatherProvider", "herLat", "herLon", "replyDelayMode", "realDelayMaxMinutes", "timezone", "herFirstTextsPerDay", "herFirstQuietHours", "proposalsAutoApprove", "imageProvider", "callProvider", "elevenLabsAgentId"]) {
+    if (k in original) restore[k] = original[k];
+  }
+  await settingsPut({ dailyCapUsd: 200, monthlyCapUsd: 500, weatherProvider: "stub", videoProvider: "stub", callFaceProvider: "clips", listeningLineEnabled: false });
+  const conversationId = await newConversation("integration v4");
+  const ids = { him: null, usPhoto: null, aloneMessage: null, place: null, bench: null, faces: {}, clipMessage: null, clipAsset: null, delayed: null, firstText: null, spotifyState: null };
+
+  // ---------------------------------------------------------------- the settings table
+
+  await report.check("v4: PUT /api/settings accepts every v4 default and good value, refuses every bad value (the nine keys and the amendment's four)", async () => {
+    for (const [key, [def, good, bad]] of Object.entries({ ...V4_SETTINGS_TABLE, ...V4_AMENDMENT_TABLE })) {
+      const g = await api("PUT", "/api/settings", { [key]: good });
+      assert.equal(g.status, 200, key + " good: " + g.text);
+      assert.deepEqual(g.json[key], good, key + " good round-trips");
+      const b = await api("PUT", "/api/settings", { [key]: bad });
+      assert.equal(b.status, 400, key + " bad " + JSON.stringify(bad) + ": " + b.text);
+      const d = await api("PUT", "/api/settings", { [key]: def });
+      assert.equal(d.status, 200, key + " default: " + d.text);
+      assert.deepEqual(d.json[key], def, key + " default round-trips");
+    }
+    for (const k of Object.keys(V4_SETTINGS_TABLE)) assert.deepEqual(original[k], V4_SETTINGS_TABLE[k][0], k + " shipped as the default");
+    const zero = await api("PUT", "/api/settings", { imageProvider: "openai", placeCostUsd: 0 });
+    assert.equal(zero.status, 400, "the place price at 0 on a paid image provider is refused: " + zero.text);
+    assert.ok(/placeCostUsd/.test(zero.json.error), zero.json.error);
+    const s = (await api("GET", "/api/settings")).json;
+    assert.equal(s.placeCostUsd, 0.08);
+  });
+
+  // ---------------------------------------------------------------- the avatar (section 0)
+
+  await report.check("v4: GET /api/avatar -> master-05 with its file and focus; PUT master-02 round-trips; master-09 refused; back to 05", async () => {
+    assert.equal(probe.status, 200, probe.text);
+    assert.equal(probe.json.assetId, "master-05");
+    assert.ok(/^images\/masters\/05_.*\.png$/.test(probe.json.file), probe.json.file);
+    assert.deepEqual(probe.json.focus, [50, 24]);
+    await settingsPut({ avatarAssetId: "master-02" });
+    const two = await api("GET", "/api/avatar");
+    assert.equal(two.json.assetId, "master-02");
+    assert.ok(/^images\/masters\/02_/.test(two.json.file), two.json.file);
+    assert.deepEqual(two.json.focus, [58, 24]);
+    const bad = await api("PUT", "/api/settings", { avatarAssetId: "master-09" });
+    assert.equal(bad.status, 400, bad.text);
+    await settingsPut({ avatarAssetId: "master-05" });
+    assert.equal((await api("GET", "/api/avatar")).json.assetId, "master-05");
+    const master = await fetchBytes("/" + probe.json.file);
+    assert.equal(master.status, 200);
+    assert.ok(master.contentType.startsWith("image/png"), master.contentType);
+  });
+
+  // ---------------------------------------------------------------- her phone and her places (section 1)
+
+  await report.check("v4: GET /api/phone -> every key, the stub weather 68F clear, listening null with the switch off; with it on the stub's Stub Artist, and one listening run for two reads", async () => {
+    // The settings-table check above put every key back to its shipped default, listeningLineEnabled true among them.
+    await settingsPut({ listeningLineEnabled: false });
+    const r = await api("GET", "/api/phone");
+    assert.equal(r.status, 200, r.text);
+    for (const k of ["now", "tz", "localClock", "weekday", "timeOfDay", "where", "scene", "weather", "city", "outfit", "mood", "wants", "asks", "today", "listening", "places", "map"]) assert.ok(k in r.json, "missing " + k);
+    assert.ok(r.json.weather && r.json.weather.temp === 68 && r.json.weather.words === "clear", JSON.stringify(r.json.weather));
+    assert.equal(r.json.listening, null, "the switch is off");
+    assert.equal(r.json.city, "Portland, Maine");
+    assert.equal(r.json.map.view.w, 360);
+    assert.ok(r.json.map.outline.length >= 10);
+    assert.ok(Array.isArray(r.json.places));
+    const runsBefore = ((await api("GET", "/api/export")).json.modelRuns ?? []).filter((m) => m.kind === "listening").length;
+    await settingsPut({ listeningLineEnabled: true });
+    const on = await api("GET", "/api/phone");
+    assert.equal(on.status, 200, on.text);
+    assert.ok(on.json.listening && on.json.listening.artist === "Stub Artist" && on.json.listening.title === "Stub Song", JSON.stringify(on.json.listening));
+    assert.equal(on.json.listening.line, "stuck in my head since the shop");
+    assert.match(on.json.listening.day, /^\d{4}-\d{2}-\d{2}$/);
+    const again = await api("GET", "/api/phone");
+    assert.equal(again.json.listening.artist, "Stub Artist");
+    const runsAfter = ((await api("GET", "/api/export")).json.modelRuns ?? []).filter((m) => m.kind === "listening").length;
+    assert.equal(runsAfter - runsBefore, 1, "one call a day, cached on the second read");
+    await settingsPut({ listeningLineEnabled: false });
+  });
+
+  await report.check("v4: POST /api/places -> 201; PUT lat/lon -> stored as owner; one coordinate -> 400; geocode on the stub -> 404 no_match (Stubtown is not near Portland); with her coordinates at Stubtown -> 200 openmeteo; restored", async () => {
+    const created = await api("POST", "/api/places", { title: "integration place one", detail: "the first pin" });
+    assert.equal(created.status, 201, created.text);
+    ids.place = created.json.id;
+    assert.equal(created.json.title, "integration place one");
+    assert.equal(created.json.lat, null);
+    assert.equal(created.json.picture, false);
+    assert.equal(created.json.active, true);
+    assert.ok(!("picture_key" in created.json), "never the R2 key");
+    const pinned = await api("PUT", `/api/places/${ids.place}`, { lat: 43.66, lon: -70.25 });
+    assert.equal(pinned.status, 200, pinned.text);
+    assert.equal(pinned.json.lat, 43.66);
+    assert.equal(pinned.json.lon, -70.25);
+    assert.equal(pinned.json.geocoded_by, "owner");
+    const half = await api("PUT", `/api/places/${ids.place}`, { lat: 43.7 });
+    assert.equal(half.status, 400, half.text);
+    const far = await api("PUT", `/api/places/${ids.place}`, { lat: 91, lon: 0 });
+    assert.equal(far.status, 400, far.text);
+    const mapped = await api("PUT", `/api/places/${ids.place}`, { lat: 43.661, lon: -70.251, geocodedBy: "map" });
+    assert.equal(mapped.json.geocoded_by, "map");
+    const miss = await api("POST", `/api/places/${ids.place}/geocode`);
+    assert.equal(miss.status, 404, miss.text);
+    assert.equal(miss.json.code, "no_match");
+    await settingsPut({ herLat: 40.7, herLon: -74.0 });
+    const hit = await api("POST", `/api/places/${ids.place}/geocode`);
+    assert.equal(hit.status, 200, hit.text);
+    assert.equal(hit.json.lat, 40.7);
+    assert.equal(hit.json.lon, -74.0);
+    assert.equal(hit.json.geocoded_by, "openmeteo");
+    await settingsPut({ herLat: original.herLat, herLon: original.herLon });
+    const list = await api("GET", "/api/places");
+    assert.equal(list.status, 200, list.text);
+    assert.ok(list.json.places.some((p) => p.id === ids.place));
+    const dup = await api("POST", "/api/places", { title: "  Integration   Place One " });
+    assert.equal(dup.status, 201, dup.text);
+    assert.equal(dup.json.id, ids.place, "one row per normalised title");
+    const missing = await api("PUT", "/api/places/pl_nothing", { lat: 1, lon: 1 });
+    assert.equal(missing.status, 404);
+  });
+
+  await report.check("v4: a place thread through POST /api/life/threads shows in GET /api/places after the next read; an edit of the thread keeps the row with the new thread_id", async () => {
+    const t = await api("POST", "/api/life/threads", { kind: "place", title: "the laundromat on 9th", detail: "fluorescent, one working dryer" });
+    assert.equal(t.status, 201, t.text);
+    const list = await api("GET", "/api/places");
+    const row = list.json.places.find((p) => p.title === "the laundromat on 9th");
+    assert.ok(row, "the thread's place row: " + JSON.stringify(list.json.places.map((p) => p.title)));
+    assert.equal(row.thread_id, t.json.id);
+    assert.equal(row.active, true);
+    assert.equal(row.detail, "fluorescent, one working dryer");
+    const edited = await api("PUT", `/api/life/threads/${t.json.id}`, { detail: "one working dryer, a new sign" });
+    assert.equal(edited.status, 200, edited.text);
+    assert.notEqual(edited.json.id, t.json.id, "threads are versioned");
+    const after = (await api("GET", "/api/places")).json.places.find((p) => p.title === "the laundromat on 9th");
+    assert.equal(after.id, row.id, "the same place row");
+    assert.equal(after.thread_id, edited.json.id, "the head moved to the new version");
+    const dropped = await api("DELETE", `/api/life/threads/${edited.json.id}`);
+    assert.equal(dropped.status, 200, dropped.text);
+    const gone = (await api("GET", "/api/places")).json.places.find((p) => p.id === row.id);
+    assert.ok(gone, "a dropped thread keeps its row");
+    assert.equal(gone.active, false);
+    const phone = await api("GET", "/api/phone");
+    assert.ok(phone.json.places.some((p) => p.id === row.id && p.active === false));
+  });
+
+  // ---------------------------------------------------------------- the call face (section 2)
+
+  await report.check("v4: callFaceProvider clips, videoProvider stub: make idle -> 202 role callface; a second idle while generating -> 409; poll running then candidate with notes callface:idle; /media/:id video/mp4 with Range 206; approve -> clips.idle set, ready false", async () => {
+    const gen = await api("POST", "/api/callface/make", { kind: "idle" });
+    assert.equal(gen.status, 202, gen.text);
+    assert.equal(gen.json.asset.role, "callface");
+    assert.equal(gen.json.asset.approval_status, "generating");
+    assert.ok(/\|kind:idle$/.test(gen.json.asset.notes), gen.json.asset.notes);
+    const busy = await api("POST", "/api/callface/make", { kind: "idle" });
+    assert.equal(busy.status, 409, busy.text);
+    assert.equal(busy.json.code, "in_progress");
+    const state = await api("GET", "/api/callface");
+    assert.equal(state.status, 200, state.text);
+    assert.equal(state.json.provider, "clips");
+    assert.equal(state.json.source, "master-00");
+    assert.ok(state.json.generating.some((a) => a.id === gen.json.asset.id), "listed under generating");
+    const first = await api("POST", `/api/video/${gen.json.asset.id}/poll`);
+    assert.equal(first.status, 200, first.text);
+    assert.equal(first.json.status, "running");
+    const candidate = await pollToCandidate(gen.json.asset.id);
+    assert.equal(candidate.role, "callface");
+    assert.equal(candidate.notes, "callface:idle");
+    assert.match(candidate.sha256, /^[0-9a-f]{64}$/);
+    const media = await fetchBytes(`/media/${candidate.id}`);
+    assert.equal(media.status, 200);
+    assert.ok(media.contentType.startsWith("video/mp4"), media.contentType);
+    assert.equal(String.fromCharCode(...media.bytes.slice(4, 8)), "ftyp");
+    const range = await fetch(BASE + `/media/${candidate.id}`, { headers: { range: "bytes=0-15" } });
+    assert.equal(range.status, 206);
+    assert.ok((range.headers.get("content-range") || "").startsWith("bytes 0-15/"));
+    const listed = (await api("GET", "/api/callface")).json;
+    assert.ok(listed.candidates.some((a) => a.id === candidate.id));
+    const ok = await api("POST", `/api/images/${candidate.id}/decide`, { decision: "approve", note: "good" });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(ok.json.asset.role, "callface");
+    assert.equal(ok.json.asset.approval_status, "approved");
+    assert.equal(ok.json.asset.notes, "callface:idle | good");
+    ids.faces.idle = candidate.id;
+    const after = (await api("GET", "/api/callface")).json;
+    assert.equal(after.clips.idle && after.clips.idle.id, candidate.id);
+    assert.equal(after.clips.listening, null);
+    assert.equal(after.ready, false);
+    const assets = (await api("GET", "/api/assets")).json;
+    assert.ok(assets.callface.some((a) => a.id === candidate.id), "GET /api/assets lists it under callface");
+    assert.equal(assets.candidates.filter((a) => a.role === "callface").length, 0);
+  });
+
+  await report.check("v4: make listening and talking, approve -> ready true; a second idle candidate approved -> the first is archived; the set costs three clips at the clip price", async () => {
+    const usageBefore = (await api("GET", "/api/usage")).json.todayUsd;
+    for (const kind of ["listening", "talking"]) {
+      const gen = await api("POST", "/api/callface/make", { kind });
+      assert.equal(gen.status, 202, kind + ": " + gen.text);
+      const candidate = await pollToCandidate(gen.json.asset.id);
+      assert.equal(candidate.notes, "callface:" + kind);
+      const ok = await api("POST", `/api/images/${candidate.id}/decide`, { decision: "approve" });
+      assert.equal(ok.status, 200, ok.text);
+      ids.faces[kind] = candidate.id;
+    }
+    const ready = (await api("GET", "/api/callface")).json;
+    assert.equal(ready.ready, true);
+    for (const kind of ["idle", "listening", "talking"]) assert.equal(ready.clips[kind].id, ids.faces[kind]);
+    const usageAfter = (await api("GET", "/api/usage")).json.todayUsd;
+    assert.ok(Math.abs((usageAfter - usageBefore) - 0.5) < 0.005, "two clips at 0.25: " + (usageAfter - usageBefore));
+    const again = await api("POST", "/api/callface/make", { kind: "idle" });
+    assert.equal(again.status, 202, again.text);
+    const second = await pollToCandidate(again.json.asset.id);
+    const ok = await api("POST", `/api/images/${second.id}/decide`, { decision: "approve" });
+    assert.equal(ok.status, 200, ok.text);
+    const after = (await api("GET", "/api/callface")).json;
+    assert.equal(after.clips.idle.id, second.id, "the new idle");
+    assert.equal(after.ready, true);
+    const assets = (await api("GET", "/api/assets")).json;
+    assert.ok(assets.archive.some((a) => a.id === ids.faces.idle), "the first idle went to the archive");
+    assert.ok(!assets.callface.some((a) => a.id === ids.faces.idle));
+    assert.equal(assets.callface.length, 3, "one approved clip per kind");
+    ids.faces.idle = second.id;
+    const sys = await api("GET", "/api/system");
+    assert.equal(sys.json.counts.callFaceClips, 3);
+  });
+
+  await report.check("v4: callFaceProvider lipsync -> make 503 detail reserved_v4_1, GET /api/callface provider lipsync ready false; off -> 503 detail off; a bad kind -> 400; restored to clips", async () => {
+    await settingsPut({ callFaceProvider: "lipsync" });
+    const reserved = await api("POST", "/api/callface/make", { kind: "idle" });
+    assert.equal(reserved.status, 503, reserved.text);
+    assert.equal(reserved.json.code, "provider_not_configured");
+    assert.equal(reserved.json.detail, "reserved_v4_1");
+    const state = await api("GET", "/api/callface");
+    assert.equal(state.json.provider, "lipsync");
+    assert.equal(state.json.ready, false, "reserved: never ready even with three clips");
+    await settingsPut({ callFaceProvider: "off" });
+    const off = await api("POST", "/api/callface/make", { kind: "idle" });
+    assert.equal(off.status, 503, off.text);
+    assert.equal(off.json.detail, "off");
+    assert.equal((await api("GET", "/api/callface")).json.provider, "off");
+    await settingsPut({ callFaceProvider: "clips" });
+    const bad = await api("POST", "/api/callface/make", { kind: "dancing" });
+    assert.equal(bad.status, 400, bad.text);
+    assert.equal((await api("GET", "/api/callface")).json.ready, true);
+  });
+
+  // ---------------------------------------------------------------- him in the picture (section 3)
+
+  // ---------------------------------------------------------------- A2: her own voice on a call (the [[ELEVEN]] stub)
+
+  await report.check("v4 (A2): callProvider elevenlabs with no agent id -> start 503 provider_not_configured detail elevenlabs; with an agent id on the stub -> 201 transport webrtc, clientSecret stub-token, overrides carrying her instructions; GET /api/calls/:id and the audit carry no credential; end -> 200; restored", async () => {
+    await settingsPut({ callProvider: "elevenlabs", elevenLabsAgentId: "" });
+    const none = await api("POST", "/api/calls/start", { conversationId });
+    assert.equal(none.status, 503, none.text);
+    assert.equal(none.json.code, "provider_not_configured");
+    assert.equal(none.json.detail, "elevenlabs");
+    await settingsPut({ elevenLabsAgentId: "agent_stub" });
+    const start = await api("POST", "/api/calls/start", { conversationId });
+    assert.equal(start.status, 201, start.text);
+    assert.equal(start.json.provider, "elevenlabs");
+    assert.equal(start.json.transport, "webrtc");
+    assert.equal(start.json.clientSecret, "stub-token");
+    assert.equal(start.json.agentId, "agent_stub");
+    const prompt = start.json.overrides && start.json.overrides.agent && start.json.overrides.agent.prompt;
+    assert.ok(prompt && typeof prompt.prompt === "string" && prompt.prompt.length > 0, "the overrides carry her instructions: " + start.text.slice(0, 200));
+    const row = await api("GET", `/api/calls/${start.json.call.id}`);
+    assert.equal(row.status, 200, row.text);
+    assert.ok(!/stub-token/.test(row.text), "the call read carries no credential");
+    const audit = await api("GET", "/api/audit?limit=30");
+    assert.equal(audit.status, 200, audit.text);
+    assert.ok(!/stub-token/.test(audit.text), "no audit row carries the credential");
+    const end = await api("POST", `/api/calls/${start.json.call.id}/end`, { reason: "ended", segments: [], seconds: 5 });
+    assert.equal(end.status, 200, end.text);
+    await settingsPut({ callProvider: restore.callProvider ?? "stub", elevenLabsAgentId: restore.elevenLabsAgentId ?? "" });
+  });
+
+  await report.check("v4: a photo of him on file and a description that names him -> the candidate row with_him 1, the audit's after.withHim true; the Images page lists it with with_him 1; the picture never names him on the row", async () => {
+    const form = new FormData();
+    form.set("photo", new Blob([tinyPng()], { type: "image/png" }), "him.png");
+    const up = await apiForm("POST", "/api/him/photos", form);
+    assert.equal(up.status, 201, up.text);
+    ids.him = up.json.id;
+    const t = await turn(conversationId, "[[PHOTO]] one of us", key("v4-photo-us"));
+    assert.equal(t.status, 200, t.text);
+    assert.equal(t.json.imagePending, true);
+    const messageId = t.json.assistantMessage.id;
+    const gen = await api("POST", "/api/images/generate", { conversationId, messageId, description: "selfie of the two of us at the counter, my head on your shoulder" });
+    assert.equal(gen.status, 200, gen.text);
+    assert.equal(gen.json.asset.approval_status, "candidate");
+    assert.equal(Number(gen.json.asset.with_him), 1, "with_him on the row: " + JSON.stringify(gen.json));
+    ids.usPhoto = gen.json.asset.id;
+    const assets = (await api("GET", "/api/assets")).json;
+    const listed = assets.candidates.find((a) => a.id === gen.json.asset.id);
+    assert.ok(listed, "listed under candidates");
+    assert.equal(Number(listed.with_him), 1);
+    assert.ok(!JSON.stringify(assets).includes("him/"), "his own photo is never on the Images page");
+    const audit = (await auditRows(100)).find((e) => e.action === "image.generate" && e.entity_id === gen.json.asset.id);
+    assert.ok(audit, "audited image.generate");
+    const after = auditAfter(audit);
+    assert.ok(after && after.withHim === true, "after.withHim true: " + JSON.stringify(after));
+    const m = await api("GET", `/api/messages/${messageId}`);
+    assert.equal(m.json.image_id, gen.json.asset.id);
+    assert.equal(m.json.image_status, "ready");
+    assert.ok(!(m.json.flags_json || "").includes("him_not_on_file"), "no flag: his photo rode along");
+    const ok = await api("POST", `/api/images/${gen.json.asset.id}/decide`, { decision: "approve" });
+    assert.equal(ok.status, 200, ok.text);
+    const pkg = await api("GET", "/api/export/character");
+    assert.equal(pkg.status, 200, pkg.text);
+    assert.ok(!pkg.json.images.some((i) => i.id === gen.json.asset.id), "a with-him picture never enters the character package");
+    assert.ok(!JSON.stringify(pkg.json).includes("him/"));
+  });
+
+  await report.check("v4: the same description with no photo of him on file -> with_him 0 and him_not_on_file on the message; hisFaceInPhotos false -> with_him 0 and no flag; restored", async () => {
+    const del = await api("DELETE", `/api/him/photos/${ids.him}`);
+    assert.equal(del.status, 204, del.text);
+    const t = await turn(conversationId, "[[PHOTO]] one more", key("v4-photo-nohim"));
+    assert.equal(t.status, 200, t.text);
+    const messageId = t.json.assistantMessage.id;
+    const gen = await api("POST", "/api/images/generate", { conversationId, messageId, description: "my head on your shoulder, the ferry lights behind us" });
+    assert.equal(gen.status, 200, gen.text);
+    assert.equal(Number(gen.json.asset.with_him), 0);
+    const m = await api("GET", `/api/messages/${messageId}`);
+    const flags = JSON.parse(m.json.flags_json || "[]");
+    assert.ok(flags.some((f) => f.code === "him_not_on_file"), "him_not_on_file on the message: " + m.json.flags_json);
+    ids.aloneMessage = messageId;
+    const form = new FormData();
+    form.set("photo", new Blob([tinyPng()], { type: "image/png" }), "him.png");
+    const up = await apiForm("POST", "/api/him/photos", form);
+    assert.equal(up.status, 201, up.text);
+    ids.him = up.json.id;
+    await settingsPut({ hisFaceInPhotos: false });
+    const t2 = await turn(conversationId, "[[PHOTO]] again", key("v4-photo-off"));
+    const gen2 = await api("POST", "/api/images/generate", { conversationId, messageId: t2.json.assistantMessage.id, description: "selfie of the two of us" });
+    assert.equal(gen2.status, 200, gen2.text);
+    assert.equal(Number(gen2.json.asset.with_him), 0, "the switch is off");
+    const m2 = await api("GET", `/api/messages/${t2.json.assistantMessage.id}`);
+    assert.ok(!(m2.json.flags_json || "").includes("him_"), "no him flag with the switch off: " + m2.json.flags_json);
+    await settingsPut({ hisFaceInPhotos: true });
+    const owner = await api("POST", "/api/images/generate", { conversationId, description: "the harbour at dusk, the owner's own picture" });
+    assert.equal(owner.status, 200, owner.text);
+    assert.equal(owner.json.asset.message_id, null, "an owner picture has no message");
+  });
+
+  // ---------------------------------------------------------------- Spotify (section 4 and A1)
+
+  await report.check("v4: GET /api/spotify -> configured (the stub), not connected; GET /api/spotify/token -> 403 not_connected; connect -> 302 to accounts.spotify.com with the seven scopes and a state; a wrong state -> 403; no body carries refresh_token", async () => {
+    const status = await api("GET", "/api/spotify");
+    assert.equal(status.status, 200, status.text);
+    assert.equal(status.json.configured, true, "SPOTIFY_STUB:1 while ACCESS_AUD is empty");
+    assert.equal(status.json.connected, false);
+    assert.equal(status.json.playlist, null);
+    assert.equal(status.json.playlistName, "songs from avelie");
+    const token = await api("GET", "/api/spotify/token");
+    assert.equal(token.status, 403, token.text);
+    assert.equal(token.json.code, "not_connected");
+    const connect = await apiRaw("GET", "/api/spotify/connect");
+    assert.equal(connect.status, 302, connect.text);
+    const location = new URL(connect.headers.get("location"));
+    assert.equal(location.origin + location.pathname, "https://accounts.spotify.com/authorize");
+    assert.equal(location.searchParams.get("response_type"), "code");
+    assert.deepEqual(location.searchParams.get("scope").split(" "), ["playlist-modify-private", "playlist-read-private", "streaming", "user-read-email", "user-read-private", "user-read-playback-state", "user-modify-playback-state"]);
+    // The origin as the Worker sees it (wrangler dev's proxy hands request.url without the port;
+    // in production it is the https hostname): the host and the path are what must match, and the
+    // callback derives the same string for the token exchange.
+    const redirect = new URL(location.searchParams.get("redirect_uri"));
+    assert.equal(redirect.hostname, new URL(BASE).hostname, "the redirect URI is on this origin");
+    assert.equal(redirect.pathname, "/api/spotify/callback");
+    ids.spotifyState = location.searchParams.get("state");
+    assert.match(ids.spotifyState, /^[0-9a-f]{32}$/);
+    const wrong = await apiRaw("GET", "/api/spotify/callback?code=stub&state=" + "0".repeat(32));
+    assert.equal(wrong.status, 302, wrong.text);
+    assert.equal(wrong.headers.get("location"), "/model?spotify=state_mismatch#spotify", "a refusal lands on the Model page with its code, never a raw error body");
+    const cancelled = await apiRaw("GET", "/api/spotify/callback?error=access_denied&state=" + "0".repeat(32));
+    assert.equal(cancelled.status, 302, cancelled.text);
+    assert.equal(cancelled.headers.get("location"), "/model?spotify=access_denied#spotify", "Cancel on Spotify's page");
+    const still = await api("GET", "/api/spotify");
+    assert.equal(still.json.connected, false, "a mismatch stores nothing");
+    for (const r of [status, token, connect, wrong, cancelled, still]) assert.ok(!r.text.includes("refresh_token"), "a Spotify body carried refresh_token");
+    const audit = (await auditRows(50)).filter((e) => /^spotify\./.test(e.action));
+    assert.ok(audit.some((e) => e.action === "spotify.connect"));
+    assert.ok(!JSON.stringify(audit).includes(ids.spotifyState), "the state is not in the audit");
+  });
+
+  await report.check("v4: the callback with the right state -> 302 to /model#spotify; connected as Stub Listener, playlist stubplaylist ok, spotifyEnabled true; the token route answers an access token, never a refresh token, never audited", async () => {
+    // The state was cleared by the failed callback above (single use): a fresh Connect first.
+    const connect = await apiRaw("GET", "/api/spotify/connect");
+    assert.equal(connect.status, 302, connect.text);
+    const state = new URL(connect.headers.get("location")).searchParams.get("state");
+    const done = await apiRaw("GET", "/api/spotify/callback?code=stub&state=" + state);
+    assert.equal(done.status, 302, done.text);
+    assert.equal(done.headers.get("location"), "/model#spotify");
+    const status = await api("GET", "/api/spotify");
+    assert.equal(status.json.connected, true, status.text);
+    assert.equal(status.json.displayName, "Stub Listener");
+    assert.equal(status.json.playlistId, "stubplaylist");
+    assert.deepEqual(status.json.playlist, { ok: true, name: "songs from avelie" });
+    const s = (await api("GET", "/api/settings")).json;
+    assert.equal(s.spotifyEnabled, true);
+    assert.equal(s.spotifyPlaylistId, "stubplaylist");
+    const replay = await apiRaw("GET", "/api/spotify/callback?code=stub&state=" + state);
+    assert.equal(replay.status, 302, "the state is single use: " + replay.text);
+    assert.equal(replay.headers.get("location"), "/model?spotify=state_mismatch#spotify");
+    assert.equal((await api("GET", "/api/spotify")).json.connected, true, "a replayed callback never disconnects him");
+    const auditBefore = (await auditRows(200)).length;
+    const token = await api("GET", "/api/spotify/token");
+    assert.equal(token.status, 200, token.text);
+    assert.equal(typeof token.json.accessToken, "string");
+    assert.equal(token.json.premium, true);
+    assert.equal(token.json.deviceName, "Avelie");
+    assert.equal(token.json.player, "sdk");
+    assert.deepEqual(Object.keys(token.json).sort(), ["accessToken", "deviceName", "expiresAt", "player", "premium"]);
+    assert.ok(!token.text.includes("refresh"), "never a refresh token");
+    const auditAfterCount = (await auditRows(200)).length;
+    assert.equal(auditAfterCount, auditBefore, "the token route is never audited");
+    for (const r of [status, done, token]) assert.ok(!r.text.includes("refresh_token"));
+    const sys = await api("GET", "/api/system");
+    assert.equal(sys.json.counts.spotifyConnected, 1);
+    assert.equal(sys.json.providerKeys.spotify, true);
+  });
+
+  await report.check("v4: [[SONG]] -> song_json stored and spotify_status pending, then added within 10 s with trackUrl and uri; the same song again -> already; POST /api/messages/:id/spotify by hand; spotifyEnabled false -> off; restored", async () => {
+    const r = await turn(conversationId, "[[SONG]] send me something", key("v4-song"));
+    assert.equal(r.status, 200, r.text);
+    const m = r.json.assistantMessage;
+    assert.equal(typeof m.song_json, "string");
+    assert.equal(m.spotify_status, "pending", JSON.stringify(m.spotify_status));
+    const added = await waitFor("the song to be added", async () => {
+      const x = await api("GET", `/api/messages/${m.id}`);
+      return x.json && x.json.spotify_status === "added" ? x.json : null;
+    }, 10_000, 300);
+    const song = JSON.parse(added.song_json);
+    assert.equal(song.trackUrl, "https://open.spotify.com/track/stubtrack");
+    assert.equal(song.uri, "spotify:track:stubtrack");
+    assert.equal(song.artist, "Some Artist");
+    const again = await turn(conversationId, "[[SONG]] the same one", key("v4-song-again"));
+    assert.equal(again.status, 200, again.text);
+    const dup = await waitFor("the duplicate to be noticed", async () => {
+      const x = await api("GET", `/api/messages/${again.json.assistantMessage.id}`);
+      return x.json && x.json.spotify_status && x.json.spotify_status !== "pending" ? x.json : null;
+    }, 10_000, 300);
+    assert.equal(dup.spotify_status, "already");
+    const byHand = await api("POST", `/api/messages/${m.id}/spotify`);
+    assert.equal(byHand.status, 200, byHand.text);
+    assert.equal(byHand.json.status, "already", "the track is on the playlist already");
+    const noSong = await api("POST", `/api/messages/${r.json.userMessage.id}/spotify`);
+    assert.ok([400, 404].includes(noSong.status), "his message carries no song: " + noSong.text);
+    const list = await api("GET", `/api/conversations/${conversationId}/messages?channel=story`);
+    assert.ok(list.json.some((x) => x.id === m.id && (x.spotify_status === "added" || x.spotify_status === "already")), "the rows carry spotify_status (the by-hand add above wrote already on it)");
+    await settingsPut({ spotifyEnabled: false });
+    const off = await turn(conversationId, "[[SONG]] with it off", key("v4-song-off"));
+    assert.equal(off.status, 200, off.text);
+    assert.equal(off.json.assistantMessage.spotify_status, null, "no pending status with the playlist off");
+    const offRow = await api("GET", `/api/messages/${off.json.assistantMessage.id}`);
+    assert.ok(offRow.json.spotify_status === null || offRow.json.spotify_status === "off", "off: " + offRow.json.spotify_status);
+    const byHandOff = await api("POST", `/api/messages/${off.json.assistantMessage.id}/spotify`);
+    assert.equal(byHandOff.json.status, "off");
+    await settingsPut({ spotifyEnabled: true });
+  });
+
+  // ---------------------------------------------------------------- the album (section 5)
+
+  await report.check("v4: GET /api/album -> the pictures she sent with their dates and the two-of-you picture under group us; the owner-fired picture absent; group approved and candidates; nextBefore null under the limit; a bad group 400", async () => {
+    const all = await api("GET", "/api/album");
+    assert.equal(all.status, 200, all.text);
+    const ids2 = all.json.items.map((i) => i.id);
+    assert.ok(ids2.includes(ids.usPhoto), "the with-him picture is in");
+    assert.ok(all.json.items.every((i) => i.messageId), "every item has a message behind it");
+    assert.equal(all.json.nextBefore, null);
+    for (const i of all.json.items) assert.deepEqual(Object.keys(i).sort(), ["at", "bytes", "conversationId", "description", "id", "kind", "messageId", "place", "provider", "sceneStatus", "status", "withHim"]);
+    const us = await api("GET", "/api/album?group=us");
+    assert.deepEqual(us.json.items.map((i) => i.id), [ids.usPhoto]);
+    assert.equal(us.json.items[0].withHim, true);
+    assert.equal(us.json.items[0].status, "approved");
+    assert.equal(us.json.items[0].conversationId, conversationId);
+    const approved = await api("GET", "/api/album?group=approved");
+    assert.ok(approved.json.items.every((i) => i.status === "approved"));
+    const candidates = await api("GET", "/api/album?group=candidates");
+    assert.ok(candidates.json.items.every((i) => i.status === "candidate"));
+    assert.ok(candidates.json.items.length >= 1, "the no-him candidate");
+    assert.ok(!JSON.stringify(all.json).includes("candidates/") && !JSON.stringify(all.json).includes("him/"), "never an R2 key");
+    const one = await api("GET", "/api/album?limit=1");
+    assert.equal(one.json.items.length, 1);
+    assert.equal(typeof one.json.nextBefore, "string", "a full page pages");
+    const next = await api("GET", "/api/album?limit=1&before=" + encodeURIComponent(one.json.nextBefore));
+    assert.ok(next.json.items.length === 0 || next.json.items[0].id !== one.json.items[0].id);
+    const bad = await api("GET", "/api/album?group=mine");
+    assert.equal(bad.status, 400, bad.text);
+  });
+
+  // ---------------------------------------------------------------- deliveries and her first texts (section 6)
+
+  await report.check("v4: real mode with a busy routine now -> the reply carries deliverAt in the future and pushed_at null; once it lands, the */20 cron stamps pushed_at (held under two minutes: stamped, never pushed); a second tick changes nothing", async () => {
+    const routine = await api("POST", "/api/life/threads", { kind: "routine", title: "the shop", schedule_json: JSON.stringify({ tz: "UTC", blocks: [{ days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "23:59", label: "at work" }] }) });
+    assert.equal(routine.status, 201, routine.text);
+    await settingsPut({ replyDelayMode: "real", realDelayMaxMinutes: 1, timezone: "UTC" });
+    let reply;
+    try {
+      const r = await turn(conversationId, "real mode, at work", key("v4-real"));
+      assert.equal(r.status, 200, r.text);
+      assert.equal(typeof r.json.deliverAt, "string", "deliverAt: " + JSON.stringify(r.json.deliverAt));
+      const at = Date.parse(r.json.deliverAt);
+      assert.ok(at > Date.now(), "in the future");
+      assert.ok(at - Date.now() <= 62_000, "within the one-minute cap");
+      reply = r.json.assistantMessage;
+      assert.ok(!reply.pushed_at, "pushed_at null at first");
+      ids.delayed = reply.id;
+      const waitMs = Math.max(0, at - Date.now() + 1_500);
+      await sleep(waitMs);
+      const tick = await scheduledCron("*/20 * * * *");
+      assert.equal(tick.status, 200, tick.text);
+      const stamped = await waitFor("pushed_at on the delayed reply", async () => {
+        const m = await api("GET", `/api/messages/${reply.id}`);
+        return m.json && typeof m.json.pushed_at === "string" ? m.json : null;
+      }, 10_000, 300);
+      const firstStamp = stamped.pushed_at;
+      await sleep(1_100);
+      const tick2 = await scheduledCron("*/20 * * * *");
+      assert.equal(tick2.status, 200, tick2.text);
+      const again = await api("GET", `/api/messages/${reply.id}`);
+      assert.equal(again.json.pushed_at, firstStamp, "a second tick changes nothing");
+      const latest = await api("GET", "/api/push/latest");
+      assert.equal(latest.status, 200, latest.text);
+      // Held under two minutes (realDelayMaxMinutes 1), so it was stamped, never pushed; the
+      // spec: "a never-pushed reply never" is the notification's text.
+      assert.notEqual(latest.json.messageId, reply.id, "a stamped but never-pushed reply is never the notification's text");
+    } finally {
+      await settingsPut({ replyDelayMode: "instant", realDelayMaxMinutes: original.realDelayMaxMinutes, timezone: original.timezone });
+      const d = await api("DELETE", `/api/life/threads/${routine.json.id}`);
+      assert.equal(d.status, 200, d.text);
+    }
+    const instant = await turn(conversationId, "instant again", key("v4-instant"));
+    assert.equal(instant.json.deliverAt, null);
+  });
+
+  await report.check("v4: herFirstTextsPerDay 2 through PUT settings, the waking window about to close -> POST /api/herfirst/run sends one first text with no ask leading it; GET /api/push/latest answers it ahead of the delayed reply; restored to 0", async () => {
+    const now = new Date();
+    const quietStart = new Date(now.getTime() + 25 * 60_000);
+    const quietEnd = new Date(now.getTime() - 5 * 60_000);
+    await settingsPut({ timezone: "UTC", herFirstTextsPerDay: 2, herFirstQuietHours: `${hhmm(quietStart)}-${hhmm(quietEnd)}` });
+    const conv = await newConversation("integration v4 her first");
+    try {
+      const life = await api("GET", "/api/life?status=active");
+      for (const t of life.json.threads.filter((x) => x.schedule_json)) await api("DELETE", `/api/life/threads/${t.id}`);
+      const r = await api("POST", "/api/herfirst/run", { force: true });
+      assert.equal(r.status, 200, r.text);
+      const list = await api("GET", `/api/conversations/${conv}/messages?channel=story&includePending=1`);
+      assert.equal(list.json.length, 1, "one first text: " + r.text.slice(0, 300));
+      const m = list.json[0];
+      assert.equal(m.reply_to_id, null);
+      assert.ok(m.content.trim().length > 0);
+      assert.ok(!/\?\s*$/.test(m.content.split("\n")[0]) || !/still|about/.test(m.content), "no unanswered ask leads it: " + m.content);
+      const flags = JSON.parse(m.flags_json || "[]");
+      assert.ok(!flags.some((f) => f.code === "ask_nag" || f.code === "dependency_hook"), m.flags_json);
+      assert.ok(/skip/.test(JSON.stringify(r.json).toLowerCase()), "the push is reported skipped (no VAPID keys)");
+      ids.firstText = m.id;
+      const latest = await api("GET", "/api/push/latest");
+      assert.equal(latest.json.messageId, m.id, "a fresh first text comes ahead of the stamped delayed reply");
+      assert.equal(latest.json.text, m.content);
+    } finally {
+      await settingsPut({ timezone: original.timezone, herFirstTextsPerDay: original.herFirstTextsPerDay, herFirstQuietHours: original.herFirstQuietHours });
+    }
+    const s = (await api("GET", "/api/settings")).json;
+    assert.equal(s.herFirstTextsPerDay, 0, "her first texts ship off");
+  });
+
+  // ---------------------------------------------------------------- the memory map (section 7)
+
+  await report.check("v4: GET /api/memory/map -> facts with a phase; a fact weighted 0.2 and untouched for 40 days is faded, after Remind her vivid; sealed carries her seeded untold facts by subject with no text; keptToday empty with auto-keep off, one row after a [[FACT]] turn with it on; restored", async () => {
+    const t = await turn(conversationId, "[[WEIGHT:his cousin plays drums|0.2]] noted", key("v4-weight"));
+    assert.equal(t.status, 200, t.text);
+    const p = await pendingProposal("justin_fact", "cousin plays drums");
+    await approve(p.id);
+    const fact = (await state()).facts.justin.find((f) => f.fact === "his cousin plays drums");
+    assert.ok(fact, "the fact about him");
+    const put = await api("PUT", `/api/memory/fact/${fact.id}`, { weight: 0.2, lastTouched: ago(40 * DAY_MS_V3) });
+    assert.equal(put.status, 200, put.text);
+    const map = await api("GET", "/api/memory/map");
+    assert.equal(map.status, 200, map.text);
+    for (const k of ["facts", "history", "sealed", "keptToday", "counts", "settings", "now"]) assert.ok(k in map.json, "missing " + k);
+    const faded = map.json.facts.find((f) => f.id === fact.id);
+    assert.ok(faded, "the fact is on the map");
+    assert.equal(faded.phase, "faded", JSON.stringify(faded));
+    assert.equal(faded.weight, 0.2);
+    assert.ok(map.json.counts.faded >= 1);
+    const remind = await api("PUT", `/api/memory/fact/${fact.id}`, { lastTouched: new Date().toISOString() });
+    assert.equal(remind.status, 200, remind.text);
+    const back = (await api("GET", "/api/memory/map")).json.facts.find((f) => f.id === fact.id);
+    assert.equal(back.phase, "vivid", JSON.stringify(back));
+    assert.ok(map.json.sealed.length >= 1, "her seeded untold facts are sealed");
+    for (const s of map.json.sealed) assert.deepEqual(Object.keys(s).sort(), ["createdAt", "id", "subject"]);
+    const untold = (await state()).facts.avelie.filter((f) => Number(f.disclosed) === 0);
+    assert.equal(map.json.sealed.length, untold.length, "every untold fact, subject only");
+    for (const f of untold) assert.ok(!JSON.stringify(map.json).includes(f.fact.slice(0, 40)), "the text of an untold fact never leaves: " + f.subject);
+    assert.equal(map.json.counts.sealed, map.json.sealed.length);
+    assert.deepEqual(map.json.keptToday, [], "auto-keep is off");
+    await settingsPut({ proposalsAutoApprove: true });
+    const kept = await turn(conversationId, "[[FACT:she keeps a jar of sea glass]] noted", key("v4-kept"));
+    assert.equal(kept.status, 200, kept.text);
+    const withKept = await waitFor("a kept-automatically row on the map", async () => {
+      const m = await api("GET", "/api/memory/map");
+      return m.json && m.json.keptToday.some((k) => /sea glass/.test(k.proposal)) ? m.json : null;
+    }, 10_000, 300);
+    assert.equal(withKept.counts.keptToday, withKept.keptToday.length);
+    assert.equal(withKept.keptToday[0].kind, "avelie_fact");
+    await settingsPut({ proposalsAutoApprove: original.proposalsAutoApprove ?? false });
+  });
+
+  // ---------------------------------------------------------------- scene and relationship promotion (section 8)
+
+  await report.check("v4: [[SCENE:the harbour bench]] -> approve -> scene together at the harbour bench; [[SCENE:the pier]] -> moved; the bare [[SCENE]] -> the pier kept; the picker prefill source (the newest together version) agrees", async () => {
+    const before = (await state()).scene.state;
+    const a = await turn(conversationId, "[[SCENE:the harbour bench]] here", key("v4-scene-a"));
+    assert.equal(a.status, 200, a.text);
+    const pa = await pendingProposal("scene", "harbour bench");
+    await approve(pa.id);
+    const s1 = (await state()).scene.state;
+    assert.equal(s1.status, "together", JSON.stringify(s1));
+    assert.equal(s1.location, "the harbour bench");
+    const b = await turn(conversationId, "[[SCENE:the pier]] walk", key("v4-scene-b"));
+    assert.equal(b.status, 200, b.text);
+    const pb = await pendingProposal("scene", "the pier");
+    await approve(pb.id);
+    const s2 = (await state()).scene.state;
+    assert.equal(s2.location, "the pier");
+    assert.equal(s2.status, "together");
+    const c = await turn(conversationId, "[[SCENE]] still", key("v4-scene-c"));
+    assert.equal(c.status, 200, c.text);
+    const pc = await pendingProposal("scene", "same place");
+    await approve(pc.id);
+    const s3 = (await state()).scene.state;
+    assert.equal(s3.location, "the pier", "a summary-only proposal keeps the place");
+    assert.equal(s3.status, "together");
+    const versions = await api("GET", "/api/state/versions/scene?limit=50");
+    assert.equal(versions.status, 200, versions.text);
+    const newestTogether = versions.json.find((v) => JSON.parse(v.state_json).status === "together");
+    assert.equal(JSON.parse(newestTogether.state_json).location, "the pier", "the picker's prefill source");
+    assert.notEqual(before.location, "the pier");
+  });
+
+  await report.check("v4 review: with proposalsAutoApprove on, an auto-kept scene proposal never moves an apart scene INTO together (his picker or his own approval does); the place still follows", async () => {
+    const original = (await api("GET", "/api/settings")).json;
+    const s0 = (await state()).scene.state;
+    const apart = await api("PUT", "/api/state/scene", { state: { ...s0, status: "apart", location: null }, note: "review: apart" });
+    assert.equal(apart.status, 200, apart.text);
+    await settingsPut({ proposalsAutoApprove: true });
+    try {
+      const r = await turn(conversationId, "[[SCENE:her bed]] night", key("v4-auto-scene"));
+      assert.equal(r.status, 200, r.text);
+      const s1 = await waitFor("the auto-kept scene proposal", async () => {
+        const s = (await state()).scene.state;
+        return s.location === "her bed" ? s : null;
+      }, 10_000, 300);
+      assert.equal(s1.status, "apart", "a model's reading never puts him in the room: " + JSON.stringify(s1));
+    } finally {
+      await settingsPut({ proposalsAutoApprove: original.proposalsAutoApprove ?? false });
+      const back = await api("PUT", "/api/state/scene", { state: { ...s0 }, note: "review: restored" });
+      assert.equal(back.status, 200, back.text);
+    }
+  });
+
+  await report.check("v4: [[REL:seeing each other|Justin]] -> approve -> relationship status and his_name set, trust kept; a mood-only relationship proposal -> approve -> nothing lost", async () => {
+    const before = (await state()).relationship.state;
+    const r = await turn(conversationId, "[[REL:seeing each other|Justin]] ok", key("v4-rel"));
+    assert.equal(r.status, 200, r.text);
+    const p = await pendingProposal("relationship", "seeing each other");
+    await approve(p.id);
+    const s1 = (await state()).relationship.state;
+    assert.equal(s1.status, "seeing each other", JSON.stringify(s1));
+    assert.equal(s1.his_name, "Justin");
+    assert.equal(s1.trust, before.trust, "trust kept");
+    assert.ok(String(s1.frontier).includes("seeing each other"));
+    const m = await turn(conversationId, "[[MOOD:warm]] ok", key("v4-mood"));
+    assert.equal(m.status, 200, m.text);
+    const pm = await pendingProposal("relationship", "warm");
+    await approve(pm.id);
+    const s2 = (await state()).relationship.state;
+    assert.equal(s2.status, "seeing each other", "nothing lost");
+    assert.equal(s2.his_name, "Justin");
+    assert.equal(s2.mood, "warm");
+    const clear = await api("PUT", "/api/state/relationship", { state: { ...s2, mood: null, mood_set_at: null, mood_days: null, cooling_off_until: null }, note: "v4 mood cleared" });
+    assert.equal(clear.status, 200, clear.text);
+  });
+
+  // ---------------------------------------------------------------- place pictures and the background contract (section 8)
+
+  await report.check("v4: POST /api/places { the harbour bench } -> a picture on the stub (200, picture true, a place run row, usage up by placeCostUsd); /media/place/:id image/png; again -> 409; remake -> 200; PUT /api/state/scene together there -> the response carries place with picture true and last_used_at set", async () => {
+    const created = await api("POST", "/api/places", { title: "the harbour bench", detail: "green paint, facing the ferry" });
+    assert.equal(created.status, 201, created.text);
+    ids.bench = created.json.id;
+    const usageBefore = (await api("GET", "/api/usage")).json.todayUsd;
+    const runsBefore = ((await api("GET", "/api/export")).json.modelRuns ?? []).filter((m) => m.kind === "place").length;
+    const made = await api("POST", `/api/places/${ids.bench}/picture`, {});
+    assert.equal(made.status, 200, made.text);
+    assert.equal(made.json.picture, true);
+    assert.ok(["day", "night"].includes(made.json.picture_light), made.json.picture_light);
+    assert.ok(["winter", "spring", "summer", "fall"].includes(made.json.picture_season));
+    assert.match(made.json.picture_sha256, /^[0-9a-f]{64}$/);
+    assert.ok(/no people/.test(made.json.picture_prompt));
+    assert.ok(!("picture_key" in made.json), "never the R2 key");
+    const usageAfter = (await api("GET", "/api/usage")).json.todayUsd;
+    assert.ok(Math.abs((usageAfter - usageBefore) - 0.08) < 0.005, "usage up by placeCostUsd: " + (usageAfter - usageBefore));
+    const runsAfter = ((await api("GET", "/api/export")).json.modelRuns ?? []).filter((m) => m.kind === "place").length;
+    assert.equal(runsAfter - runsBefore, 1, "a place run row");
+    const png = await fetchBytes(`/media/place/${ids.bench}`);
+    assert.equal(png.status, 200);
+    assert.ok(png.contentType.startsWith("image/png"), png.contentType);
+    assert.deepEqual(Array.from(png.bytes.slice(0, 4)), [0x89, 0x50, 0x4e, 0x47]);
+    const again = await api("POST", `/api/places/${ids.bench}/picture`, {});
+    assert.equal(again.status, 409, again.text);
+    assert.equal(again.json.code, "already_generated");
+    const remade = await api("POST", `/api/places/${ids.bench}/picture`, { remake: true });
+    assert.equal(remade.status, 200, remade.text);
+    assert.equal(remade.json.picture, true);
+    const sceneBefore = (await state()).scene.state;
+    const put = await api("PUT", "/api/state/scene", { state: { ...sceneBefore, status: "together", location: "The Harbour Bench" }, note: "v4 background" });
+    assert.equal(put.status, 200, put.text);
+    assert.deepEqual(put.json.place, { id: ids.bench, picture: true }, JSON.stringify(put.json.place));
+    const row = (await api("GET", "/api/places")).json.places.find((p) => p.id === ids.bench);
+    assert.equal(typeof row.last_used_at, "string", "last_used_at set");
+    const phone = await api("GET", "/api/phone");
+    const here = phone.json.places.find((p) => p.id === ids.bench);
+    assert.equal(here.here, true, "the scene place is here");
+    assert.equal(here.picture, true);
+    const apart = await api("PUT", "/api/state/scene", { state: { ...sceneBefore, status: "apart", location: null }, note: "v4 apart" });
+    assert.equal(apart.json.place, null);
+    const nothing = await api("POST", "/api/places/pl_nothing/picture", {});
+    assert.equal(nothing.status, 404);
+    const sys = await api("GET", "/api/system");
+    assert.ok(sys.json.counts.placesWithPicture >= 1, JSON.stringify(sys.json.counts));
+  });
+
+  await report.check("v4: DELETE /api/places/:id/picture -> picture false and /media/place/:id 404; an unknown place 404; the first place never had one", async () => {
+    const del = await api("DELETE", `/api/places/${ids.bench}/picture`);
+    assert.equal(del.status, 200, del.text);
+    assert.equal(del.json.picture, false);
+    assert.equal((await fetchBytes(`/media/place/${ids.bench}`)).status, 404);
+    assert.equal((await fetchBytes(`/media/place/${ids.place}`)).status, 404);
+    assert.equal((await fetchBytes("/media/place/pl_nothing")).status, 404);
+    assert.equal((await api("DELETE", "/api/places/pl_nothing/picture")).status, 404);
+    const remade = await api("POST", `/api/places/${ids.bench}/picture`, {});
+    assert.equal(remade.status, 200, "a picture can be made again after a delete: " + remade.text);
+  });
+
+  // ---------------------------------------------------------------- the system counts
+
+  await report.check("v4: GET /api/system counts carry placesWithPicture, callFaceClips and spotifyConnected; providerKeys.spotify; disconnect -> spotifyConnected 0 and the export carries no spotifyAuth key", async () => {
+    const sys = await api("GET", "/api/system");
+    assert.equal(sys.status, 200, sys.text);
+    assert.equal(sys.json.counts.placesWithPicture, 1);
+    assert.equal(sys.json.counts.callFaceClips, 3);
+    assert.equal(sys.json.counts.spotifyConnected, 1);
+    assert.equal(sys.json.providerKeys.spotify, true);
+    const off = await api("POST", "/api/spotify/disconnect");
+    assert.equal(off.status, 200, off.text);
+    assert.deepEqual(off.json, { ok: true });
+    const status = await api("GET", "/api/spotify");
+    assert.equal(status.json.connected, false);
+    assert.equal((await api("GET", "/api/settings")).json.spotifyEnabled, false);
+    assert.equal((await api("GET", "/api/system")).json.counts.spotifyConnected, 0);
+    const exp = await api("GET", "/api/export");
+    assert.equal(exp.status, 200, exp.text);
+    assert.ok(!("spotifyAuth" in exp.json) && !("spotify_auth" in exp.json), "the export carries no Spotify row");
+    assert.ok(!exp.text.includes("stub-refresh") && !exp.text.includes("refresh_token"), "no token in the export");
+    assert.ok(Array.isArray(exp.json.places) && exp.json.places.some((p) => p.id === ids.bench), "the export carries places");
+    assert.ok(!("panelCache" in exp.json), "a cache is not exported");
+    const token = await api("GET", "/api/spotify/token");
+    assert.equal(token.status, 403, "disconnected: " + token.text);
+  });
+
+  // ---------------------------------------------------------------- the UI smoke
+
+  await report.check("v4 UI smoke: every page, script, the stylesheet, sw.js, the manifest and the six masters answer 200 with their content type; every page carries the shell; node --check on every public/js file", async () => {
+    for (const p of V4_PAGES) {
+      const r = await fetch(BASE + p);
+      const text = await r.text();
+      assert.equal(r.status, 200, p + " -> " + r.status);
+      assert.ok((r.headers.get("content-type") || "").includes("text/html"), p + " " + r.headers.get("content-type"));
+      for (const needle of ['class="brand"', 'id="avatar"', 'class="wordmark"', 'class="nav"']) assert.ok(text.includes(needle), p + " lacks " + needle);
+      assert.ok(!/\sstyle=/.test(text), p + " carries a style attribute");
+      const csp = r.headers.get("content-security-policy") || "";
+      assert.ok(/default-src 'self'/.test(csp) && !/unsafe-inline/.test(csp), p + " CSP: " + csp);
+    }
+    for (const s of V4_SCRIPTS) {
+      const r = await fetch(BASE + s);
+      assert.equal(r.status, 200, s + " -> " + r.status);
+      assert.ok(/javascript/.test(r.headers.get("content-type") || ""), s + " " + r.headers.get("content-type"));
+      await r.arrayBuffer();
+    }
+    const css = await fetch(BASE + "/css/app.css");
+    assert.equal(css.status, 200);
+    assert.ok(/text\/css/.test(css.headers.get("content-type") || ""));
+    const sw = await fetch(BASE + "/sw.js");
+    assert.equal(sw.status, 200);
+    assert.ok(/javascript/.test(sw.headers.get("content-type") || ""));
+    const manifest = await fetch(BASE + "/manifest.webmanifest");
+    assert.equal(manifest.status, 200);
+    assert.ok(/manifest|json/.test(manifest.headers.get("content-type") || ""), manifest.headers.get("content-type"));
+    const masters = (await api("GET", "/api/assets")).json.masters;
+    assert.equal(masters.length, 6, "six masters");
+    for (const m of masters) {
+      const r = await fetch(BASE + "/" + m.file);
+      assert.equal(r.status, 200, m.file);
+      assert.ok((r.headers.get("content-type") || "").startsWith("image/png"), m.file + " " + r.headers.get("content-type"));
+      await r.arrayBuffer();
+    }
+    assert.ok(masters.some((m) => /05_MASTER_GAVINS_BLACK_DRESS_APPROVED\.png$/.test(m.file)), "the avatar master");
+    const { execFileSync } = await import("node:child_process");
+    const { readdirSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const dir = join(ROOT, "public", "js");
+    for (const f of readdirSync(dir).filter((x) => x.endsWith(".js"))) execFileSync(process.execPath, ["--check", join(dir, f)], { stdio: "pipe" });
+    return "pages " + V4_PAGES.length + ", scripts " + V4_SCRIPTS.length + ", masters " + masters.length;
+  });
+
+  // ---------------------------------------------------------------- her clips from the chat (amendment A3)
+
+  await report.check("v4 (A3): a [[CLIP]] turn -> the line stripped, one video row bound to the message (image_id, image_status pending, flag clip_pending); poll -> candidate ready on the message; the album shows the clip beside the photos", async () => {
+    const r = await turn(conversationId, "[[CLIP]] show me", key("v4-clip"));
+    assert.equal(r.status, 200, r.text);
+    const m = r.json.assistantMessage;
+    assert.ok(!/\[clip:/i.test(m.content), "the clip line is stripped: " + m.content);
+    assert.ok(m.content.trim().length > 0);
+    const flags = r.json.flags ?? JSON.parse(m.flags_json || "[]");
+    const pending = flags.find((f) => f.code === "clip_pending");
+    assert.ok(pending, "clip_pending on the reply: " + JSON.stringify(flags));
+    assert.ok(!flags.some((f) => f.code === "clip_unavailable"));
+    const stored = await api("GET", `/api/messages/${m.id}`);
+    assert.equal(typeof stored.json.image_id, "string", "the clip rides on image_id");
+    assert.equal(stored.json.image_status, "pending");
+    ids.clipMessage = m.id;
+    ids.clipAsset = stored.json.image_id;
+    const assets = (await api("GET", "/api/assets")).json;
+    const row = assets.generating.find((a) => a.id === ids.clipAsset) ?? assets.candidates.find((a) => a.id === ids.clipAsset);
+    assert.ok(row, "the video row is listed");
+    assert.equal(row.role, "video");
+    assert.equal(row.message_id, m.id);
+    assert.equal(row.conversation_id, conversationId);
+    assert.equal(row.prompt, "she looks up from the record and half smiles, then looks away");
+    const candidate = await pollToCandidate(ids.clipAsset);
+    assert.equal(candidate.role, "video");
+    assert.equal(candidate.message_id, m.id);
+    const ready = await api("GET", `/api/messages/${m.id}`);
+    assert.equal(ready.json.image_status, "ready");
+    const media = await fetchBytes(`/media/${ids.clipAsset}`);
+    assert.equal(media.status, 200);
+    assert.ok(media.contentType.startsWith("video/mp4"));
+    const album = await api("GET", "/api/album");
+    const item = album.json.items.find((i) => i.id === ids.clipAsset);
+    assert.ok(item, "the clip is in the album");
+    assert.equal(item.kind, "clip");
+    assert.equal(item.messageId, m.id);
+    const ok = await api("POST", `/api/images/${ids.clipAsset}/decide`, { decision: "approve" });
+    assert.equal(ok.status, 200, ok.text);
+  });
+
+  await report.check("v4 (A3): videoMarkerEnabled false -> the clip line is stripped with the flag clip_unavailable and no row is made; videoProvider off the same; restored", async () => {
+    await settingsPut({ videoMarkerEnabled: false });
+    const generatingBefore = (await api("GET", "/api/assets")).json.generating.length;
+    const r = await turn(conversationId, "[[CLIP]] one more", key("v4-clip-off"));
+    assert.equal(r.status, 200, r.text);
+    const m = r.json.assistantMessage;
+    assert.ok(!/\[clip:/i.test(m.content), m.content);
+    const flags = r.json.flags ?? JSON.parse(m.flags_json || "[]");
+    assert.ok(flags.some((f) => f.code === "clip_unavailable"), JSON.stringify(flags));
+    assert.ok(!flags.some((f) => f.code === "clip_pending"));
+    const stored = await api("GET", `/api/messages/${m.id}`);
+    assert.equal(stored.json.image_id, null, "no row");
+    assert.equal(stored.json.image_status, null);
+    assert.equal((await api("GET", "/api/assets")).json.generating.length, generatingBefore, "nothing generating");
+    await settingsPut({ videoMarkerEnabled: true, videoProvider: "off" });
+    const off = await turn(conversationId, "[[CLIP]] with the provider off", key("v4-clip-provider-off"));
+    const offFlags = off.json.flags ?? JSON.parse(off.json.assistantMessage.flags_json || "[]");
+    assert.ok(offFlags.some((f) => f.code === "clip_unavailable"), JSON.stringify(offFlags));
+    assert.equal((await api("GET", `/api/messages/${off.json.assistantMessage.id}`)).json.image_id, null);
+    await settingsPut({ videoProvider: "stub" });
+  });
+
+  // ---------------------------------------------------------------- the gate lists for phase 3 are static; restore what the block touched
+
+  await report.check("v4: his photo removed and every setting back to what the block found", async () => {
+    if (ids.him) {
+      const del = await api("DELETE", `/api/him/photos/${ids.him}`);
+      assert.equal(del.status, 204, del.text);
+    }
+    const back = await settingsPut(restore);
+    for (const k of Object.keys(restore)) assert.deepEqual(back[k], restore[k], k);
+    const s = (await api("GET", "/api/settings")).json;
+    assert.equal(s.herFirstTextsPerDay, 0);
+    assert.equal(s.replyDelayMode, "instant");
+    assert.equal(s.spotifyEnabled, false);
   });
 }
 
@@ -3039,6 +4027,45 @@ async function main() {
     console.log(`\nwrangler dev (image overlay off) ready on ${BASE} (${Date.now() - tu} ms)\n`);
 
     await runwayScenarios(report, conversationId);
+
+    // v4 phase (2026-09-26): a FRESH state, so the stub's photo and clip bytes (rejected
+    // once each by the v1 and v3 blocks, and blacklisted for the rest of that state) can
+    // become candidates again; --var SPOTIFY_STUB:1 drives the Spotify flow keyless.
+    await stopWrangler(wrangler);
+    if (await answering()) throw new Error("the second server is still answering on " + BASE + " after shutdown");
+    console.log(`\nintegration v4: fresh state at ${STATE_DIR_V4}`);
+    removeDir(STATE_DIR_V4);
+    const tm4 = Date.now();
+    const migrate4 = await runCommand(["d1", "migrations", "apply", "avelie", "--local", "--persist-to", STATE_ARG_V4], { env: { CI: "1" } });
+    if (migrate4.code !== 0) {
+      console.log(migrate4.output);
+      throw new Error("v4 migrations failed with exit code " + migrate4.code);
+    }
+    console.log(`v4 migrations applied (${Date.now() - tm4} ms)`);
+    const t4 = Date.now();
+    wrangler = startWrangler([
+      "--port", String(PORT), "--local", "--persist-to", STATE_ARG_V4, "--test-scheduled",
+      "--var", "APP_ENV:" + APP_ENV_TAG,
+      "--var", "ACCESS_AUD:",
+      "--var", `DEV_ACTOR_EMAIL:${DEV_ACTOR_EMAIL}`,
+      "--var", "DEFAULT_PROVIDER:stub",
+      "--var", "DEFAULT_IMAGE_PROVIDER:stub",
+      "--var", "OPENAI_API_KEY:dummy-for-settings-only",
+      "--var", "SPOTIFY_STUB:1",
+      "--var", "ELEVENLABS_STUB:1",
+      "--var", "ELEVENLABS_API_KEY:dummy-for-settings-only",
+    ], STUB_ENV);
+    await waitFor("wrangler dev (v4, fresh state) on " + BASE, async () => {
+      if (wrangler.hasExited()) throw new Error("wrangler dev exited before it was ready");
+      const r = await api("GET", "/api/me");
+      return r.status === 200 && r.json && r.json.env === APP_ENV_TAG;
+    }, BOOT_TIMEOUT_MS, 500).catch((e) => {
+      console.log("wrangler output (tail):");
+      console.log(wrangler.tail());
+      throw e;
+    });
+    console.log(`wrangler dev (v4) ready on ${BASE} (${Date.now() - t4} ms)\n`);
+    await scenariosV4(report);
 
     // Third phase, same port and state, with the production gate switched on. The gated
     // server cannot be told apart by /api/me (401), so nothing may answer before it boots.

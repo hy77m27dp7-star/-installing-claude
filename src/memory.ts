@@ -9,9 +9,9 @@
 // memory_weights and memory_recalls; every owner write is audited in the same batch.
 // The recall outcome bookkeeping (outcomeStmt and the corrected/confirmed outcomes) is
 // v3.1; v3 writes outcome 'unknown' and never reads it.
-import { auditStmt, newId, nowIso } from "./db";
+import { auditStmt, listProposals, newId, nowIso } from "./db";
 import { ApiHttpError } from "./errors";
-import type { FactRow, HistoryRow } from "./types";
+import type { FactRow, HistoryRow, ProposalRow } from "./types";
 import type { LifeThread } from "./life";
 
 export type MemoryEntity = "fact" | "history" | "thread" | "log" | "want";
@@ -636,4 +636,228 @@ export async function listMemory(db: D1Database, entity: MemoryEntity, limit = 2
       createdAt: r.created_at,
     };
   });
+}
+
+// ------------------------------------------------------------------ the memory map (SPEC_V4 section 7)
+//
+// A page he can see: every fact about him with its weight and its phase, what is fading,
+// what came back, the history on a timeline, the untold things sealed (subject only), and
+// what was kept automatically today. One read, nothing written. The pure half (phaseOf,
+// returnedRecently) is what the unit suite binds; memoryMap runs on the D1 stand-in.
+
+export type MemoryPhase = "vivid" | "firm" | "fading" | "faded";
+
+// The four bands of one score: faded when it is out of the prompt; else by recency alone,
+// so a high-weight fact that has not come up in a long while reads as fading, not gone.
+export function phaseOf(sc: MemoryScore): MemoryPhase {
+  if (!sc || !sc.firm) return "faded";
+  const r = typeof sc.recency === "number" && Number.isFinite(sc.recency) ? sc.recency : 0;
+  if (r >= 0.5) return "vivid";
+  if (r >= 0.15) return "firm";
+  return "fading";
+}
+
+export const RETURNED_WINDOW_DAYS = 7;
+export const RETURNED_MIN_AGE_DAYS = 14;
+
+// It came back: a stored row, touched at least once, touched within the last 7 days, and
+// created at least 14 days before that touch. A fresh row touched on its first day is
+// simply new, not returned.
+export function returnedRecently(w: WeightInfo, createdAt: string, now: Date): boolean {
+  if (!w || !w.stored || !(w.touches >= 1)) return false;
+  const touched = Date.parse(w.lastTouched);
+  const created = Date.parse(createdAt);
+  if (!Number.isFinite(touched) || !Number.isFinite(created)) return false;
+  const nowMs = now instanceof Date ? now.getTime() : Date.now();
+  if (touched > nowMs) return false;
+  if (nowMs - touched > RETURNED_WINDOW_DAYS * DAY_MS) return false;
+  return touched - created >= RETURNED_MIN_AGE_DAYS * DAY_MS;
+}
+
+export interface MemoryMapFact {
+  id: string;
+  subject: string | null;
+  text: string;
+  weight: number;
+  lastTouched: string;
+  touches: number;
+  score: number;
+  recency: number;
+  halfLifeDays: number;
+  phase: MemoryPhase;
+  returned: boolean;
+  createdAt: string;
+}
+
+export interface MemoryMapHistory {
+  id: string;
+  seq: number;
+  title: string;
+  occurred: string | null;
+  weight: number;
+  score: number;
+  phase: MemoryPhase;
+  createdAt: string;
+}
+
+// An untold fact of hers: the subject only. The fact text never leaves the server here.
+export interface MemoryMapSealed {
+  id: string;
+  subject: string;
+  createdAt: string;
+}
+
+export interface MemoryMapKept {
+  id: string;
+  kind: string;
+  proposal: string;
+  decidedAt: string;
+}
+
+export interface MemoryMapCounts {
+  facts: number;
+  vivid: number;
+  firm: number;
+  fading: number;
+  faded: number;
+  returned: number;
+  sealed: number;
+  keptToday: number;
+}
+
+export interface MemoryMap {
+  facts: MemoryMapFact[];
+  history: MemoryMapHistory[];
+  sealed: MemoryMapSealed[];
+  keptToday: MemoryMapKept[];
+  counts: MemoryMapCounts;
+  settings: ResolvedMemorySettings;
+  now: string;
+}
+
+export const KEPT_AUTOMATICALLY_NOTE = "kept automatically";
+const KEPT_TODAY_MAX = 100;
+// Approved proposals read newest-created first; an auto-kept row is created and decided in
+// the same moment, so today's sit at the top. Wide enough for a long day of talking.
+const KEPT_SCAN_LIMIT = 500;
+const SEALED_UNTITLED = "(untitled)";
+
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
+}
+
+// "YYYY-MM-DD" of an instant in a timezone (a bad or empty name falls back to UTC). Kept
+// local so this module never imports life.ts, which imports this one.
+export function localDayKey(d: Date, tz: string | null | undefined): string {
+  const name = typeof tz === "string" && tz.trim() ? tz.trim() : "UTC";
+  let fmt: Intl.DateTimeFormat;
+  try {
+    fmt = new Intl.DateTimeFormat("en-US", { timeZone: name, year: "numeric", month: "2-digit", day: "2-digit" });
+  } catch {
+    fmt = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", year: "numeric", month: "2-digit", day: "2-digit" });
+  }
+  const parts = fmt.formatToParts(d);
+  const pick = (type: Intl.DateTimeFormatPartTypes): string => parts.find((p) => p.type === type)?.value ?? "";
+  return pick("year") + "-" + pick("month").padStart(2, "0") + "-" + pick("day").padStart(2, "0");
+}
+
+function isApprovedFact(f: FactRow | null | undefined): f is FactRow {
+  return !!f && typeof f.id === "string" && f.status === "approved" && typeof f.fact === "string";
+}
+
+// Proposals kept automatically whose decision fell on the given local day, newest first.
+// Every filter runs here as well as in SQL so the answer is the same on any store.
+export function keptOnDay(rows: ProposalRow[], dayKey: string, tz: string | null | undefined, max = KEPT_TODAY_MAX): MemoryMapKept[] {
+  const out: Array<{ row: ProposalRow; t: number }> = [];
+  for (const p of Array.isArray(rows) ? rows : []) {
+    if (!p || p.status !== "approved" || p.decision_note !== KEPT_AUTOMATICALLY_NOTE) continue;
+    if (typeof p.decided_at !== "string") continue;
+    const t = Date.parse(p.decided_at);
+    if (!Number.isFinite(t)) continue;
+    if (localDayKey(new Date(t), tz) !== dayKey) continue;
+    out.push({ row: p, t });
+  }
+  out.sort((a, b) => b.t - a.t || a.row.id.localeCompare(b.row.id));
+  return out.slice(0, Math.max(0, max)).map(({ row }) => ({
+    id: row.id,
+    kind: String(row.kind),
+    proposal: String(row.proposal ?? ""),
+    decidedAt: new Date(Date.parse(row.decided_at as string)).toISOString(),
+  }));
+}
+
+export async function memoryMap(db: D1Database, settings: MemorySettings | null | undefined, now: Date = new Date()): Promise<MemoryMap> {
+  const s = memorySettings(settings);
+  const tz = settings && typeof settings.timezone === "string" ? settings.timezone : "UTC";
+  const [factRows, historyRows, weights, proposals] = await Promise.all([
+    db.prepare("SELECT * FROM facts WHERE status = ?1 AND scope IN ('justin', 'shared', 'avelie')").bind("approved").all<FactRow>(),
+    db.prepare("SELECT * FROM history WHERE status = ?1").bind("approved").all<HistoryRow>(),
+    loadWeights(db),
+    listProposals(db, "approved", KEPT_SCAN_LIMIT),
+  ]);
+
+  // Facts about him (scope justin and shared), scored as a turn with no conversation would.
+  const his = factRows.results.filter(isApprovedFact).filter((f) => f.scope === "justin" || f.scope === "shared");
+  const ranked = rankFacts(his, weights, null, now, s);
+  const facts: MemoryMapFact[] = [];
+  for (const f of his) {
+    const sc = ranked.scores.get(f.id);
+    if (!sc) continue;
+    const w = weightFor(weights, "fact", f);
+    facts.push({
+      id: f.id,
+      subject: f.subject ?? null,
+      text: f.fact,
+      weight: round3(w.weight),
+      lastTouched: w.lastTouched,
+      touches: w.touches,
+      score: round3(sc.score),
+      recency: round3(sc.recency),
+      halfLifeDays: sc.halfLifeDays,
+      phase: phaseOf(sc),
+      returned: returnedRecently(w, f.created_at, now),
+      createdAt: f.created_at,
+    });
+  }
+  facts.sort((a, b) => b.score - a.score || b.weight - a.weight || a.createdAt.localeCompare(b.createdAt));
+
+  // History on a timeline, by seq.
+  const hist = historyRows.results.filter((h) => !!h && h.status === "approved" && typeof h.id === "string");
+  const rankedHistory = rankHistory(hist, weights, null, now, s);
+  const history: MemoryMapHistory[] = [];
+  for (const h of hist.slice().sort((a, b) => a.seq - b.seq || a.created_at.localeCompare(b.created_at))) {
+    const sc = rankedHistory.scores.get(h.id);
+    if (!sc) continue;
+    history.push({
+      id: h.id,
+      seq: h.seq,
+      title: h.title,
+      occurred: h.occurred ?? null,
+      weight: round3(sc.weight),
+      score: round3(sc.score),
+      phase: phaseOf(sc),
+      createdAt: h.created_at,
+    });
+  }
+
+  // Hers, untold: the subject only. Newest first.
+  const sealed: MemoryMapSealed[] = factRows.results
+    .filter(isApprovedFact)
+    .filter((f) => f.scope === "avelie" && Number(f.disclosed) === 0)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id))
+    .map((f) => ({ id: f.id, subject: typeof f.subject === "string" && f.subject.trim() ? f.subject.trim() : SEALED_UNTITLED, createdAt: f.created_at }));
+
+  const keptToday = keptOnDay(proposals, localDayKey(now, tz), tz);
+
+  const counts: MemoryMapCounts = {
+    facts: facts.length,
+    vivid: facts.filter((f) => f.phase === "vivid").length,
+    firm: facts.filter((f) => f.phase === "firm").length,
+    fading: facts.filter((f) => f.phase === "fading").length,
+    faded: facts.filter((f) => f.phase === "faded").length,
+    returned: facts.filter((f) => f.returned).length,
+    sealed: sealed.length,
+    keptToday: keptToday.length,
+  };
+  return { facts, history, sealed, keptToday, counts, settings: s, now: now.toISOString() };
 }

@@ -185,15 +185,40 @@ function imageBytes(data: ImagesResponse): ArrayBuffer {
   return base64ToArrayBuffer(b64);
 }
 
+// v4 (SPEC_V4 section 3): the man in the picture, when the request carries him
+// (ImageGenerateRequest.him; the type is the pipeline lane's, so the field is read through
+// a local shape). His photo is one more image[] part after hers, named in the prompt.
+interface HimImageRef { name: string; bytes: ArrayBuffer; look: string }
+
+function himOf(req: ImageGenerateRequest): HimImageRef | null {
+  const h = (req as ImageGenerateRequest & { him?: HimImageRef | null }).him;
+  if (!h || typeof h !== "object" || !(h.bytes instanceof ArrayBuffer) || !h.bytes.byteLength) return null;
+  return { name: typeof h.name === "string" && h.name ? h.name : "him", bytes: h.bytes, look: typeof h.look === "string" ? h.look : "" };
+}
+
+// His reference was sniffed on upload; its key's extension is the truth (hisFace.ts mimeOfKey).
+function mimeOfName(name: string): string {
+  const ext = (name.split(".").pop() ?? "").toLowerCase();
+  if (ext === "webp") return "image/webp";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  return "image/png";
+}
+
+export function himPromptLine(look: string): string {
+  const words = look.replace(/\s+/g, " ").trim();
+  return " The last reference image is the man who is in the picture with her; show him as that image shows him" + (words ? ": " + words : "") + ".";
+}
+
 export const openaiImageProvider: ImageProviderV3 = {
   name: "openai",
   async generate(env: Env, req: ImageGenerateRequest): Promise<ImageGenerateResult> {
     const key = requireKey(env);
     if (!req.references.length) throw new ProviderError("openai", "bad_request", "no reference images", 400, false);
+    const him = himOf(req);
 
     const fd = new FormData();
     fd.append("model", req.model);
-    fd.append("prompt", req.identityPrompt + " Scene: " + req.prompt);
+    fd.append("prompt", req.identityPrompt + " Scene: " + req.prompt + (him ? himPromptLine(him.look) : ""));
     fd.append("size", req.size);
     fd.append("quality", req.quality);
     // High input fidelity: preserve her face and body from the references instead of a loose likeness.
@@ -202,6 +227,7 @@ export const openaiImageProvider: ImageProviderV3 = {
     for (const r of req.references) {
       fd.append("image[]", new Blob([r.bytes], { type: "image/png" }), r.name);
     }
+    if (him) fd.append("image[]", new Blob([him.bytes], { type: mimeOfName(him.name) }), him.name);
 
     let res: Response;
     try {

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#060a13">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Avelie">
+<title>Avelie Phone</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="page-phone">
+<header class="top">
+  <a class="brand" href="/" aria-label="Avelie, home">
+    <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
+    <span class="wordmark">AVELIE</span>
+  </a>
+  <nav class="nav" aria-label="Sections"></nav>
+</header>
+
+<main class="page phone">
+  <div class="row between">
+    <h2 class="section-title">Her phone</h2>
+    <span class="chips" id="phoneStatus"></span>
+  </div>
+
+  <div class="phone-cols">
+    <div class="stack">
+      <section class="card stack" aria-label="Now">
+        <div class="phone-now" id="phoneNow"></div>
+        <div class="phone-line">
+          <span class="k">Where</span>
+          <span class="v" id="phoneWhere"></span>
+        </div>
+        <div class="phone-line">
+          <span class="k">Weather</span>
+          <span class="v" id="phoneWeather"></span>
+        </div>
+        <div class="phone-line">
+          <span class="k">Wearing</span>
+          <span class="v" id="phoneOutfit"></span>
+        </div>
+      </section>
+
+      <section class="card stack" aria-label="Mood">
+        <h2 class="section-title">Mood</h2>
+        <div class="dial-wrap" id="phoneMood"></div>
+      </section>
+
+      <section class="card stack" aria-label="Wants">
+        <h2 class="section-title">Wants</h2>
+        <div id="phoneWants"></div>
+        <h3 class="section-title">Asks</h3>
+        <div id="phoneAsks"></div>
+      </section>
+
+      <section class="card stack" aria-label="Today">
+        <h2 class="section-title">Today</h2>
+        <div id="phoneToday"></div>
+      </section>
+
+      <section class="card stack" aria-label="Listening">
+        <h2 class="section-title">Listening to</h2>
+        <div class="listening" id="phoneListening"></div>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section class="card stack" aria-label="Map">
+        <div class="row between">
+          <h2 class="section-title">Portland</h2>
+          <span class="chips" id="placesStatus"></span>
+        </div>
+        <div id="phoneMap"></div>
+        <div class="map-foot" id="mapFoot"></div>
+      </section>
+
+      <section class="card stack" aria-label="Places">
+        <h2 class="section-title">Places</h2>
+        <div id="placesList"></div>
+        <div class="place-add">
+          <div class="grid-form">
+            <label class="field">Title
+              <input type="text" id="placeTitle" placeholder="Title" maxlength="300">
+            </label>
+            <label class="field">Detail
+              <input type="text" id="placeDetail" placeholder="Detail" maxlength="500">
+            </label>
+          </div>
+          <div class="row">
+            <button type="button" class="btn primary" id="placeAdd">Add place</button>
+            <span class="chips" id="placeAddStatus"></span>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<script type="module" src="/js/nav.js"></script>
+<script type="module" src="/js/phone.js"></script>
+</body>
+</html>

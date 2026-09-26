@@ -38,6 +38,12 @@ const OPERATOR_PREFIX = "You are the operator console";
 // v3.1 (SPEC_V3 JJ): the "Describe from photo" pass (hisFace.ts DESCRIBE_SYSTEM) answers a
 // fixed plausible description, so the route runs keyless in the integration suite.
 const DESCRIBE_PREFIX = "Describe this man";
+// v4 (SPEC_V4 section 1): the "listening to" line (phone.ts LISTENING_PREFIX). A COPY of
+// the string, never an import: phone.ts imports providers/index.ts, which imports this
+// file, so an import the other way would be a module cycle. phone_v4 asserts the two
+// strings are equal.
+const LISTENING_PREFIX = "Name one real song";
+const LISTENING_REPLY = "{\"artist\":\"Stub Artist\",\"title\":\"Stub Song\",\"line\":\"stuck in my head since the shop\"}";
 export const STUB_LOOK = "Medium build, a little over average height. Short dark hair, a close-cut beard with some grey in it, dark eyes, no glasses. Looks around forty. The first things anyone notices are the beard and the steady look.";
 // The tasting performer's model id (SPEC_V3 HH): its replies carry the "b: " prefix so
 // the two candidates differ, and [[BFAIL]] throws only on this side.
@@ -51,6 +57,8 @@ const LONG_REPLY =
   "just a lot of small nothing stacked up and i am telling you about it because you asked and because it is late.";
 
 const PHOTO_REPLY = "ok fine, one. do not judge the lighting\n[photo: mirror selfie in a black hoodie, messy bun, lamp light, half smile]";
+// v4 (Amendment A3): a clip she sends, the way she sends a photo. The prose describes nothing twice.
+const CLIP_REPLY = "ok one. do not make it a thing\n[clip: she looks up from the record and half smiles, then looks away]";
 // v2: a sent song (SPEC_V2 section I). The prose names neither the artist nor the title.
 const SONG_REPLY = "this has been stuck in my head since tuesday, do not read into it\n[song: Some Artist - Some Title]";
 // v2: a voice note (section S) and a library item (section V); the prose names neither.
@@ -79,6 +87,13 @@ const ASK_MARKER = /\[\[ASK:([^\]]+)\]\]/g;
 const MOODDAYS_MARKER = /\[\[MOODDAYS:([^\]|]+)\|([^\]]+)\]\]/g;
 const GROUND_MARKER = /\[\[GROUND:([^\]|]+)\|([^\]]+)\]\]/g;
 const LIFEUP_MARKER = /\[\[LIFEUP:([^\]|]+)\|([^\]]+)\]\]/g;
+// v4 proposal triggers (SPEC_V4 section 8, "Stub additions"): a scene proposal whose payload
+// carries status together and a location ([[SCENE:x]]; the bare [[SCENE]] carries a summary
+// only), and a relationship proposal whose payload carries status and his_name
+// ([[REL:status|name]]). The payload shapes are the ones proposals.ts mergeSceneState and
+// mergeRelationshipState read.
+const SCENE_MARKER = /\[\[SCENE(?::([^\]]*))?\]\]/g;
+const REL_MARKER = /\[\[REL:([^\]|]*)(?:\|([^\]]*))?\]\]/g;
 const NAME_MARKER = /\[\[NAME:([^\]]+)\]\]/;
 const MEDIA_MARKER = /\[\[MEDIA:([^\]]+)\]\]/;
 // v3 story triggers (SPEC_V3 AA, CC).
@@ -163,6 +178,26 @@ function proposalReply(req: GenerateRequest): string {
       if (!title || !note) continue;
       out.push({ kind: "life_update", proposal: title + ": " + note, evidence: "[[LIFEUP:" + title + "|" + note + "]]", confidence: "high", scope: "general", payload: { thread: title, note } });
     }
+    // v4 (SPEC_V4 section 8): the scene as a place, and where they stand.
+    for (const hit of m.content.matchAll(SCENE_MARKER)) {
+      const x = (hit[1] ?? "").trim();
+      if (x) {
+        out.push({ kind: "scene", proposal: "they are together at " + x, evidence: "[[SCENE:" + x + "]]", confidence: "high", scope: "general", payload: { status: "together", location: x } });
+      } else {
+        out.push({ kind: "scene", proposal: "the scene moved on, same place", evidence: "[[SCENE]]", confidence: "high", scope: "general" });
+      }
+    }
+    for (const hit of m.content.matchAll(REL_MARKER)) {
+      const status = (hit[1] ?? "").trim();
+      const name = (hit[2] ?? "").trim();
+      if (!status) continue;
+      const payload: Record<string, unknown> = { status };
+      if (name) payload.his_name = name;
+      out.push({
+        kind: "relationship", proposal: "they are " + status + (name ? "; his name is " + name : ""), evidence: "[[REL:" + status + (name ? "|" + name : "") + "]]",
+        confidence: "high", scope: "general", payload,
+      });
+    }
   }
   return out.length ? JSON.stringify(out) : "[]";
 }
@@ -195,6 +230,8 @@ function storyReply(last: string, withImages: boolean, model: string, system = "
   if (last.includes("[[EMDASH]]")) return { text: "wait " + EM_DASH + " no, hold on. that is not what i meant", stopReason: "end" };
   if (last.includes("[[LIST]]")) return { text: "ok here is the plan\n- coffee first\n- then the park\n- then nothing", stopReason: "end" };
   if (last.includes("[[PHOTO]]")) return { text: PHOTO_REPLY, stopReason: "end" };
+  // v4 (Amendment A3): a clip line, parsed by markers.ts parseClipMarker.
+  if (last.includes("[[CLIP]]")) return { text: CLIP_REPLY, stopReason: "end" };
   if (last.includes("[[SONG]]")) return { text: SONG_REPLY, stopReason: "end" };
   if (last.includes("[[QUESTION]]")) return { text: "wait, what do you actually mean by that?", stopReason: "end" };
   if (last.includes("[[LONG]]")) return { text: LONG_REPLY, stopReason: "end" };
@@ -235,6 +272,9 @@ export const stubProvider: TextProvider = {
       text = "operator: " + last.slice(0, 200);
     } else if (req.system.startsWith(DESCRIBE_PREFIX)) {
       text = STUB_LOOK;
+    } else if (req.system.startsWith(LISTENING_PREFIX)) {
+      // v4: the phone panel's one small call a day (phone.ts listeningNow).
+      text = LISTENING_REPLY;
     } else {
       const lastMessage = [...req.messages].reverse().find((m) => m.role === "user");
       // A retry's last user turn is chat.ts's operator note. The stub answers the previous
@@ -286,6 +326,9 @@ export function setStubPortraitBytes(bytes: ArrayBuffer | null): void {
 
 export const stubImageProvider: ImageProviderV3 = {
   name: "stub",
+  // v4 (SPEC_V4 section 3): `req.him` (his tagged reference on a with-him picture) is
+  // ignored here on purpose; the tag and body check is a unit test on the Runway adapter
+  // with a recording fetch. The answer is the 03_ reference or else the FIRST one.
   async generate(_env: Env, req: ImageGenerateRequest): Promise<ImageGenerateResult> {
     const ref = req.references.find((r) => r.name.includes("03_")) ?? req.references[0];
     if (!ref) throw new ProviderError("stub", "bad_request", "no reference images", 400, false);
@@ -473,3 +516,178 @@ export function stubRunwayFetch(options: StubRunwayOptions = {}): StubRunway {
 
   return { fetch: fetchImpl, requests, taskIds };
 }
+
+// ------------------------------------------------------------------ Spotify stand-in (v4, SPEC_V4 section 4, A1)
+
+// A fetch that answers the six Spotify calls src/spotify.ts makes, so the whole connect,
+// token, search and add flow runs with no key (the integration runner passes
+// --var SPOTIFY_STUB:1; the unit tests hand it in through the deps argument). The value is
+// a FetchLike that also carries `requests` (every request, with its parsed body) and a
+// `fetch` property pointing at itself, so both readings of "the stub fetch" work.
+export interface StubSpotifyOptions {
+  // What GET /v1/me reports as `product` (Amendment A1: the Premium check). Default premium;
+  // null leaves `product` out, the shape Spotify answers a Development Mode app since February 2026.
+  premium?: boolean | null;
+}
+
+export interface StubSpotifyRequest {
+  method: string;
+  url: string;
+  body: unknown;
+}
+
+export type StubSpotifyFetch = ((url: string, init?: RequestInit) => Promise<Response>) & {
+  fetch: (url: string, init?: RequestInit) => Promise<Response>;
+  requests: StubSpotifyRequest[];
+  premium: boolean | null;
+};
+
+// A copy of src/spotify.ts SPOTIFY_SCOPES (spotify.ts imports this file; the other way
+// would be a cycle). spotify_v4 may assert the two are equal.
+export const STUB_SPOTIFY_SCOPES = "playlist-modify-private playlist-read-private streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state";
+export const STUB_SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token";
+export const STUB_SPOTIFY_USER = "stublistener";
+export const STUB_SPOTIFY_PLAYLIST = "stubplaylist";
+export const STUB_SPOTIFY_TRACK = "stubtrack";
+
+function parseStubBody(init?: RequestInit): unknown {
+  if (typeof init?.body !== "string") return null;
+  const raw = init.body;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    /* not JSON */
+  }
+  if (/^[A-Za-z0-9_%+.-]+=/.test(raw)) {
+    const out: Record<string, string> = {};
+    for (const [k, v] of new URLSearchParams(raw)) out[k] = v;
+    return out;
+  }
+  return raw;
+}
+
+// The query's track: and artist: parts, for the echoed stub track.
+function stubTrackFromQuery(q: string): { title: string; artist: string } {
+  const m = /^track:(.*?)(?:\s+artist:(.*))?$/.exec(q.trim());
+  const title = (m && m[1] ? m[1] : q).trim() || "Stub Song";
+  const artist = (m && m[2] ? m[2] : "").trim() || "Stub Artist";
+  return { title, artist };
+}
+
+export function stubSpotifyFetch(options: StubSpotifyOptions = {}): StubSpotifyFetch {
+  const requests: StubSpotifyRequest[] = [];
+  const premium: boolean | null = options.premium === null ? null : options.premium !== false;
+  const json = (data: unknown, status = 200): Response =>
+    new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
+
+  const impl = async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = (init?.method ?? "GET").toUpperCase();
+    const body = parseStubBody(init);
+    requests.push({ method, url, body });
+    const u = new URL(url);
+
+    if (method === "POST" && u.origin === "https://accounts.spotify.com" && u.pathname === "/api/token") {
+      const form = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+      if (form.grant_type === "refresh_token" && form.refresh_token === "stub-revoked") {
+        return json({ error: "invalid_grant", error_description: "Refresh token revoked" }, 400);
+      }
+      return json({ access_token: "stub-access", refresh_token: "stub-refresh", expires_in: 3600, scope: STUB_SPOTIFY_SCOPES, token_type: "Bearer" });
+    }
+    if (u.origin !== "https://api.spotify.com") return json({ error: { status: 404, message: "Not found" } }, 404);
+
+    if (method === "GET" && u.pathname === "/v1/me") {
+      return json(premium === null ? { id: STUB_SPOTIFY_USER, display_name: "Stub Listener" } : { id: STUB_SPOTIFY_USER, display_name: "Stub Listener", product: premium ? "premium" : "free" });
+    }
+    if (method === "POST" && u.pathname === "/v1/me/playlists") {
+      const b = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+      return json({ id: STUB_SPOTIFY_PLAYLIST, name: typeof b.name === "string" ? b.name : "songs from avelie" }, 201);
+    }
+    if (method === "GET" && u.pathname === "/v1/search") {
+      const q = u.searchParams.get("q") ?? "";
+      if (q.includes("[[NOTFOUND]]")) return json({ tracks: { items: [] } });
+      const t = stubTrackFromQuery(q);
+      return json({
+        tracks: {
+          items: [{
+            id: STUB_SPOTIFY_TRACK, uri: "spotify:track:" + STUB_SPOTIFY_TRACK, name: t.title, artists: [{ name: t.artist }],
+            external_urls: { spotify: "https://open.spotify.com/track/" + STUB_SPOTIFY_TRACK },
+          }],
+        },
+      });
+    }
+    const add = /^\/v1\/playlists\/([^/]+)\/items$/.exec(u.pathname);
+    if (method === "POST" && add) {
+      if (add[1] !== STUB_SPOTIFY_PLAYLIST) return json({ error: { status: 404, message: "Not found." } }, 404);
+      return json({ snapshot_id: "stub" }, 201);
+    }
+    const one = /^\/v1\/playlists\/([^/]+)$/.exec(u.pathname);
+    if (method === "GET" && one) {
+      if (one[1] !== STUB_SPOTIFY_PLAYLIST) return json({ error: { status: 404, message: "Not found." } }, 404);
+      return json({ id: STUB_SPOTIFY_PLAYLIST, name: "songs from avelie" });
+    }
+    // The player's own calls (Amendment A1) go from the browser, never through here.
+    return json({ error: { status: 404, message: "Not found" } }, 404);
+  };
+
+  const f = impl as StubSpotifyFetch;
+  f.fetch = impl;
+  f.requests = requests;
+  f.premium = premium;
+  return f;
+}
+
+// ------------------------------------------------------------------ ElevenLabs stand-in (v4, Amendment A2; the [[ELEVEN]] stub)
+
+// The shape lane L10 stated: the conversation token mint answers { token: "stub-token" }
+// (the signed-url fallback answers a wss:// URL on an .invalid host), and text-to-speech
+// answers 64 bytes of a fixed pattern as audio/mpeg. Every request is recorded. Any other
+// URL is 404. No key is read or checked: a missing xi-api-key header is recorded, not refused.
+export const STUB_ELEVEN_TOKEN = "stub-token";
+export const STUB_ELEVEN_SIGNED_URL = "wss://stub-elevenlabs.invalid/v1/convai/conversation?agent_id=stub";
+const STUB_ELEVEN_BYTES = 64;
+
+export function stubElevenMp3(): ArrayBuffer {
+  const out = new Uint8Array(STUB_ELEVEN_BYTES);
+  for (let i = 0; i < out.length; i++) out[i] = (i * 7 + 3) & 0xff;
+  return out.buffer;
+}
+
+export interface StubElevenRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
+}
+
+export type StubElevenFetch = ((url: string, init?: RequestInit) => Promise<Response>) & {
+  fetch: (url: string, init?: RequestInit) => Promise<Response>;
+  requests: StubElevenRequest[];
+};
+
+export function stubElevenLabsFetch(): StubElevenFetch {
+  const requests: StubElevenRequest[] = [];
+  const json = (data: unknown, status = 200): Response =>
+    new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
+
+  const impl = async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = (init?.method ?? "GET").toUpperCase();
+    requests.push({ method, url, headers: headerMap(init), body: parseStubBody(init) });
+    const u = new URL(url);
+    if (u.origin !== "https://api.elevenlabs.io") return json({ detail: "Not found" }, 404);
+    if (method === "GET" && u.pathname === "/v1/convai/conversation/token") return json({ token: STUB_ELEVEN_TOKEN });
+    if (method === "GET" && u.pathname === "/v1/convai/conversation/get-signed-url") return json({ signed_url: STUB_ELEVEN_SIGNED_URL });
+    if (method === "POST" && u.pathname.startsWith("/v1/text-to-speech/")) {
+      const bytes = stubElevenMp3();
+      return new Response(bytes, { status: 200, headers: { "content-type": "audio/mpeg", "content-length": String(bytes.byteLength) } });
+    }
+    return json({ detail: "Not found" }, 404);
+  };
+
+  const f = impl as StubElevenFetch;
+  f.fetch = impl;
+  f.requests = requests;
+  return f;
+}
+
+// The same stub under the shorter name the amendment uses ("the [[ELEVEN]] stub").
+export const stubElevenFetch = stubElevenLabsFetch;

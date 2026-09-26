@@ -311,6 +311,59 @@ When Justin has the key on his clipboard (never through chat, never on screen):
 
 What the secret is used for: clips (section 20) and photos share it. Never run `pbpaste` on its own, never `echo` a key, never paste one in chat.
 
+## 26. v4: pull, migrate, deploy (one round, one "go"; SPEC_V4, 2026-09-26)
+
+v4 adds one migration file (0008_v4.sql, additive), three new pages, no new cron trigger, two optional Spotify secrets and the two optional VAPID secrets that were never set. The Worker name, the domain, the Access door and the existing secrets do not change. Show the before/after once and take ONE word.
+
+Before: v3.3 live (tables through 0007, four cron triggers, the v3 pages).
+After: the same Worker with the v4 code; three new tables (`places`, `spotify_auth`, `panel_cache`), three new columns (`visual_assets.with_him`, `messages.spotify_status`, `messages.pushed_at`), thirteen settings rows inserted with INSERT OR IGNORE (the nine of the spec table and the amendment's four; a row he already has is untouched); her face in the header of every page, the Phone, Album and Memory pages, the call face card, the Spotify card, the album, the memory map, the place behind the chat; the same four cron triggers, the every-20-minutes one now also stamping (and, with VAPID keys, notifying) a delayed reply that landed. The stable prompt prefix moved exactly once, for the CLIPS rule (her `[clip:]` line), so the first turn after the deploy writes the prompt cache again; PROMPT_VERSION still ends `-p7`. Nothing in the account outside the Worker and its database changes. No row that exists today is touched. Her first texts, real-mode timing and the Spotify switch still ship OFF; the call face provider ships as `clips` with no clip made yet.
+
+Then, in order, as SEPARATE commands with a check between the migration and the deploy (the Sept 24 lesson, section 19):
+
+```
+cd ~/Documents/ClaudeCode/2026-09-24_avelie
+npx wrangler deployments list
+git pull
+ls migrations
+npm test
+npm run test:integration
+npm run db:remote
+```
+
+- `npx wrangler deployments list` first: write the top (current, v3.3) version id into this section and HANDOFF.md as the v4 rollback target before anything changes.
+- `ls migrations` must show 0008_v4.sql after 0007_his_face.sql and nothing after it.
+- `npm run db:remote` must print 0008_v4.sql as applied and skip 0001 to 0007. Read the output before going on: if it prints an error (a 7403 like the Sept 24 one, a timeout, anything), STOP, do not deploy; the v4 code reads the new tables on its first request and would fail on the old schema. Check with `npx wrangler d1 migrations list avelie --remote` (0008 must be listed as applied) or `npx wrangler d1 execute avelie --remote --command "SELECT COUNT(*) AS n FROM places"` (answers 0, not an error).
+- Only then:
+
+```
+npm run deploy
+```
+
+- `npm run deploy` runs `npm test` and `check:deploy` again and then `wrangler deploy`. The output must list the custom domain and the same four cron triggers. If it shows `workers.dev` as enabled, stop.
+
+Proof (from outside, as in section 7): `/`, `/phone`, `/album`, `/memory`, `/api/avatar`, `/api/phone`, `/api/spotify`, `/media/place/x` all 302 to Access; workers.dev 404. Then, signed in: the header shows her face on every page; the Phone page draws the map; Images > Clips shows the Call face card with `clips` and no clip yet.
+
+The notification (once, from the deploy session, never by Justin; the private key is shown to nobody):
+
+```
+node scripts/gen_vapid.mjs --apply
+```
+
+It generates the pair and runs the two `wrangler secret put` commands itself. After it, `GET /api/push/public-key` answers `configured: true`, the Model page's "Get her texts on this phone" subscribes the phone, and a delayed reply or a first text buzzes it. Without it the button still turns her first texts on and notes `no push key`.
+
+The Spotify developer app (Justin does this himself, once). Spotify's February 2026 rules for Development Mode apps (every new app is one): the app owner must hold an active Premium subscription for the app to work at all, the Connect and the playlist add included, not only for full playback; if Premium lapses the app stops; one Development Mode app per developer, at most five authorized users. Ask Justin whether he has Premium before he creates the app.
+1. developer.spotify.com/dashboard, Log in, Create app: any name, any description, Redirect URI exactly `https://avelie.bladepharoh.com/api/spotify/callback`, tick Web API (and Web Playback SDK if the form lists it), Save.
+2. Open the app, Settings: copy the Client ID to the clipboard and say so. The session runs `pbpaste | npx wrangler secret put SPOTIFY_CLIENT_ID` then `printf '' | pbcopy`.
+3. View client secret, copy it, say so. The session runs `pbpaste | npx wrangler secret put SPOTIFY_CLIENT_SECRET` then `printf '' | pbcopy`. Nothing is pasted in chat; nothing is shown on screen. Secrets are live at once, no redeploy.
+4. Model page > Spotify card > Connect. Spotify's page lists the seven scopes (the two playlist scopes, streaming, playback state and control, the account's email and profile); Agree. He is back on the Model page with `connected`, his display name, and the playlist "songs from avelie" made on his account. Full playback inside the chat needs Spotify Premium; without it the embed plays previews.
+5. If he wants the playlist named differently, rename it on Spotify; the id stays.
+
+The call face (the deploy session, after his word on the source master, default `master-00`): Images > Clips > Call face > Make her call face fires idle, listening and talking in turn (three Runway clips at `videoCostUsd` each, 0.75 USD for the set); each lands as a candidate; Approve each; the `ready` chip turns on and the next call shows her. If a clip looks wrong, pick another master in the card and press again; approving a new clip of a kind archives the old one.
+
+Her own voice (optional, A2): docs/ELEVENLABS.md has the exact steps (the account and plan, her voice, the agent with overrides on, the two ids on the Model page, the API key from the clipboard as `ELEVENLABS_API_KEY`). Until then both switches stay on OpenAI and Workers AI.
+
+Rollback target for v4: the Worker version that carried v3.3, the id written down from `npx wrangler deployments list` in the first step (`npx wrangler rollback <that id>`); the v3 code runs against the v4 tables (it ignores the new columns and never reads the new tables). The Spotify row, if any, is untouched by a rollback; a later v4 deploy finds it again.
+
 ## Cost ceilings (from the build brief, 2026-09-24; confirm on Cloudflare's pricing pages, they move)
 
 - Workers Paid (5 USD a month) is required for photos: the Free plan's 10 ms CPU per request cannot decode and hash a multi-megabyte image. Paid allows 30 s. Requests: 100,000 per day free on either plan. D1 Free: 5 million rows read and 100,000 written per day, 5 GB. Workers AI: 10,000 free Neurons per day.

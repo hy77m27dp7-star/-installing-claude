@@ -37,6 +37,8 @@ export interface TimelineItem {
   mediaId: string | null;
   entity: "relationship" | "scene" | null;
   version: number | null;
+  // v4 (SPEC_V4 section 3): a photo item says whether he is in the picture.
+  withHim?: boolean;
 }
 
 export interface TimelinePage {
@@ -237,6 +239,7 @@ function photoItems(assets: VisualAssetRow[]): TimelineItem[] {
       messageId: a.message_id,
       conversationId: a.conversation_id,
       imageId: a.id,
+      withHim: Number(a.with_him ?? 0) === 1,
     }));
 }
 

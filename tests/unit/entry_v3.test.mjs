@@ -12,16 +12,23 @@ const index = readFileSync(new URL("../../src/index.ts", import.meta.url), "utf8
 const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
 const api = readFileSync(new URL("../../src/api.ts", import.meta.url), "utf8");
 
-test("CSP: the realtime origin in connect-src, blob: in media-src and img-src, nothing else opened", () => {
+// v4 (SPEC_V4 amendments A1 and A2) superseded two lines of this check: connect-src now also
+// names the Spotify and ElevenLabs origins (the page loads the Web Playback SDK and the
+// ElevenLabs client), and a wildcard host (*.spotify.com) is the SDK's dealer, not a
+// loosening. entry_v4.test.mjs pins the amended string; this check keeps the v3 invariants.
+test("CSP: the realtime origin in connect-src, blob: in media-src and img-src, nothing loosened (the v4 origins are entry_v4's)", () => {
   const m = /const CSP = `([^`]+)`/.exec(index) ?? /const CSP = "([^"]+)"/.exec(index);
   assert.ok(m, "a CSP constant");
-  let csp = m[1].replace(/\$\{REALTIME_ORIGIN\}/g, "https://api.openai.com");
-  assert.ok(/connect-src 'self' https:\/\/api\.openai\.com(;|$)/.test(csp), csp);
+  const csp = m[1].replace(/\$\{([A-Z_]+)\}/g, (whole, name) => {
+    const c = new RegExp("const " + name + ' = "([^"]+)"').exec(index);
+    return c ? c[1] : whole;
+  });
+  assert.ok(/connect-src 'self' https:\/\/api\.openai\.com( |;|$)/.test(csp), csp);
   assert.ok(/media-src 'self' blob:(;|$)/.test(csp), csp);
   assert.ok(/img-src 'self' data: blob:(;|$)/.test(csp), csp);
   assert.ok(/default-src 'self'/.test(csp) && /frame-ancestors 'none'/.test(csp) && /base-uri 'self'/.test(csp) && /form-action 'self'/.test(csp));
-  assert.ok(!/elevenlabs/i.test(csp), "no ElevenLabs origin: the page never calls it");
-  assert.ok(!/unsafe-inline|unsafe-eval|\*/.test(csp), "nothing loosened");
+  assert.ok(!/unsafe-inline|unsafe-eval/.test(csp), "nothing loosened");
+  assert.ok(!/ \*(;|$)/.test(csp) && !/'\*'/.test(csp), "no bare wildcard");
 });
 
 test("the permissions policy grants the microphone to this origin only", () => {

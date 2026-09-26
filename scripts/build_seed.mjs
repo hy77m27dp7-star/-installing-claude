@@ -2,7 +2,7 @@
 // Generates migrations/0002_seed.sql from canon/seed/*.json. Deterministic ids so the
 // migration is stable across rebuilds. Fresh start: no shared history, no facts about
 // him, no protected unknowns. Her private truths are seeded undisclosed.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 
 const facts = JSON.parse(readFileSync("canon/seed/facts.json", "utf8"));
@@ -29,11 +29,21 @@ for (const a of assets) {
   out.push(`INSERT INTO visual_assets (id, file, role, sha256, bytes, approval_status, notes, created_at) VALUES (${q(a.id)}, ${q(a.file)}, ${q(a.role)}, ${q(a.sha256)}, ${a.bytes === null || a.bytes === undefined ? "NULL" : a.bytes}, ${q(a.approval_status)}, ${q(a.notes)}, ${q(T)});`);
 }
 
+// 0002 is applied on the live database and is never edited: a settings key a later
+// migration inserts (INSERT OR IGNORE INTO settings, 0008_v4.sql onward) is that migration's
+// row, not a new line here. canon/seed/settings.json still carries every default.
+const laterKeys = new Set();
+for (const f of readdirSync("migrations").filter((n) => n.endsWith(".sql") && n !== "0002_seed.sql")) {
+  for (const m of readFileSync("migrations/" + f, "utf8").matchAll(/INSERT OR IGNORE INTO settings \(key, value, updated_at\) VALUES \('([A-Za-z0-9]+)'/g)) laterKeys.add(m[1]);
+}
+let seeded = 0;
 for (const [k, v] of Object.entries(settings)) {
+  if (laterKeys.has(k)) continue;
+  seeded++;
   out.push(`INSERT INTO settings (key, value, updated_at) VALUES (${q(k)}, ${q(JSON.stringify(v))}, ${q(T)});`);
 }
 
 out.push(`INSERT INTO audit_events (id, actor, action, entity, entity_id, before_json, after_json, created_at) VALUES (${q(idOf("audit", "seed"))}, 'system', 'seed', 'database', NULL, NULL, ${q(JSON.stringify({ facts: facts.length, assets: assets.length, note: "Fresh start at 22. Music anchor list removed per Justin 2026-09-24." }))}, ${q(T)});`);
 
 writeFileSync("migrations/0002_seed.sql", out.join("\n") + "\n");
-console.log(`seed: ${facts.length} facts, 2 state versions, ${assets.length} assets, ${Object.keys(settings).length} settings -> migrations/0002_seed.sql`);
+console.log(`seed: ${facts.length} facts, 2 state versions, ${assets.length} assets, ${seeded} settings (${laterKeys.size} left to later migrations) -> migrations/0002_seed.sql`);

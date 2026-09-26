@@ -13,14 +13,11 @@
 </head>
 <body class="page-images">
 <header class="top">
-  <a class="wordmark" href="/">AVELIE</a>
-  <nav class="nav" aria-label="Sections">
-    <a href="/">Chat</a>
-    <a href="/state">State</a>
-    <a href="/model">Model</a>
-    <a href="/images">Images</a>
-    <a href="/timeline">Timeline</a>
-  </nav>
+  <a class="brand" href="/" aria-label="Avelie, home">
+    <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
+    <span class="wordmark">AVELIE</span>
+  </a>
+  <nav class="nav" aria-label="Sections"></nav>
 </header>
 
 <main class="page">
@@ -33,6 +30,14 @@
 
   <section id="tab-photos" class="stack hidden" role="tabpanel">
     <div class="chips" id="images-status"></div>
+
+    <section class="section" id="avatarSection">
+      <div class="row between">
+        <h2 class="section-title">Avatar</h2>
+        <span class="chips" id="avatarStatus"></span>
+      </div>
+      <div class="avatar-pick" id="avatarPick" role="group" aria-label="Avatar"></div>
+    </section>
 
     <section class="section">
       <div class="row between">
@@ -70,6 +75,31 @@
       <div class="row">
         <button type="button" class="btn primary" id="clipGenerate">Make clip</button>
         <span class="chips" id="clip-status"></span>
+      </div>
+    </div>
+    <div class="card stack" id="callFaceCard">
+      <div class="row between">
+        <h2 class="section-title">Call face</h2>
+        <span class="chips" id="callFaceStatus"></span>
+      </div>
+      <div class="source-picker round" id="callFaceSources" role="group" aria-label="Call face source"></div>
+      <div class="row">
+        <button type="button" class="btn primary" id="callFaceMake">Make her call face</button>
+        <span class="chips" id="callFaceMakeStatus"></span>
+      </div>
+      <div class="face-slots" id="faceSlots">
+        <div class="face-slot" id="faceIdle" data-kind="idle">
+          <span class="face-kind">Idle</span>
+          <div class="stack tight" id="faceIdleBody"></div>
+        </div>
+        <div class="face-slot" id="faceListening" data-kind="listening">
+          <span class="face-kind">Listening</span>
+          <div class="stack tight" id="faceListeningBody"></div>
+        </div>
+        <div class="face-slot" id="faceTalking" data-kind="talking">
+          <span class="face-kind">Talking</span>
+          <div class="stack tight" id="faceTalkingBody"></div>
+        </div>
       </div>
     </div>
     <section class="section">
