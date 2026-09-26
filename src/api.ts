@@ -60,11 +60,11 @@ import {
 } from "./tastings";
 import { exportSidecar, exportTrainingStream, finetuneStatus, revertTexter, useTexter } from "./finetune";
 import { ADAPTATIONS, ALWAYS_ON, CONSTITUTION_VERSION, OVERLAY } from "./generated/constitution";
-import { PROMPT_VERSION } from "./prompt";
+import { PROMPT_VERSION, sceneMode } from "./prompt";
+import { getCurrentState } from "./db";
 import { ProviderError } from "./types";
 import type {
-  Channel, Env, FactScope, ImageProviderName, MessageRow, ProposalKind, ProposalRow, ProviderName, Settings, TurnResponse, VisualAssetRow,
-} from "./types";
+  Channel, Env, FactScope, ImageProviderName, MessageRow, ProposalKind, ProposalRow, ProviderName, Settings, TurnResponse, VisualAssetRow, SceneState } from "./types";
 
 // ------------------------------------------------------------------ router
 
@@ -728,6 +728,12 @@ const VOICE_IN_PREFIX = "voice_in/";
 // (section R): one wording for both, so "never say you waited" and "never make it about
 // him being gone" hold on Let her start as they do on the cron. He never sees it.
 const OPENER_NOTE = FIRST_TEXT_NOTE;
+// 2026-09-26: "Let her start" pressed in the middle of a Together scene (right after their first
+// kiss at the record store) sent a first text about her work day, as if they were apart, and
+// retold a story she had already told him. Together, she makes the next move in the scene.
+const SCENE_OPENER_NOTE =
+  "You are with him right now, in the scene as the record has it, and it is your move. Continue from exactly where the last messages left off: what you do or say next, in the moment, "
+  + "in present tense, the way the scene is going. Nothing about your day or work, no news, no story you have already told him, nothing that ignores what just happened between you. One or two bubbles.";
 
 // The throwaway conversations of the drift check never show in the list.
 route("GET", "/api/conversations", async (c) => json((await listConversations(c.db)).filter((r) => r.status !== "drift")));
@@ -872,7 +878,12 @@ route("POST", "/api/conversations/:id/open", async (c) => {
     .first<{ role: string }>();
   if (last && last.role === "user") throw new ApiHttpError(409, "his_turn", "his last message has no reply yet");
   const settings = await loadSettings(c);
-  return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: OPENER_NOTE }));
+  let note = OPENER_NOTE;
+  try {
+    const scene = await getCurrentState<SceneState>(c.db, "scene");
+    if (sceneMode(scene.state.status) === "together") note = SCENE_OPENER_NOTE;
+  } catch { /* no scene record: the plain opener */ }
+  return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: note }));
 });
 
 // A transcribed voice note as read from the provider: a string, or { text }.
