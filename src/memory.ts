@@ -810,20 +810,26 @@ export function deadChainIds(rows: readonly ChainRow[], isDead: (status: string)
   return out;
 }
 
-// Near-identical kept lines (content-word sets overlapping 60% or more) show once, the newest. Pure.
+// The same kept thing in other words shows once, the newest. Two lines of the same kind are
+// the same when their content words overlap by 60% of the union, or, when the shorter has at
+// least four content words, when 60% of the shorter sits inside the longer ("they took a
+// selfie at the sandwich place" inside "...then left for the record store"). Pure.
+export function sameKept(a: Set<string>, b: Set<string>): boolean {
+  if (!a.size || !b.size) return false;
+  let inter = 0;
+  for (const w of a) if (b.has(w)) inter++;
+  if (inter / (a.size + b.size - inter) >= 0.6) return true;
+  const small = Math.min(a.size, b.size);
+  return small >= 4 && inter / small >= 0.6;
+}
+
 export function collapseKept(items: MemoryMapKept[]): MemoryMapKept[] {
   const out: MemoryMapKept[] = [];
-  const sets: Array<Set<string>> = [];
+  const seen: Array<{ kind: string; words: Set<string> }> = [];
   for (const k of items) {
     const words = new Set(saidKey(k.proposal).split(" ").filter(Boolean));
-    const dup = sets.some((s2) => {
-      if (!words.size || !s2.size) return false;
-      let inter = 0;
-      for (const w of words) if (s2.has(w)) inter++;
-      return inter / (words.size + s2.size - inter) >= 0.6;
-    });
-    if (dup) continue;
-    sets.push(words);
+    if (seen.some((x) => x.kind === k.kind && sameKept(words, x.words))) continue;
+    seen.push({ kind: k.kind, words });
     out.push(k);
   }
   return out;
@@ -890,7 +896,16 @@ export async function memoryMap(db: D1Database, settings: MemorySettings | null 
     .filter(isApprovedFact)
     .filter((f) => f.scope === "avelie" && Number(f.disclosed) === 0)
     .sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id))
-    .map((f) => ({ id: f.id, subject: typeof f.subject === "string" && f.subject.trim() ? f.subject.trim() : SEALED_UNTITLED, createdAt: f.created_at }));
+    .map((f) => ({ id: f.id, subject: typeof f.subject === "string" && f.subject.trim() ? f.subject.trim() : SEALED_UNTITLED, createdAt: f.created_at }))
+    // One tile per subject ("singing x4"), newest first, so the untold list does not repeat.
+    .reduce((acc: MemoryMapSealed[], f) => {
+      const key = f.subject.toLowerCase();
+      const hit = acc.find((x) => x.subject.toLowerCase().replace(/ x\d+$/, "") === key);
+      if (!hit) { acc.push(f); return acc; }
+      const m = / x(\d+)$/.exec(hit.subject);
+      hit.subject = hit.subject.replace(/ x\d+$/, "") + " x" + String((m ? Number(m[1]) : 1) + 1);
+      return acc;
+    }, []);
 
   // 2026-09-26: the list read the raw proposal log, so every kept rewording showed (the coffee
   // place six times) even after the row behind it was merged away. Only what is still live in
