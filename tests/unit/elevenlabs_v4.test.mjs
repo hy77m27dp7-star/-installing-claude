@@ -402,6 +402,17 @@ test("public/js/vendor/elevenlabs-client.js: generated from the installed packag
     assert.ok(!BAD_TYPOGRAPHY.test(wt));
     assert.ok(wt.includes("registerProcessor("));
   }
+  const rs = readFileSync(join(ROOT, "public", "js", "vendor", "worklets", vendorScript.RESAMPLER_FILE), "utf8");
+  const rpkg = JSON.parse(readFileSync(join(ROOT, "node_modules", "@alexanderolsen", "libsamplerate-js", "package.json"), "utf8"));
+  assert.equal(built.files["worklets/" + vendorScript.RESAMPLER_FILE], rs, "the resampler on disk is what the script builds");
+  assert.ok(rs.startsWith(vendorScript.RESAMPLER_HEADER_PREFIX + rpkg.version + " "), "the resampler header names the installed version");
+  assert.equal(vendorScript.resamplerVersionNamed(readFileSync(join(ROOT, "node_modules", "@elevenlabs", "client", "dist", "lib.iife.js"), "utf8")), rpkg.version, "the version the client names is the one vendored");
+  assert.ok(rs.includes("Copyright (c) 2021 Alexander Olsen") && rs.includes("Erik de Castro Lopo"), "both licenses ride on top");
+  assert.ok(rs.includes("globalThis.LibSampleRate="), "it registers what the client's worklets read");
+  assert.ok(!BAD_TYPOGRAPHY.test(rs));
+  assert.ok(!/https?:\/\//.test(rs.slice(rs.indexOf("*/"))), "no network address in the code");
+  assert.ok(!rs.includes("WebAssembly") && !/\beval\(|new Function\(/.test(rs), "WASM2JS: nothing the CSP would refuse");
+  assert.throws(() => vendorScript.resamplerFile("x", "a */ b", "1"), /close its comment/);
   assert.equal(vendorScript.asciiTypography("a " + String.fromCharCode(0x2014) + " b" + String.fromCharCode(0x2026)), "a -- b...");
   assert.deepEqual(vendorScript.exportedNames("exports.B = 1; exports.A = 2; exports.B = 3;"), ["B", "A"]);
   assert.throws(() => vendorScript.wrapIife("var Other = (function(exports){ exports.Conversation = 1; return exports; })({});", "0"), /var ElevenLabsClient/);
@@ -412,6 +423,7 @@ test("package.json: @elevenlabs/client is the one dependency added, with the ven
   assert.deepEqual(Object.keys(pkg.dependencies).sort(), ["@anthropic-ai/sdk", "@elevenlabs/client"]);
   assert.equal(pkg.scripts["vendor:elevenlabs"], "node scripts/vendor_elevenlabs.mjs");
   assert.equal(pkg.scripts["check:vendor"], "node scripts/vendor_elevenlabs.mjs --check");
+  assert.equal(pkg.devDependencies["@alexanderolsen/libsamplerate-js"], "2.1.2", "the resampler pinned to the version the client names");
 });
 
 test("the face on the ElevenLabs path (review): faceFor gives talking while she speaks, listening while he does, idle otherwise; the level timer sets it directly, never through call.js's analyser meter", () => {
@@ -435,4 +447,6 @@ test("sessionOptions (review): the WebSocket transport names the same-origin res
   assert.equal(ws.libsampleratePath, page.LIBSAMPLERATE_PATH);
   assert.ok(page.LIBSAMPLERATE_PATH.startsWith("/js/vendor/worklets/"), "same origin");
   assert.equal(page.sessionOptions({ transport: "webrtc", clientSecret: "tok" }).libsampleratePath, undefined);
+  assert.ok(existsSync(join(ROOT, "public", page.LIBSAMPLERATE_PATH)), page.LIBSAMPLERATE_PATH + " exists (verifier: it answered 404)");
+  assert.equal(page.LIBSAMPLERATE_PATH, "/js/vendor/" + vendorScript.WORKLET_DIR + "/" + vendorScript.RESAMPLER_FILE, "the path the page passes is the file the vendor script writes");
 });
