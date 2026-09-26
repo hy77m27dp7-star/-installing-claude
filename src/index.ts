@@ -13,9 +13,19 @@
 // nightly 07:00 UTC handler also runs the maintenance pass (stale weather cache, asks to
 // let go, expired tastings, dead calls) after the backup, and a failure there is logged
 // and swallowed so the backup is never lost to it.
+//
+// v4 (SPEC_V4 sections 6 and 8, amendments A1 and A2): /media/place/:id serves a place
+// picture; /media/:id also serves a call-face clip (role callface, images.ts serveMedia,
+// video/mp4 with Range); the 20-minute cron pushes the delayed replies that came due
+// before it asks whether she texts first; the content security policy opens the Web
+// Playback SDK and its frames, the Spotify API and dealer, and the ElevenLabs API for the
+// browser client (the exact origins the SDK and the client need are what L4 and L10
+// record in docs/SPOTIFY.md and docs/ELEVENLABS.md; the integrator applies any further one).
 import { requireOwner } from "./auth";
 import { handleApi, overlaySettings } from "./api";
 import { serveAudio, serveInbox, serveLibrary, serveMedia } from "./images";
+import { servePlacePicture } from "./places";
+import { pushDueReplies } from "./deliveries";
 import { runBackup } from "./backup";
 import { runDrift } from "./drift";
 import { maybeTextFirst } from "./herfirst";
@@ -31,10 +41,21 @@ const MEDIA_PREFIX = "/media/";
 const LOCAL_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1"]);
 // v3: the call runs in the browser over WebRTC to the realtime provider (SPEC_V3 EE), so
 // the page may connect to api.openai.com and play her track from a blob; images may come
-// from a blob (a captured frame) too. No ElevenLabs origin: v2's voice notes are made by
-// the Worker, never by the page.
+// from a blob (a captured frame) too.
+// v4 (SPEC_V4 A1, A2): the one outside script is Spotify's Web Playback SDK, loaded from
+// Spotify as its terms require; it opens frames on sdk.scdn.co and the embedded player on
+// open.spotify.com, and connects to the Spotify API and the dealer WebSocket. The ElevenLabs
+// browser client (vendored, same-origin) connects to api.elevenlabs.io over https and wss.
+// Nothing is loosened: no unsafe-inline, no unsafe-eval, no wildcard scheme.
 const REALTIME_ORIGIN = "https://api.openai.com";
-const CSP = `default-src 'self'; connect-src 'self' ${REALTIME_ORIGIN}; img-src 'self' data: blob:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`;
+const SPOTIFY_SDK_ORIGIN = "https://sdk.scdn.co";
+const SPOTIFY_EMBED_ORIGIN = "https://open.spotify.com";
+const SPOTIFY_CONNECT = "https://api.spotify.com https://*.spotify.com wss://*.spotify.com";
+// v4 A2: the API and its WebSocket, plus the LiveKit host the vendored @elevenlabs/client
+// joins for the WebRTC transport (docs/ELEVENLABS.md records the four; ELEVENLABS_CONNECT_ORIGINS
+// in src/providers/elevenlabs.ts is the same list).
+const ELEVENLABS_CONNECT = "https://api.elevenlabs.io wss://api.elevenlabs.io wss://livekit.rtc.elevenlabs.io https://livekit.rtc.elevenlabs.io";
+const CSP = `default-src 'self'; script-src 'self' ${SPOTIFY_SDK_ORIGIN}; frame-src ${SPOTIFY_SDK_ORIGIN} ${SPOTIFY_EMBED_ORIGIN}; connect-src 'self' ${REALTIME_ORIGIN} ${SPOTIFY_CONNECT} ${ELEVENLABS_CONNECT}; img-src 'self' data: blob:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`;
 // The microphone for this origin only (the call button); nothing else is granted.
 const PERMISSIONS_POLICY = "microphone=(self), camera=(), geolocation=(), payment=()";
 
@@ -98,16 +119,19 @@ function harden(res: Response): Response {
 }
 
 // /media/:id her photos (v1); /media/audio/:messageId a voice note; /media/inbox/:messageId/:n
-// one of his photos; /media/library/:id an owner-uploaded clip, video or image.
+// one of his photos; /media/library/:id an owner-uploaded clip, video or image;
+// /media/place/:id a place picture (v4, SPEC_V4 section 8; image/png, 404 without one).
 function serveMediaPath(request: Request, env: Env, path: string): Promise<Response> {
   const parts = path.slice(MEDIA_PREFIX.length).split("/").map(safeDecode);
   const range = request.headers.get("range");
   const [kind, a, b] = parts;
   if (parts.length === 2 && kind === "audio" && a) return serveAudio(env, env.DB, a, range);
+  if (parts.length === 2 && kind === "place" && a) return servePlacePicture(env, env.DB, a);
   if (parts.length === 3 && kind === "inbox" && a && b !== undefined) return serveInbox(env, env.DB, a, b, range);
   if (parts.length === 2 && kind === "library" && a) return serveLibrary(env, env.DB, a, range);
   // v3: a clip (role video) is served with Range support so <video> can seek; the range
-  // rides along for every /media/:id and is ignored for a png.
+  // rides along for every /media/:id and is ignored for a png. v4: a call-face clip (role
+  // callface) streams the same way, video/mp4 with Range (images.ts serveMedia).
   // ?download=1 sends the same bytes as an attachment so the chat's Save link works.
   if (parts.length === 1 && kind) return serveMedia(env, env.DB, kind, range, new URL(request.url).searchParams.get("download") === "1");
   return Promise.resolve(notFound());
@@ -172,8 +196,13 @@ async function runCron(cron: string, at: Date, env: Env, db: D1Database): Promis
     return { id: r.id, ranAt: r.ranAt };
   }
   if (cron === CRON_HER_FIRST) {
+    // v4 (SPEC_V4 section 6): the delayed replies that came due since the last tick are
+    // pushed first (one notification for the batch, the rows stamped whatever the push
+    // did), then the first-text decision runs as before. Both results in one object.
+    const delayed: unknown = await pushDueReplies(env, db, at);
     const r: unknown = await maybeTextFirst(env, db, settings, at);
-    return typeof r === "object" && r !== null ? (r as Record<string, unknown>) : { result: r ?? null };
+    const first = typeof r === "object" && r !== null ? (r as Record<string, unknown>) : { result: r ?? null };
+    return { delayed: typeof delayed === "object" && delayed !== null ? delayed : { result: delayed ?? null }, ...first };
   }
   if (cron === CRON_VOICEPRINT) {
     const r: unknown = await runVoiceprint(db, at);

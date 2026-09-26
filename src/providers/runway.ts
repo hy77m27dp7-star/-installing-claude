@@ -217,7 +217,12 @@ export const RUNWAY_PORTRAIT_RATIO = "1080:1440";
 // gen4_image's docs do not say either way). The face crop is first and carries the bare
 // name; the prompt opens with it.
 export const RUNWAY_REFERENCE_TAGS: readonly string[] = ["avelie", "avelie_2", "avelie_3"];
+// v4 (SPEC_V4 section 3): when her description says he is in the picture, his reference
+// photo rides as the third reference under this tag and two of hers take the first two.
+export const RUNWAY_HIM_TAG = "him";
 export const MAX_IMAGE_REFERENCES = 3;
+// The words about him that ride in the prompt (settings.hisLookText, cut at a word).
+export const HIM_LOOK_PROMPT_CHARS = 160;
 export const MAX_PROMPT_UNITS = 1000;
 export const MAX_REFERENCE_URI_LENGTH = 5 * 1024 * 1024;
 // A finished photo larger than this is refused (a 1080x1440 image is a few MB at most).
@@ -272,11 +277,39 @@ function trimToWords(text: string, max: number): string {
   return (space > max / 2 ? cut.slice(0, space) : cut).trim();
 }
 
+// The man in the picture, as the request carries him (ImageGenerateRequest.him, SPEC_V4
+// section 3; the type itself is the pipeline lane's, so the field is read through a local
+// shape): his newest approved reference photo and the words about him.
+export interface HimImageRef { name: string; bytes: ArrayBuffer; look: string }
+export interface RunwayHim { tag: string; look: string }
+
+export function himOf(req: ImageGenerateRequest): HimImageRef | null {
+  const h = (req as ImageGenerateRequest & { him?: HimImageRef | null }).him;
+  if (!h || typeof h !== "object") return null;
+  if (!(h.bytes instanceof ArrayBuffer) || !h.bytes.byteLength) return null;
+  return { name: typeof h.name === "string" && h.name ? h.name : "him", bytes: h.bytes, look: typeof h.look === "string" ? h.look : "" };
+}
+
+// The line that puts him in the picture: names his tag, carries the words about him (at
+// most `lookMax` units, cut at a word; none under HIM_LOOK_MIN_CHARS, a fragment says
+// nothing), and ties him to the scene; her figure clause stays about her. A stray "@" in
+// the words would read as a tag, so none survives.
+export const HIM_LOOK_MIN_CHARS = 40;
+
+function himLine(him: RunwayHim, head: string, lookMax: number = HIM_LOOK_PROMPT_CHARS): string {
+  const words = him.look.replace(/@/g, "").replace(/\s+/g, " ").trim();
+  const budget = Math.min(HIM_LOOK_PROMPT_CHARS, Math.max(0, Math.trunc(lookMax)));
+  const look = budget >= HIM_LOOK_MIN_CHARS ? trimToWords(words, budget) : "";
+  return " @" + him.tag + " is the man in the " + him.tag + " reference" + (look ? ": " + look : "") +
+    ". He is in this picture with " + head + " exactly as the scene says; his face and build as the reference shows them.";
+}
+
 // Pure: the prompt. A short identity line that names the references by tag (no body-part
 // words: OpenAI's filter refused one this morning and Runway moderates text too), then
 // " Scene: " and her description, the whole thing within the 1000-unit cap (the scene is
-// cut at a word if it must be; the identity line never is).
-export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWAY_REFERENCE_TAGS): string {
+// cut at a word if it must be; the identity line never is). With him (v4): his line sits
+// between the identity head and the scene, and the figure clause still names only her tags.
+export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWAY_REFERENCE_TAGS, him: RunwayHim | null = null): string {
   const list = tags.length ? tags : RUNWAY_REFERENCE_TAGS;
   const head = "@" + list[0];
   const rest = list.slice(1).map((t) => "@" + t);
@@ -291,12 +324,24 @@ export function runwayImagePrompt(scene: string, tags: readonly string[] = RUNWA
     head + " is the woman in every reference image" + others + ". Show exactly her: her face as " + (rest.length >= 2 ? rest[rest.length - 1] + " and the other references" : "the references") + " show it, feature for feature, as beautiful as in the references, fully visible, lit softly and flatteringly even at night; " +
     "a clearly adult 22-year-old, fully clothed. Dresses well: fitted, flattering clothes, upright posture, never frumpy or slouched. " +
     "Setting, clothes and pose from the scene. Polished, flattering photo, no text, no watermark, one image.";
-  const prefix = identity + " Scene: ";
   // The body references are the first two tags (the black dress and the blazer); the third is
-  // the face crop, which shows no figure.
+  // the face crop, which shows no figure. With him the two are the black dress and the face
+  // crop (images.ts MASTER_ORDER_WITH_HIM); the clause is about her either way.
   const bodyRefs = rest.length ? head + " and " + rest[0] : head;
   const suffix = " Her figure here as " + bodyRefs + " show it: a small slim frame, slim waist, flat stomach, with a full bust and a full shapely backside, an hourglass under any outfit, never heavy.";
   const clean = scene.replace(/\s+/g, " ").trim();
+  const sceneMark = " Scene: ";
+  let prefix = identity + sceneMark;
+  if (him && him.tag) {
+    // The scene comes first (the model follows it; a picture of the two of them with the
+    // scene cut to three words is no picture), the words about him take what is left: the
+    // identity head, his bare line and the figure clause leave about 170 units in all, so
+    // a long look would otherwise erase the scene. His face rides in the reference either way.
+    const bare = himLine(him, head, 0);
+    const room = MAX_PROMPT_UNITS - identity.length - bare.length - sceneMark.length - suffix.length;
+    const lookRoom = room - Math.min(clean.length, Math.max(0, room));
+    prefix = identity + himLine(him, head, lookRoom) + sceneMark;
+  }
   return prefix + trimToWords(clean, MAX_PROMPT_UNITS - prefix.length - suffix.length) + suffix;
 }
 
@@ -320,13 +365,18 @@ export function referenceUri(name: string, bytes: ArrayBuffer): string {
 }
 
 // Pure: the text_to_image body for her photo. The first three references (the face crop
-// leads, images.ts loadMasterBytes orders them) tagged avelie, avelie_2, avelie_3.
+// leads, images.ts loadMasterBytes orders them) tagged avelie, avelie_2, avelie_3. With him
+// (v4, SPEC_V4 section 3): her first two and then him, tagged avelie, avelie_2, him, so the
+// count never passes MAX_IMAGE_REFERENCES; his data URI goes through the same cap.
 export function imageRequestBody(req: ImageGenerateRequest): Record<string, unknown> {
-  const chosen = req.references.slice(0, MAX_IMAGE_REFERENCES);
+  const him = himOf(req);
+  const chosen = req.references.slice(0, him ? MAX_IMAGE_REFERENCES - 1 : MAX_IMAGE_REFERENCES);
   const tags = RUNWAY_REFERENCE_TAGS.slice(0, chosen.length);
-  for (const t of tags) if (!TAG_RE.test(t)) throw new ProviderError("runway", "bad_request", "bad reference tag", 400, false);
+  for (const t of him ? [...tags, RUNWAY_HIM_TAG] : tags) if (!TAG_RE.test(t)) throw new ProviderError("runway", "bad_request", "bad reference tag", 400, false);
   const referenceImages = chosen.map((r, i) => ({ uri: referenceUri(r.name, r.bytes), tag: tags[i] }));
-  return { model: req.model, promptText: runwayImagePrompt(req.prompt, tags), ratio: ratioForSize(req.size), referenceImages };
+  if (him) referenceImages.push({ uri: referenceUri(him.name, him.bytes), tag: RUNWAY_HIM_TAG });
+  const promptText = runwayImagePrompt(req.prompt, tags, him ? { tag: RUNWAY_HIM_TAG, look: him.look } : null);
+  return { model: req.model, promptText, ratio: ratioForSize(req.size), referenceImages };
 }
 
 // Pure: a terminal task that is not a success, as a ProviderError. SAFETY.* and the

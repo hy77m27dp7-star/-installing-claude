@@ -101,3 +101,17 @@ export function pauseForId(id) {
   if (!id) return false;
   return hashString(id) % PAUSE_ONE_IN === 0;
 }
+
+// Real mode (SPEC_V4 section 6): a reply minutes away shows no dots (she is not typing
+// for six minutes); the dots start this long before it lands, then the bubbles arrive at
+// her cadence as above.
+export const DOTS_LEAD_MS = 20000;
+
+// Milliseconds until the dots should start for a reply landing at deliverAtMs: never
+// negative, zero when it lands within the lead already.
+export function dotsLeadMs(deliverAtMs, nowMs) {
+  const at = Number(deliverAtMs);
+  const now = Number(nowMs);
+  if (!Number.isFinite(at) || !Number.isFinite(now)) return 0;
+  return Math.max(0, at - now - DOTS_LEAD_MS);
+}

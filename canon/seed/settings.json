@@ -86,5 +86,18 @@
   "hisLookText": "",
   "hisFaceMax": 3,
   "hisFaceInTogether": true,
-  "hisFaceApartEvery": 8
+  "hisFaceApartEvery": 8,
+  "avatarAssetId": "master-05",
+  "callFaceProvider": "clips",
+  "callFaceSourceAssetId": "master-00",
+  "hisFaceInPhotos": true,
+  "spotifyEnabled": false,
+  "spotifyPlaylistId": "",
+  "spotifyPlaylistName": "songs from avelie",
+  "placeCostUsd": 0.08,
+  "listeningLineEnabled": true,
+  "spotifyPlayer": "sdk",
+  "elevenLabsModel": "eleven_multilingual_v2",
+  "elevenLabsTtsPricePer1kChars": 0.3,
+  "videoMarkerEnabled": true
 }

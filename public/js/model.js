@@ -23,6 +23,11 @@ const FIELDS = [
   "videoProvider", "videoModel", "videoSeconds", "videoRatio", "videoCostUsd",
   "hisFaceInTogether", "hisFaceApartEvery", "hisFaceMax",
   "dailyCapUsd", "monthlyCapUsd", "driftCheckEnabled",
+  // v4 (SPEC_V4): the call face, him in a picture, the listening line and the place
+  // pictures, her playlist and the player, her ElevenLabs voice, clips from the chat.
+  "callFaceProvider", "callFaceSourceAssetId", "hisFaceInPhotos", "listeningLineEnabled", "placeCostUsd",
+  "spotifyEnabled", "spotifyPlaylistName", "spotifyPlaylistId", "spotifyPlayer",
+  "elevenLabsModel", "elevenLabsTtsPricePer1kChars", "videoMarkerEnabled",
 ];
 const NUMERIC = new Set([
   "temperature", "maxTokens", "typoCueShare", "imageCostUsd", "dailyCapUsd", "monthlyCapUsd", "realDelayMaxMinutes", "herFirstTextsPerDay",
@@ -32,8 +37,16 @@ const NUMERIC = new Set([
   "callMaxMinutes", "callPricePerMinute", "elevenLabsCallPricePerMinute",
   "tastingDailyCapUsd", "finetuneMinExamples", "portraitCostUsd", "videoSeconds", "videoCostUsd",
   "hisFaceApartEvery", "hisFaceMax",
+  "placeCostUsd", "elevenLabsTtsPricePer1kChars",
 ]);
-const BOOL = new Set(["proposalsEnabled", "proposalsAutoApprove", "driftCheckEnabled", "textureCuesEnabled", "correctionRewriteToBank", "memoryDecayEnabled", "tastingEnabled", "hisFaceInTogether"]);
+const BOOL = new Set([
+  "proposalsEnabled", "proposalsAutoApprove", "driftCheckEnabled", "textureCuesEnabled", "correctionRewriteToBank", "memoryDecayEnabled", "tastingEnabled", "hisFaceInTogether",
+  "hisFaceInPhotos", "listeningLineEnabled", "spotifyEnabled", "videoMarkerEnabled",
+]);
+// Her first texts as the one button turns them on (SPEC_V4 section 6): two a day, quiet
+// from 23:30 to 08:30 in her timezone. The switches ship off; the button is the opt-in.
+const HER_TEXTS_PER_DAY = 2;
+const HER_TEXTS_QUIET_HOURS = "23:30-08:30";
 // The four call prices live in one settings object; the form shows them as four fields.
 const CALL_PRICE_KEYS = ["audioInPerMTok", "audioOutPerMTok", "textInPerMTok", "textOutPerMTok"];
 // Rough tokens per training example, for the two estimates the Texter card shows.
@@ -57,8 +70,9 @@ function fill(s) {
     const el = form.elements[k];
     if (!el) continue;
     const has = known.has(k);
-    // The two ElevenLabs call fields stay disabled: reserved for v3.1.
-    el.disabled = !has || el.dataset.reserved === "1";
+    // v4 (Amendment A2): the two ElevenLabs call fields are live; the v3 data-reserved
+    // rule that kept them disabled is gone, so the markup's attribute no longer matters.
+    el.disabled = !has;
     if (!has) continue;
     if (BOOL.has(k)) el.checked = !!s[k];
     else el.value = s[k] === undefined || s[k] === null ? "" : String(s[k]);
@@ -72,13 +86,14 @@ function fill(s) {
   }
   fillPrices(s.prices);
   renderTexterLive();
+  renderHerTexts([]);
 }
 
 function collect() {
   const out = {};
   for (const k of FIELDS) {
     const el = form.elements[k];
-    if (!el || (known && !known.has(k)) || el.dataset.reserved === "1") continue;
+    if (!el || (known && !known.has(k))) continue;
     let v;
     if (BOOL.has(k)) v = el.checked;
     else if (NUMERIC.has(k)) v = Number(el.value);
@@ -217,6 +232,7 @@ form.addEventListener("submit", async (e) => {
     loadGrounding();
     loadTexter();
     loadTastings();
+    loadSpotify();
   } catch (e2) {
     fail($("settings-status"), e2);
   } finally {
@@ -561,6 +577,146 @@ async function initPush() {
   });
 }
 
+// ------------------------------------------------------------ her texts on this phone (SPEC_V4 section 6)
+
+function herTextsOn() {
+  return !!(loaded && Number(loaded.herFirstTextsPerDay) > 0);
+}
+
+function renderHerTexts(notes) {
+  const btn = $("herTextsBtn");
+  const slot = $("herTextsStatus");
+  if (!btn) return;
+  const on = herTextsOn();
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  if (!slot) return;
+  clear(slot);
+  slot.append(chip(on ? "on" : "off", on ? "ok" : ""));
+  for (const n of notes || []) slot.append(chip(n, n === "denied" ? "danger" : "amber"));
+}
+
+// One press: subscribe this phone (skipped with a note when the Worker has no VAPID key;
+// "denied" when the permission was refused), then her first texts on at two a day within
+// the quiet hours. A second press with the texts on turns them off and unsubscribes.
+async function pressHerTexts() {
+  const btn = $("herTextsBtn");
+  const slot = $("herTextsStatus");
+  btn.disabled = true;
+  const notes = [];
+  try {
+    if (herTextsOn()) {
+      let sub = null;
+      try { sub = await currentSubscription(); } catch { sub = null; }
+      if (sub) await unsubscribePush();
+      fill(await api("PUT", "/api/settings", { herFirstTextsPerDay: 0 }));
+      renderHerTexts([]);
+      return;
+    }
+    const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+    let keyed = false;
+    try {
+      const r = await api("GET", "/api/push/public-key");
+      keyed = !!(r && r.configured !== false && (r.publicKey || r.key || r.vapidPublicKey));
+    } catch {
+      keyed = false;
+    }
+    if (!supported) notes.push("no push here");
+    else if (!keyed) notes.push("no push key");
+    else {
+      try {
+        await subscribePush();
+      } catch (e) {
+        notes.push(e && e.code === "denied" ? "denied" : "no push");
+      }
+    }
+    fill(await api("PUT", "/api/settings", { herFirstTextsPerDay: HER_TEXTS_PER_DAY, herFirstQuietHours: HER_TEXTS_QUIET_HOURS }));
+    renderHerTexts(notes);
+    const toggle = $("pushToggle");
+    if (toggle) { try { toggle.checked = !!(await currentSubscription()); } catch { /* unchanged */ } }
+  } catch (e) {
+    fail(slot, e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function initHerTexts() {
+  const btn = $("herTextsBtn");
+  if (!btn) return;
+  btn.addEventListener("click", pressHerTexts);
+  renderHerTexts([]);
+}
+
+// ------------------------------------------------------------ Spotify (SPEC_V4 section 4, A1)
+
+function spotifyChips(s) {
+  const out = [];
+  if (s.connected) out.push(chip("connected" + (s.displayName ? ": " + String(s.displayName) : ""), "ok"));
+  else if (s.configured === false) out.push(chip("not configured", "amber"));
+  else out.push(chip("not connected"));
+  if (s.connected) out.push(chip(loaded && loaded.spotifyEnabled ? "adding" : "paused"));
+  return out;
+}
+
+async function loadSpotify() {
+  const card = $("spotifyCard");
+  if (!card) return;
+  const status = $("spotifyStatus");
+  const playlist = $("spotifyPlaylist");
+  const connect = $("spotifyConnect");
+  const disconnect = $("spotifyDisconnect");
+  let s;
+  try {
+    s = await api("GET", "/api/spotify");
+  } catch (e) {
+    card.classList.toggle("hidden", e.status === 404);
+    if (status) { clear(status); status.append(chip(e.code, "danger")); }
+    return;
+  }
+  card.classList.remove("hidden");
+  if (!s || typeof s !== "object") return;
+  if (status) { clear(status); status.append(spotifyChips(s)); }
+  if (playlist) {
+    clear(playlist);
+    const name = s.playlist && s.playlist.name ? String(s.playlist.name) : s.playlistName ? String(s.playlistName) : "";
+    if (name) playlist.append(chip(name, "accent"));
+    if (s.connected) playlist.append(chip(s.playlist && s.playlist.ok ? "ok" : "missing", s.playlist && s.playlist.ok ? "ok" : "amber"));
+    if (s.playlistId) playlist.append(chip(String(s.playlistId).slice(0, 22), "mono"));
+  }
+  if (connect) {
+    connect.setAttribute("href", "/api/spotify/connect");
+    connect.classList.toggle("hidden", !!s.connected || s.configured === false);
+    connect.textContent = s.connected ? "Reconnect" : "Connect";
+  }
+  if (disconnect) disconnect.classList.toggle("hidden", !s.connected);
+}
+
+function initSpotify() {
+  const card = $("spotifyCard");
+  if (!card) return;
+  const disconnect = $("spotifyDisconnect");
+  if (disconnect) {
+    disconnect.addEventListener("click", async () => {
+      if (!window.confirm("Disconnect Spotify? The playlist stays on your account.")) return;
+      disconnect.disabled = true;
+      try {
+        await api("POST", "/api/spotify/disconnect", {});
+        flash($("spotify-status"), "disconnected", "ok");
+        await loadSettings();
+        loadSpotify();
+      } catch (e) {
+        fail($("spotify-status") || $("spotifyStatus"), e);
+      } finally {
+        disconnect.disabled = false;
+      }
+    });
+  }
+  // The callback lands on /model#spotify: bring the card into view once.
+  if (location.hash === "#spotify") {
+    try { card.scrollIntoView({ block: "start" }); } catch { /* fine */ }
+  }
+}
+
 // ------------------------------------------------------------ drift
 
 function flagCount(s) {
@@ -794,6 +950,9 @@ async function init() {
   loadDrift();
   loadVoiceprint();
   initPush();
+  initHerTexts();
+  initSpotify();
+  loadSpotify();
 }
 
 init();

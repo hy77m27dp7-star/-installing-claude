@@ -17,7 +17,9 @@ import { assertBudget } from "./budget";
 import { getImageProvider, imageProviderConfigured, isKeylessImageProvider } from "./providers";
 import { safeErrorMessage } from "./providers/types";
 import { ProviderError } from "./types";
-import type { Env, ModelRunRow, Settings, VisualAssetRow } from "./types";
+import type { Env, Flag, ImageGenerateRequest, ModelRunRow, Settings, VisualAssetRow } from "./types";
+import { photoIncludesHim } from "./markers";
+import { hisFaceInPhotosEnabled, hisFaceSettings, loadHimReference } from "./hisFace";
 
 // The marker parser lives in markers.ts (with the song marker); re-exported here so the
 // v1 contract (chat.ts, the unit suite) keeps importing it from images.
@@ -84,6 +86,22 @@ function notFound(): Response {
 
 function isRequestStatus(s: string): s is RequestStatus {
   return REQUEST_STATUSES.has(s);
+}
+
+// A message's flags_json with one more flag (the same array shape chat.ts writes; an
+// unreadable column starts a fresh list rather than losing the new flag).
+export function appendFlag(json: string | null, flag: Flag): string {
+  let list: Flag[] = [];
+  if (json) {
+    try {
+      const v: unknown = JSON.parse(json);
+      if (Array.isArray(v)) list = v.filter((f): f is Flag => typeof f === "object" && f !== null && typeof (f as Flag).code === "string");
+    } catch {
+      list = [];
+    }
+  }
+  list.push(flag);
+  return JSON.stringify(list);
 }
 
 function claimExpired(notes: string | null, now: number): boolean {
@@ -197,16 +215,26 @@ async function claimRequest(
 const MASTER_ORDER = ["master-05", "master-04", "master-00", "master-03", "master-01", "master-02"];
 // Fewer, stronger references hold a face better than all of them at once.
 const MAX_REFERENCES = 3;
+// v4 (SPEC_V4 section 3): when he is in the picture the third reference slot is his, so
+// hers are the body reference and the face crop. Lift this and runway.ts
+// MAX_IMAGE_REFERENCES together if Runway ever confirms more than three.
+export const MASTER_ORDER_WITH_HIM: readonly string[] = ["master-05", "master-00"];
 
-export async function loadMasterBytes(env: Env, db: D1Database): Promise<Array<{ name: string; bytes: ArrayBuffer }>> {
+export async function loadMasterBytes(
+  env: Env,
+  db: D1Database,
+  max: number = MAX_REFERENCES,
+  order: readonly string[] = MASTER_ORDER,
+): Promise<Array<{ name: string; bytes: ArrayBuffer }>> {
   const rows = (await db
     .prepare("SELECT * FROM visual_assets WHERE role = 'master' AND approval_status = 'approved' ORDER BY file")
     .all<VisualAssetRow>()).results;
   if (!rows.length) throw new ProviderError("assets", "config", "no master images in the registry", 503, false);
   // The generator leans hardest on the first references: clearest faces first (Justin, 2026-09-25).
-  const rank = (id: string): number => { const i = MASTER_ORDER.indexOf(id); return i < 0 ? MASTER_ORDER.length : i; };
+  const rank = (id: string): number => { const i = order.indexOf(id); return i < 0 ? order.length : i; };
   rows.sort((a, b) => rank(a.id) - rank(b.id) || a.file.localeCompare(b.file));
-  const chosen = rows.slice(0, MAX_REFERENCES);
+  const limit = Number.isFinite(max) && max > 0 ? Math.trunc(max) : MAX_REFERENCES;
+  const chosen = rows.slice(0, limit);
 
   return Promise.all(chosen.map(async (r) => {
     // The hash is the identity. A master with no hash on file is not a reference (the same
@@ -352,18 +380,32 @@ export async function generateCandidate(
     }
     await assertBudget(db, settings, settings.imageCostUsd);
 
-    // 2. generate
+    // 2. generate. v4 (SPEC_V4 section 3): when her description says he is in the picture
+    // and hisFaceInPhotos is on, his newest approved reference photo rides as the third
+    // reference and two of hers take the first two; with no usable photo of him the
+    // picture is made of her alone with the ordinary three, and the message is flagged.
     const provider = getImageProvider(providerName);
-    const references = await loadMasterBytes(env, db);
-    const result = await provider.generate(env, {
+    const withHim = photoIncludesHim(description) && hisFaceInPhotosEnabled(settings);
+    const himOnFile = withHim ? await loadHimReference(env, db) : null;
+    const him = himOnFile && himOnFile.bytes ? { name: himOnFile.name, bytes: himOnFile.bytes, look: hisFaceSettings(settings).hisLookText } : null;
+    const himFlag: Flag | null = withHim && !him
+      ? himOnFile
+        ? { code: "him_photo_too_large", severity: "flag", detail: "his reference photo encodes past the 5 MB cap; the picture is of her alone" }
+        : { code: "him_not_on_file", severity: "flag", detail: "no approved photo of him on file; the picture is of her alone" }
+      : null;
+    const references = him ? await loadMasterBytes(env, db, MAX_REFERENCES - 1, MASTER_ORDER_WITH_HIM) : await loadMasterBytes(env, db);
+    const generateRequest: ImageGenerateRequest & { him: typeof him } = {
       prompt: description,
       identityPrompt: imageIdentityPrompt(),
       references,
       model,
       quality: settings.imageQuality,
       size: settings.imageSize,
-    });
+      him,
+    };
+    const result = await provider.generate(env, generateRequest);
     const latencyMs = Date.now() - started;
+    const withHimRow = him ? 1 : 0;
 
     // 3. blacklist. A rejected hash stays refused; a real provider can still be asked again.
     const sha = await sha256Hex(result.png);
@@ -385,7 +427,7 @@ export async function generateCandidate(
     if (!live) throw new ClaimLostError();
     await env.MEDIA.put(key, result.png, { httpMetadata: { contentType: "image/png" } });
 
-    const row: VisualAssetRow = {
+    const row: VisualAssetRow & { with_him: number } = {
       ...request,
       file: key,
       sha256: sha,
@@ -394,6 +436,7 @@ export async function generateCandidate(
       provider: providerName,
       model: result.model,
       notes: null,
+      with_him: withHimRow,
     };
     const costMicro = Math.max(0, Math.round((Number.isFinite(settings.imageCostUsd) ? settings.imageCostUsd : 0) * MICRO));
     const run: ModelRunRow = {
@@ -414,17 +457,24 @@ export async function generateCandidate(
     };
 
     const stmts: D1PreparedStatement[] = [
-      db.prepare("UPDATE visual_assets SET file = ?2, sha256 = ?3, bytes = ?4, approval_status = 'candidate', provider = ?5, model = ?6, notes = NULL WHERE id = ?1 AND approval_status = 'generating' AND notes = ?7")
-        .bind(id, key, sha, row.bytes, providerName, row.model, claimNote),
+      db.prepare("UPDATE visual_assets SET file = ?2, sha256 = ?3, bytes = ?4, approval_status = 'candidate', provider = ?5, model = ?6, notes = NULL, with_him = ?8 WHERE id = ?1 AND approval_status = 'generating' AND notes = ?7")
+        .bind(id, key, sha, row.bytes, providerName, row.model, claimNote, withHimRow),
       insertModelRunStmt(db, run),
       usageStmt(db, dayKey(), providerName, model, 0, 0, costMicro),
       auditStmt(db, actor, "image.generate", "visual_asset", id, null, {
-        file: key, sha256: sha, bytes: row.bytes, conversation_id: conversationId, message_id: requestMessageId, provider: providerName, model,
+        file: key, sha256: sha, bytes: row.bytes, conversation_id: conversationId, message_id: requestMessageId, provider: providerName, model, withHim: withHimRow === 1,
       }),
     ];
     if (requestMessageId) {
       stmts.push(db.prepare("UPDATE messages SET image_id = ?1, image_status = 'ready' WHERE id = ?2 AND image_id = ?1 AND image_status = 'pending'")
         .bind(id, requestMessageId));
+      // The reason his face is missing from a picture that named him rides on the message
+      // (read, append, write back guarded by the id); an owner picture without a message writes nothing.
+      if (himFlag) {
+        const current = await db.prepare("SELECT flags_json FROM messages WHERE id = ?1").bind(requestMessageId).first<{ flags_json: string | null }>();
+        const flags = appendFlag(current?.flags_json ?? null, himFlag);
+        stmts.push(db.prepare("UPDATE messages SET flags_json = ?2 WHERE id = ?1").bind(requestMessageId, flags));
+      }
     }
     const results = await db.batch(stmts);
     if (!results[0]?.meta.changes) {
@@ -450,11 +500,27 @@ export async function generateCandidate(
 // v3 (SPEC_V3 DD, FF): the rows of a portrait and a clip. VisualAssetRow.role in
 // ../types is the pipeline lane's; these two roles are read through this view until it
 // carries them (0001_init.sql has no CHECK on the column, so they insert as they are).
-export type AssetRole = VisualAssetRow["role"] | "portrait" | "video";
+// v4 (SPEC_V4 section 2): a call-face clip (role callface) walks the same states as a clip.
+export type AssetRole = VisualAssetRow["role"] | "portrait" | "video" | "callface";
 export const PORTRAIT_PREFIX = "portraits/";
 export const VIDEO_PREFIX = "videos/";
 // A portrait row names its person in notes, while pending and after (SPEC_V3 DD).
 const PERSON_NOTE = "person:";
+// A call-face row names its kind in notes: "callface:<kind>" once a candidate (then
+// "callface:<kind> | <his note>" after approval) or "kind:<kind>" inside the claim note
+// while generating. The same reading as callface.ts callFaceKindOf (lane L2), kept local
+// so images.ts pulls in no clip module (callface.ts -> video.ts -> images.ts).
+const CALL_FACE_KINDS: ReadonlySet<string> = new Set(["idle", "listening", "talking"]);
+
+export function callFaceKindFromNotes(notes: string | null | undefined): string | null {
+  if (typeof notes !== "string") return null;
+  for (const raw of notes.split("|")) {
+    const part = raw.trim();
+    const m = /^(?:callface|kind):\s*([a-z]+)$/i.exec(part);
+    if (m && m[1] && CALL_FACE_KINDS.has(m[1].toLowerCase())) return m[1].toLowerCase();
+  }
+  return null;
+}
 
 export function roleOf(row: VisualAssetRow): AssetRole {
   return row.role as AssetRole;
@@ -498,7 +564,7 @@ export async function decideImage(
   if (!row) throw new ApiHttpError(404, "not_found", "asset not found");
   const role = roleOf(row);
   if (role === "master") throw new ApiHttpError(403, "fixed_canon", "master images are not decided here");
-  if (role !== "candidate" && role !== "scene" && role !== "portrait" && role !== "video") {
+  if (role !== "candidate" && role !== "scene" && role !== "portrait" && role !== "video" && role !== "callface") {
     throw new ApiHttpError(409, "not_decidable", "asset role is " + row.role);
   }
   if (isRequestStatus(row.approval_status)) throw new ApiHttpError(409, "not_ready", "the picture has not been generated");
@@ -532,6 +598,24 @@ export async function decideImage(
         stmts.push(db.prepare("UPDATE life_threads SET portrait_asset_id = ?1 WHERE id = ?2").bind(id, head.id));
       }
     }
+    // A call-face approval (v4, SPEC_V4 section 2): one approved clip per kind. The earlier
+    // approved clip of this kind, if any, goes to the archive, the way a portrait approval
+    // archives the earlier face. A row whose kind cannot be read archives nothing.
+    if (role === "callface") {
+      const kind = callFaceKindFromNotes(row.notes);
+      if (kind) {
+        const approved = (await db
+          .prepare("SELECT id, notes FROM visual_assets WHERE role = 'callface' AND approval_status = 'approved' AND id != ?1")
+          .bind(id)
+          .all<{ id: string; notes: string | null }>()).results;
+        for (const other of approved) {
+          if (callFaceKindFromNotes(other.notes) !== kind) continue;
+          stmts.push(db
+            .prepare("UPDATE visual_assets SET approval_status = 'archive', decided_at = ?2 WHERE id = ?1 AND role = 'callface' AND approval_status = 'approved'")
+            .bind(other.id, t));
+        }
+      }
+    }
   } else {
     if (row.approval_status !== "rejected") {
       // The row and its hash stay; only the bytes go.
@@ -563,16 +647,18 @@ export async function decideImage(
 
 // v1: a photo (candidate or scene) as image/png. v3 (SPEC_V3 DD, FF): a portrait as
 // image/png and a clip (role video) as video/mp4 with Range support, so <video> can seek.
+// v4 (SPEC_V4 section 2): a call-face clip (role callface) streams exactly as a clip does.
+// Role him is left out on purpose (his photos are served by serveHim for the State page only).
 export async function serveMedia(env: Env, db: D1Database, id: string, range: string | null = null, download = false): Promise<Response> {
   if (!id || id.length > 80) return notFound();
   const row = await getAsset(db, id);
   if (!row) return notFound();
   const role = roleOf(row);
   const statusOk = row.approval_status === "candidate" || row.approval_status === "approved";
-  const roleOk = role === "candidate" || role === "scene" || role === "portrait" || role === "video";
+  const roleOk = role === "candidate" || role === "scene" || role === "portrait" || role === "video" || role === "callface";
   if (!statusOk || !roleOk) return notFound();
-  if (role === "video") return streamObject(env, row.file, "video/mp4", range);
-  if (role === "portrait") return streamObject(env, row.file, "image/png", range);
+  if (role === "video" || role === "callface") return streamObject(env, row.file, "video/mp4", range, download ? `avelie-${id}.mp4` : null);
+  if (role === "portrait") return streamObject(env, row.file, "image/png", range, download ? `avelie-${id}.png` : null);
 
   const obj = await env.MEDIA.get(row.file);
   if (!obj) return notFound();
@@ -678,14 +764,16 @@ function parseRange(header: string | null, size: number): { offset: number; leng
 }
 
 // Streams one private object, honouring a Range header so audio and video can seek.
-async function streamObject(env: Env, key: string, contentType: string, range: string | null): Promise<Response> {
+// `downloadName` (v4): when set, the object is served as an attachment under that name
+// (the album's and the chat's Save links, `?download=1`), else inline as before.
+async function streamObject(env: Env, key: string, contentType: string, range: string | null, downloadName: string | null = null): Promise<Response> {
   const head = await env.MEDIA.head(key);
   if (!head) return notFound();
   const type = contentType || head.httpMetadata?.contentType || "application/octet-stream";
   const base: Record<string, string> = {
     "content-type": type,
     "cache-control": "private, no-store",
-    "content-disposition": "inline",
+    "content-disposition": downloadName ? `attachment; filename="${downloadName}"` : "inline",
     "x-content-type-options": "nosniff",
     "accept-ranges": "bytes",
   };

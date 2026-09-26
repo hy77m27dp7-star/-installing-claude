@@ -34,6 +34,13 @@ Each check adds a flag with a code. The codes and what happens:
 | over_polish | flag | v3: three or more sentences, every one capitalised and closed, plus a semicolon, a "not X, but Y", three comma-separated items, a caption tail or a built punchline |
 | retry_skipped | flag | the checks asked for a retry and the caps refused the second call; the first draft stands |
 | tasting_void | flag | v3: one side of a tasting failed or refused; the other was stored as an ordinary reply |
+| photo_with_him | flag | v4: her photo line says he is in the picture (`photoIncludesHim`), so the pipeline reached for his reference photo; never a retry, it tells you why the picture has him in it |
+| him_not_on_file | flag | v4: her line named him but no approved photo of him is on file (State > Facts > What he looks like), so the picture is of her alone |
+| him_photo_too_large | flag | v4: his reference photo encodes past the 5 MB data-URI cap the image models take; the picture is of her alone until a smaller photo is uploaded |
+| clip_with_photo | flag | v4 (A3): the reply carried both a photo line and a clip line; the clip is kept, the photo line dropped (a message carries one or the other) |
+| clip_unavailable | flag | v4 (A3): the reply carried a clip line while `videoMarkerEnabled` is off, the video provider is off or its key is missing; the line is stripped, nothing is made |
+| clip_pending | flag | v4 (A3): the clip her line asked for was started; the detail is the asset id the page polls |
+| clip_failed | flag | v4 (A3): the clip could not be started (the detail is the error class: the caps, the source, the provider); the reply stands without it |
 
 The action is the worst thing found: any retry code means retry; otherwise any repair code means repair; otherwise accept. The v2 codes are all flag only; they never cause a retry. In v3 two codes retry (`exemplar_verbatim`, `ask_nag`) and two are flags (`shape_uniform`, `over_polish`): polish is judgment, and judgment stays his; a pattern in the flags is what changes a rule, never a rewrite of her line. `written_joke` keeps being emitted as its own code beside `over_polish`, because folding it in would hide how often the specific thing he hates still happens. Flags are stored on the message and on the run whatever the action, the Chat page shows them as small muted chips under her message, and the why panel lists them with the ids the turn was built from. The chips are for you; she never sees them.
 
@@ -115,3 +122,7 @@ From the July archive, and it governs every change to her rules:
 4. Patch only when a pattern exists. A pattern is the same class of failure showing up repeatedly under the same conditions. Then change one thing: a phrase in the overlay, a threshold in a check, a model setting. Rerun the suite. Compare.
 
 Do not redesign after one bad line. The July history is a run of versions and emergency patches that each answered the last regression and were all frozen as failed branches. Her rules are versioned, her state is versioned, and the suite is repeatable, so there is no need to guess.
+
+## What v4 changes in the flags (2026-09-26)
+
+Nothing in v4 changes how she speaks: the stable prefix moved once, for the CLIPS rule (her `[clip:]` line, next to PHOTOS, the same shape: her own words, at most one per message, only when it fits, never to fill silence, the line stripped so the clip is never described twice, a clip of her singing only when she chooses it), and every v4 code above is a flag, never a retry. Read them the way the v2 flags are read: `photo_with_him` says the two-of-you path ran; `him_not_on_file` and `him_photo_too_large` say why it could not; the clip flags say what happened to a clip line. A pattern in them changes a rule (the detector's word lists in src/markers.ts, the CLIPS paragraph), never a rewrite of her line.

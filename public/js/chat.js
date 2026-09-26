@@ -3,11 +3,19 @@
 // v3: a Note sheet and a Keep / Drop mark under her messages, the "his version" line,
 // blind tastings (two panels, one pick), and phone calls (the Call button, the sheet, the
 // call card in the thread).
+// v4 (SPEC_V4 sections 0, 1, 3, 4, 6, 8, A1, A3): her avatar beside her bubbles and the
+// typing dots, run-based timestamps, the dots lead in real mode and the reload on return,
+// the phone slide-in, the song card's status chip, Retry and play control with the
+// now-playing strip, the `us` chip, the video bubble, the place picker's prefill chain
+// and the place picture behind the thread.
 import {
   api, apiForm, h, chip, clear, fmtDate, fmtTime, fmtDuration, flagCodes, parseJson, registerServiceWorker, storeGet, storeSet, svgIcon,
 } from "./api.js";
-import { splitBubbles, bubbleDelayMs, pauseForId, PAUSE_MS } from "./bubbles.js";
+import { splitBubbles, bubbleDelayMs, pauseForId, PAUSE_MS, dotsLeadMs } from "./bubbles.js";
 import { createCall } from "./call.js";
+// nav.js builds the header at load and exports avatarImg(size) (SPEC_V4 section 0); the
+// namespace import keeps this page alive on a tree where the export has not landed yet.
+import * as nav from "./nav.js";
 
 const POLL_MS = 3000;
 // Longer than the server's claim lease (4 min), so a request another tab holds either
@@ -30,6 +38,18 @@ const NOTE_KINDS = [
 ];
 const MARK_CYCLE = { none: "keep", keep: "drop", drop: "none" };
 const MARK_LABEL = { none: "keep", keep: "kept", drop: "dropped" };
+// v4
+const PLACE_KEY = "avelie.lastPlace";
+// Messages of one sender within this gap read as one run: one avatar, one time.
+const RUN_GAP_MS = 10 * 60 * 1000;
+const AVATAR_PX = 28;
+// A song whose Spotify add is still pending is read once more after this long.
+const SONG_REFRESH_MS = 8000;
+// A clip is driven forward by polling (the task only moves when a page asks), 5 s apart
+// for up to 10 minutes, as the Images page does.
+const CLIP_POLL_MS = 5000;
+const CLIP_POLL_MAX = 120;
+const PLACES_TTL_MS = 60000;
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -82,6 +102,12 @@ const els = {
   callMute: $("callMute"),
   callEnd: $("callEnd"),
   callAudio: $("callAudio"),
+  // v4 (markup by the design lane; every one optional so an older shell still runs)
+  phoneBtn: $("phoneBtn"),
+  phoneDrawer: $("phoneDrawer"),
+  phoneDrawerBody: $("phoneDrawerBody"),
+  phoneClose: $("phoneClose"),
+  nowPlaying: $("nowPlaying"),
 };
 
 const state = {
@@ -116,6 +142,20 @@ const state = {
   chipsFor: new Map(),
   tasting: null,
   call: null,
+  // v4
+  // Every visual_assets row the assets route lists, by id: the role tells a clip from a
+  // photo, with_him marks the `us` chip.
+  assets: new Map(),
+  clipPollers: new Map(),
+  // Source photo per clip id (its poster), read from the claim note while it generates.
+  clipSources: new Map(),
+  songTimers: new Map(),
+  // Messages whose pending song status was already read once more (one refresh, not a loop).
+  songRefreshed: new Set(),
+  player: { state: "off", track: null, position: 0, duration: 0, at: 0 },
+  playerTicker: null,
+  placeRows: null,
+  placeRowsAt: 0,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -235,6 +275,7 @@ async function loadThread() {
     if (assets) {
       state.approved = new Set((assets.scenes || []).map((a) => a.id));
       state.rejected = new Set((assets.rejected || []).map((a) => a.id));
+      indexAssets(assets);
     }
   } catch (e) {
     if (alive(seq)) showError(e.code, false);
@@ -261,9 +302,24 @@ async function loadThread() {
     }
   }
   flush();
+  layoutRuns();
   updateStartButton();
   scrollBottom();
   restoreTasting(id, seq);
+}
+
+// The assets route answers lists by status; the thread wants one map by id.
+function indexAssets(assets) {
+  state.assets = new Map();
+  if (!assets || typeof assets !== "object") return;
+  for (const list of Object.values(assets)) {
+    if (!Array.isArray(list)) continue;
+    for (const a of list) if (a && a.id) state.assets.set(a.id, a);
+  }
+}
+
+function rememberAsset(a) {
+  if (a && a.id) state.assets.set(a.id, a);
 }
 
 // The library rows her media cards resolve against. Optional: a missing route hides nothing else.
@@ -316,6 +372,74 @@ function appendMessage(el) {
   const id = el.getAttribute("data-id");
   if (id && findMessageEl(id)) return;
   els.thread.insertBefore(el, els.typing);
+  layoutRuns();
+}
+
+// ------------------------------------------------------------ runs (v4 section 0)
+
+// Her avatar: nav.js renders the header's one and hands out copies at any size; on a shell
+// without that export the header image is cloned, and with no header image at all an empty
+// one keeps the column aligned.
+function makeAvatar(size) {
+  let img = null;
+  if (typeof nav.avatarImg === "function") {
+    try { img = nav.avatarImg(size); } catch { img = null; }
+  }
+  if (!(img instanceof HTMLImageElement)) {
+    const header = document.getElementById("avatar");
+    img = h("img", { class: "avatar", alt: "", decoding: "async" });
+    if (header && header.src) {
+      img.src = header.src;
+      img.style.objectPosition = header.style.objectPosition || "";
+    }
+    img.dataset.avatar = "her";
+  }
+  img.classList.add("avatar", "msg-avatar");
+  img.setAttribute("width", String(size));
+  img.setAttribute("height", String(size));
+  img.setAttribute("alt", "");
+  return img;
+}
+
+function avatarSpacer() {
+  return h("span", { class: "msg-avatar spacer", "aria-hidden": "true" });
+}
+
+function runOf(el) {
+  const at = Date.parse(el.getAttribute("data-at") || "");
+  return { role: el.classList.contains("his") ? "his" : "hers", op: el.classList.contains("op"), at: Number.isFinite(at) ? at : NaN };
+}
+
+// A run is one sender's messages within ten minutes of each other. The first of a run of
+// hers carries her avatar, the rest a spacer; the time shows on the first of a run and on
+// the last message of the thread. Recomputed on every change (the thread is small).
+function layoutRuns() {
+  const list = [...els.thread.querySelectorAll(".msg[data-at]")];
+  let prev = null;
+  list.forEach((el, i) => {
+    const cur = runOf(el);
+    const sameRun = !!prev && !cur.op && !prev.op && prev.role === cur.role
+      && Number.isFinite(cur.at) && Number.isFinite(prev.at) && cur.at >= prev.at && cur.at - prev.at <= RUN_GAP_MS;
+    el.classList.toggle("run-first", !sameRun);
+    el.classList.toggle("run-rest", sameRun);
+    if (cur.role === "hers" && !cur.op) {
+      const slot = el.querySelector(":scope > .msg-avatar");
+      const wantImg = !sameRun;
+      const isImg = slot instanceof HTMLImageElement;
+      if (!slot) el.prepend(wantImg ? makeAvatar(AVATAR_PX) : avatarSpacer());
+      else if (wantImg && !isImg) slot.replaceWith(makeAvatar(AVATAR_PX));
+      else if (!wantImg && isImg) slot.replaceWith(avatarSpacer());
+    }
+    const time = el.querySelector(":scope > .meta > .time");
+    if (time) time.classList.toggle("hidden", sameRun && i !== list.length - 1);
+    prev = cur;
+  });
+}
+
+// The typing indicator carries the same avatar before its dots.
+function mountTypingAvatar() {
+  if (!els.typing || els.typing.querySelector(".msg-avatar")) return;
+  els.typing.prepend(makeAvatar(AVATAR_PX));
 }
 
 function noteRole(m) {
@@ -337,7 +461,10 @@ function bubbleEl(text) {
 function renderMessage(m, errorCode, error) {
   const his = m.role === "user";
   const op = m.channel === "operator";
-  const el = h("div", { class: "msg " + (his ? "his" : "hers") + (op ? " op" : ""), "data-id": m.id || "" });
+  const el = h("div", { class: "msg " + (his ? "his" : "hers") + (op ? " op" : ""), "data-id": m.id || "", "data-at": m.created_at || new Date().toISOString() });
+  // Hers sit in a 28px avatar column (the stylesheet's grid); the first of a run gets the
+  // image in layoutRuns, the rest keep the spacer. An operator row keeps the column too.
+  if (!his) el.append(avatarSpacer());
   const bubbles = h("div", { class: "bubbles" });
   if (his) {
     const b = h("div", { class: "bubble" });
@@ -373,7 +500,7 @@ function renderMessage(m, errorCode, error) {
 }
 
 function metaRow(m) {
-  const row = h("div", { class: "meta" }, h("span", { text: fmtTime(m.created_at) }));
+  const row = h("div", { class: "meta" }, h("span", { class: "time", text: fmtTime(m.created_at) }));
   if (m.role === "assistant" && m.channel !== "operator" && m.id) {
     row.append(h("button", { type: "button", class: "why", text: "why", onclick: () => openWhy(m) }));
     row.append(h("button", { type: "button", class: "note-btn", text: "note", onclick: () => toggleNoteSheet(m) }));
@@ -401,19 +528,89 @@ function hisThumbs(m) {
   return wrap;
 }
 
+// The chip the card shows for each Spotify add outcome; pending and off show nothing.
+const SONG_STATUS = { added: ["added", "ok"], already: ["already", ""], not_found: ["not found", "amber"], failed: ["failed", "danger"] };
+
+function spotifyUrl(v) {
+  return typeof v === "string" && v.startsWith("https://open.spotify.com/") ? v : "";
+}
+
 function songCard(m) {
   const song = parseJson(m.song_json, null);
   if (!song || typeof song !== "object" || !song.title) return null;
   const artist = String(song.artist || "");
   const title = String(song.title || "");
-  let href = typeof song.searchUrl === "string" && song.searchUrl.startsWith("https://open.spotify.com/") ? song.searchUrl : "";
+  // The track itself once the add found it (v4), else the search as before.
+  let href = spotifyUrl(song.trackUrl) || spotifyUrl(song.searchUrl);
   if (!href) href = "https://open.spotify.com/search/" + encodeURIComponent((artist + " " + title).trim());
-  return h("div", { class: "song-card" },
+  const uri = typeof song.uri === "string" && song.uri.startsWith("spotify:track:") ? song.uri : "";
+  const status = typeof m.spotify_status === "string" ? m.spotify_status : "";
+  const slot = h("span", { class: "song-status chips" });
+  const known = SONG_STATUS[status];
+  if (known) slot.append(chip(known[0], known[1]));
+  if (m.id && (status === "failed" || status === "not_found")) {
+    const retry = h("button", { type: "button", class: "btn small quiet song-retry", text: "Retry" });
+    retry.addEventListener("click", async () => {
+      retry.disabled = true;
+      try {
+        const r = await api("POST", "/api/messages/" + encodeURIComponent(m.id) + "/spotify", {});
+        const next = r && typeof r.status === "string" ? r.status : "pending";
+        state.songRefreshed.delete(m.id);
+        replaceSong({ ...m, spotify_status: next });
+        if (next === "pending") refreshSongLater(m.id);
+      } catch (e) {
+        retry.disabled = false;
+        clear(slot);
+        slot.append(chip(e.code || "error", "danger"), retry);
+      }
+    });
+    slot.append(retry);
+  }
+  if (m.id && status === "pending") refreshSongLater(m.id);
+  const card = h("div", { class: "song-card", "data-uri": uri },
     h("span", { class: "note", "aria-hidden": "true" }, svgIcon("note")),
     h("span", { class: "song-text" },
       h("span", { class: "song-title", text: title }),
       artist ? h("span", { class: "song-artist", text: artist }) : null),
-    h("a", { class: "song-link", href, target: "_blank", rel: "noopener noreferrer", text: "Open in Spotify" }));
+    h("a", { class: "song-link", href, target: "_blank", rel: "noopener noreferrer", text: "Open in Spotify" }),
+    slot);
+  // A1: the play control. Hidden until player.js says the device is ready; player.js swaps
+  // it for the embed when there is no Premium. The card never talks to Spotify itself.
+  if (uri) {
+    const play = h("button", { type: "button", class: "icon-btn song-play hidden", "aria-label": "Play", "data-uri": uri }, svgIcon("play"));
+    play.addEventListener("click", () => {
+      const p = state.player;
+      const mine = p.track && p.track.uri === uri;
+      if (mine && p.state === "playing") window.dispatchEvent(new CustomEvent("avelie:pause"));
+      else window.dispatchEvent(new CustomEvent("avelie:play", { detail: { uri } }));
+    });
+    card.append(play);
+    paintPlayButton(play);
+  }
+  return card;
+}
+
+// One more read of the message after a moment: the add runs after the reply was stored.
+// Once per message per page load; a status still pending after that waits for a reload.
+function refreshSongLater(id) {
+  if (!id || state.songTimers.has(id) || state.songRefreshed.has(id)) return;
+  state.songRefreshed.add(id);
+  const timer = setTimeout(async () => {
+    state.songTimers.delete(id);
+    let fresh = null;
+    try { fresh = await api("GET", "/api/messages/" + encodeURIComponent(id)); } catch { fresh = null; }
+    if (fresh && fresh.id) replaceSong(fresh);
+  }, SONG_REFRESH_MS);
+  state.songTimers.set(id, timer);
+}
+
+function replaceSong(m) {
+  const el = findMessageEl(m.id);
+  if (!el) return;
+  const extras = el.querySelector(".extras");
+  const old = extras ? extras.querySelector(".song-card") : null;
+  const fresh = songCard(m);
+  if (old && fresh) old.replaceWith(fresh);
 }
 
 function mediaCard(m) {
@@ -439,6 +636,168 @@ function mediaCard(m) {
 
 function scrollBottom() {
   els.thread.scrollTop = els.thread.scrollHeight;
+}
+
+// ------------------------------------------------------------ player (v4 A1)
+
+// The page never calls Spotify. player.js (the Spotify lane) owns the device and speaks
+// through window events: this page dispatches avelie:play / avelie:pause / avelie:next
+// and renders whatever avelie:player reports.
+
+function pauseIcon() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "currentColor");
+  svg.setAttribute("aria-hidden", "true");
+  for (const x of [6, 14]) {
+    const r = document.createElementNS(NS, "rect");
+    r.setAttribute("x", String(x));
+    r.setAttribute("y", "4");
+    r.setAttribute("width", "4");
+    r.setAttribute("height", "16");
+    r.setAttribute("rx", "1");
+    svg.append(r);
+  }
+  return svg;
+}
+
+function nextIcon() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "currentColor");
+  svg.setAttribute("aria-hidden", "true");
+  const p = document.createElementNS(NS, "path");
+  p.setAttribute("d", "M5 4l11 8-11 8z");
+  const r = document.createElementNS(NS, "rect");
+  r.setAttribute("x", "17");
+  r.setAttribute("y", "4");
+  r.setAttribute("width", "3");
+  r.setAttribute("height", "16");
+  svg.append(p, r);
+  return svg;
+}
+
+// The strip comes from the shell (#nowPlaying with #npTitle, #npArtist, #npProgress,
+// #npTime, #npPause, #npNext); an older shell gets the same markup built here under the
+// thread. The progress bar is the stylesheet's .progress: a span whose width is set
+// through the CSSOM.
+function nowPlayingEl() {
+  if (els.nowPlaying && els.nowPlaying.querySelector("#npTitle")) return els.nowPlaying;
+  const strip = els.nowPlaying || h("div", { class: "now-playing hidden", id: "nowPlaying", "aria-label": "Now playing", "aria-hidden": "true" });
+  clear(strip);
+  strip.append(
+    h("span", { class: "np-note", "aria-hidden": "true" }, svgIcon("note")),
+    h("div", { class: "np-text" },
+      h("span", { class: "np-title", id: "npTitle" }),
+      h("span", { class: "np-artist", id: "npArtist" }),
+      h("div", { class: "progress np-progress", id: "npProgress", role: "progressbar", "aria-label": "Position", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": "0" }, h("span"))),
+    h("span", { class: "np-time", id: "npTime" }),
+    h("button", { type: "button", class: "icon-btn", id: "npPause", "aria-label": "Pause", "aria-pressed": "false" }, pauseIcon()),
+    h("button", { type: "button", class: "icon-btn", id: "npNext", "aria-label": "Next" }, nextIcon()));
+  if (!els.nowPlaying) {
+    const wrap = els.thread.parentElement;
+    if (wrap) wrap.insertBefore(strip, els.composer);
+    else document.body.append(strip);
+    els.nowPlaying = strip;
+  }
+  return strip;
+}
+
+function wireNowPlaying() {
+  const strip = nowPlayingEl();
+  if (strip.dataset.wired === "1") return strip;
+  strip.dataset.wired = "1";
+  const pause = strip.querySelector("#npPause");
+  const next = strip.querySelector("#npNext");
+  if (pause) pause.addEventListener("click", () => {
+    const p = state.player;
+    if (p.state === "playing") window.dispatchEvent(new CustomEvent("avelie:pause"));
+    else window.dispatchEvent(new CustomEvent("avelie:play", { detail: p.track ? { uri: p.track.uri } : {} }));
+  });
+  if (next) next.addEventListener("click", () => window.dispatchEvent(new CustomEvent("avelie:next")));
+  return strip;
+}
+
+function paintPlayButton(btn) {
+  const p = state.player;
+  const uri = btn.getAttribute("data-uri") || "";
+  const on = p.state === "ready" || p.state === "playing" || p.state === "paused";
+  btn.classList.toggle("hidden", !on);
+  const mine = !!(p.track && p.track.uri === uri && p.state === "playing");
+  btn.classList.toggle("playing", mine);
+  btn.setAttribute("aria-label", mine ? "Pause" : "Play");
+  btn.setAttribute("aria-pressed", String(mine));
+  clear(btn);
+  btn.append(mine ? pauseIcon() : svgIcon("play"));
+}
+
+function paintPlayButtons() {
+  for (const b of els.thread.querySelectorAll(".song-play")) paintPlayButton(b);
+}
+
+function playerPosition() {
+  const p = state.player;
+  const elapsed = p.state === "playing" && p.at ? Date.now() - p.at : 0;
+  return Math.min(p.duration || 0, Math.max(0, (p.position || 0) + elapsed));
+}
+
+function paintProgress(strip) {
+  const p = state.player;
+  const position = playerPosition();
+  const pct = p.duration > 0 ? Math.min(100, Math.round((position / p.duration) * 1000) / 10) : 0;
+  const bar = strip.querySelector("#npProgress");
+  const fill = bar ? bar.querySelector("span") : null;
+  if (fill) fill.style.width = pct + "%";
+  if (bar) bar.setAttribute("aria-valuenow", String(Math.round(pct)));
+  const time = strip.querySelector("#npTime");
+  if (time) time.textContent = p.duration > 0 ? fmtDuration(position / 1000) + " / " + fmtDuration(p.duration / 1000) : "";
+}
+
+function renderNowPlaying() {
+  const strip = wireNowPlaying();
+  const p = state.player;
+  const show = (p.state === "playing" || p.state === "paused") && !!p.track;
+  strip.classList.toggle("hidden", !show);
+  strip.setAttribute("aria-hidden", String(!show));
+  if (!show) { stopPlayerTicker(); return; }
+  const title = strip.querySelector("#npTitle");
+  const artist = strip.querySelector("#npArtist");
+  if (title) title.textContent = String(p.track.name || "");
+  if (artist) artist.textContent = String(p.track.artist || "");
+  paintProgress(strip);
+  const pause = strip.querySelector("#npPause");
+  if (pause) {
+    clear(pause);
+    pause.append(p.state === "playing" ? pauseIcon() : svgIcon("play"));
+    pause.setAttribute("aria-label", p.state === "playing" ? "Pause" : "Play");
+    pause.setAttribute("aria-pressed", String(p.state === "playing"));
+  }
+  if (p.state === "playing") startPlayerTicker();
+  else stopPlayerTicker();
+}
+
+function startPlayerTicker() {
+  if (state.playerTicker) return;
+  state.playerTicker = setInterval(() => {
+    if (state.player.state !== "playing" || !els.nowPlaying) return;
+    paintProgress(els.nowPlaying);
+  }, 1000);
+}
+
+function stopPlayerTicker() {
+  if (state.playerTicker) clearInterval(state.playerTicker);
+  state.playerTicker = null;
+}
+
+function onPlayerEvent(e) {
+  const d = e && e.detail && typeof e.detail === "object" ? e.detail : {};
+  const st = ["ready", "playing", "paused", "off"].includes(d.state) ? d.state : "off";
+  const track = d.track && typeof d.track === "object" && typeof d.track.uri === "string" ? { name: String(d.track.name || ""), artist: String(d.track.artist || ""), uri: d.track.uri } : null;
+  state.player = { state: st, track, position: Number(d.position) || 0, duration: Number(d.duration) || 0, at: Date.now() };
+  paintPlayButtons();
+  renderNowPlaying();
 }
 
 // ------------------------------------------------------------ notes, marks (v3 AA, II)
@@ -564,7 +923,9 @@ function markButton(m) {
 // ------------------------------------------------------------ timing
 
 function refreshTyping() {
-  const on = state.inFlight || state.dotsHold || state.deliveries.size > 0;
+  let waiting = false;
+  for (const d of state.deliveries.values()) if (d.dots) waiting = true;
+  const on = state.inFlight || state.dotsHold || waiting;
   els.typing.classList.toggle("hidden", !on);
   if (on) scrollBottom();
 }
@@ -595,10 +956,13 @@ async function arrive(m, seq) {
     return;
   }
   const bubbles = [...el.querySelectorAll(".bubbles > .bubble")];
-  const tail = [...el.children].filter((c) => !c.classList.contains("bubbles"));
+  const tail = [...el.children].filter((c) => !c.classList.contains("bubbles") && !c.classList.contains("msg-avatar"));
   for (const b of bubbles) b.classList.add("hidden");
   for (const t of tail) t.classList.add("hidden");
   appendMessage(el);
+  // Her avatar shows with her first bubble, not before it (the typing dots carry their own).
+  const avatarSlot = () => el.querySelector(":scope > .msg-avatar");
+  if (avatarSlot()) avatarSlot().classList.add("hidden");
   state.arriving++;
   updateSendState();
   try {
@@ -615,6 +979,7 @@ async function arrive(m, seq) {
       if (!alive(seq)) return;
       state.dotsHold = false;
       refreshTyping();
+      if (i === 0 && avatarSlot()) avatarSlot().classList.remove("hidden");
       bubbles[i].classList.remove("hidden");
       bubbles[i].classList.add("enter");
       scrollBottom();
@@ -623,6 +988,7 @@ async function arrive(m, seq) {
     scrollBottom();
     noteRole(m);
   } finally {
+    if (avatarSlot()) avatarSlot().classList.remove("hidden");
     state.arriving--;
     state.dotsHold = false;
     refreshTyping();
@@ -630,27 +996,54 @@ async function arrive(m, seq) {
   }
 }
 
-// Real mode: her reply exists but is not hers to send yet. Dots until its time.
+// Real mode: her reply exists but is not hers to send yet. No dots while it is minutes
+// away (she is not typing for six minutes); the dots start DOTS_LEAD_MS before it lands
+// (bubbles.js dotsLeadMs), then the bubbles arrive at her cadence. Two timers: the dots
+// and the arrival.
 function scheduleDelivery(m, seq) {
   const at = Date.parse(m.deliver_at || m.deliverAt || "");
-  const ms = at - Date.now();
+  const now = Date.now();
+  const ms = at - now;
   if (!(ms > 0)) {
     arrive(m, seq);
     return;
   }
   if (state.deliveries.has(m.id)) return;
-  const timer = setTimeout(() => {
+  const entry = { at, dots: false, dotsTimer: null, arriveTimer: null };
+  const lead = dotsLeadMs(at, now);
+  entry.dotsTimer = setTimeout(() => {
+    entry.dotsTimer = null;
+    if (!state.deliveries.has(m.id)) return;
+    entry.dots = true;
+    refreshTyping();
+  }, Math.min(lead, 0x7fffffff));
+  entry.arriveTimer = setTimeout(() => {
+    entry.arriveTimer = null;
     state.deliveries.delete(m.id);
     refreshTyping();
     if (alive(seq)) arrive(m, seq);
   }, Math.min(ms, 0x7fffffff));
-  state.deliveries.set(m.id, timer);
+  state.deliveries.set(m.id, entry);
   refreshTyping();
 }
 
 function clearDeliveries() {
-  for (const t of state.deliveries.values()) clearTimeout(t);
+  for (const d of state.deliveries.values()) {
+    if (d.dotsTimer) clearTimeout(d.dotsTimer);
+    if (d.arriveTimer) clearTimeout(d.arriveTimer);
+  }
   state.deliveries.clear();
+}
+
+// A hidden tab throttles timers: when the page comes back and a scheduled reply's time
+// has passed, the thread is read again (the reply is in it now) instead of trusting a
+// timer that may never have fired.
+function onVisible() {
+  if (document.visibilityState !== "visible") return;
+  const now = Date.now();
+  let passed = false;
+  for (const d of state.deliveries.values()) if (d.at <= now) passed = true;
+  if (passed && state.currentId) loadThread();
 }
 
 function handleTurnResponse(r, id) {
@@ -834,7 +1227,7 @@ async function restoreTasting(conversationId, seq) {
 
 function callVisible() {
   const p = state.settings ? state.settings.callProvider : null;
-  return typeof p === "string" && p !== "off" && p !== "elevenlabs";
+  return typeof p === "string" && p !== "off";
 }
 
 function renderCallCard(callId, rows) {
@@ -905,7 +1298,18 @@ async function startCall() {
 // A pending photo is generated by a request this page holds open (the server cannot keep
 // working in the background long enough for an image call). The server refuses a second
 // request for the same picture while one is running, in which case the page just polls.
+// A clip (v4 A3) rides on the same message columns as a photo; the asset's role (or its
+// vid_ id before the assets route has listed it) tells them apart.
+function isClip(m) {
+  const id = m && typeof m.image_id === "string" ? m.image_id : "";
+  if (!id) return false;
+  const a = state.assets.get(id);
+  if (a && typeof a.role === "string") return a.role === "video";
+  return id.startsWith("vid_");
+}
+
 function renderPhoto(m, errorCode, error) {
+  if (isClip(m)) return renderClip(m, errorCode, error);
   const status = m.image_status;
   if (status === "pending") {
     if (m.id) requestPhoto(m);
@@ -914,12 +1318,15 @@ function renderPhoto(m, errorCode, error) {
   if (status === "ready" && m.image_id) {
     if (state.rejected.has(m.image_id)) return null;
     const url = "/media/" + encodeURIComponent(m.image_id);
+    const asset = state.assets.get(m.image_id);
+    const withHim = !!(asset && Number(asset.with_him) === 1);
     // The picture opens at full size in its own tab; Save fetches the same bytes as a file.
-    const wrap = h("div", { class: "photo" },
+    const wrap = h("div", { class: "photo" + (withHim ? " with-him" : "") },
       h("a", { href: url, target: "_blank", rel: "noopener", class: "photo-link", title: "Open full size" }, h("img", { src: url, alt: "" })),
       h("div", { class: "photo-links" },
         h("a", { href: url, target: "_blank", rel: "noopener" }, "Open full size"),
-        h("a", { href: url + "?download=1", download: "avelie-" + m.image_id + ".png" }, "Save")));
+        h("a", { href: url + "?download=1", download: "avelie-" + m.image_id + ".png" }, "Save"),
+        withHim ? chip("us", "us") : null));
     if (!state.approved.has(m.image_id)) wrap.append(photoActions(m, m.image_id, wrap));
     return wrap;
   }
@@ -1056,6 +1463,9 @@ function stopPoll(id) {
 
 function stopPollers() {
   for (const id of [...state.pollers.keys()]) stopPoll(id);
+  for (const id of [...state.clipPollers.keys()]) stopClipPoll(id);
+  for (const t of state.songTimers.values()) clearTimeout(t);
+  state.songTimers.clear();
 }
 
 function findMessageEl(id) {
@@ -1080,6 +1490,135 @@ function replacePhoto(m, errorCode, error) {
     extras.prepend(fresh);
   }
   if (extras && !extras.childElementCount) extras.remove();
+}
+
+// ------------------------------------------------------------ clips (v4 A3)
+
+// The source photo a generating clip was made from sits in its claim note
+// ("source:<id>|task:...|since ..."); it is the bubble's poster.
+function clipSourceOf(asset) {
+  const notes = asset && typeof asset.notes === "string" ? asset.notes : "";
+  if (!notes.startsWith("source:")) return "";
+  const head = notes.split("|")[0] || "";
+  return head.slice("source:".length).trim();
+}
+
+function clipStatus(m) {
+  const a = state.assets.get(m.image_id);
+  const s = a ? a.approval_status : "";
+  if (s === "generating" || s === "pending") return "pending";
+  if (s === "candidate" || s === "approved") return "ready";
+  if (s === "failed") return "failed";
+  return m.image_status === "ready" ? "ready" : m.image_status === "failed" ? "failed" : "pending";
+}
+
+// A video bubble: the source photo as its poster and a play control while the clip is
+// being made (polled until ready), then the player from /media/:id with the same Open
+// full size and Save links a photo has, and Approve / Reject until he decides.
+function renderClip(m, errorCode, error) {
+  const id = m.image_id;
+  if (!id) return null;
+  if (state.rejected.has(id)) return null;
+  const asset = state.assets.get(id);
+  const source = clipSourceOf(asset) || state.clipSources.get(id) || "";
+  if (source) state.clipSources.set(id, source);
+  const poster = source ? "/media/" + encodeURIComponent(source) : "";
+  const status = clipStatus(m);
+  const url = "/media/" + encodeURIComponent(id);
+  if (status === "pending") {
+    if (m.id) startClipPoll(m);
+    const frame = h("div", { class: "video-pending", role: "img", "aria-label": "Clip pending" });
+    if (poster) frame.append(h("img", { src: poster, alt: "", loading: "lazy" }));
+    return h("div", { class: "photo video-bubble" }, frame);
+  }
+  if (status === "ready") {
+    const video = h("video", { controls: true, playsinline: true, preload: "metadata", src: url });
+    if (poster) video.setAttribute("poster", poster);
+    const wrap = h("div", { class: "photo video-bubble" },
+      video,
+      h("div", { class: "video-links photo-links" },
+        h("a", { href: url, target: "_blank", rel: "noopener" }, "Open full size"),
+        h("a", { href: url + "?download=1", download: "avelie-" + id + ".mp4" }, "Save")));
+    if (!state.approved.has(id) && !(asset && asset.approval_status === "approved")) wrap.append(clipActions(m, id, wrap));
+    return wrap;
+  }
+  const row = h("div", { class: "photo-actions" }, chip("clip failed"));
+  if (errorCode) row.append(chip(errorCode, "danger"));
+  const detail = error && typeof error.detail === "string" ? error.detail : "";
+  if (detail && detail !== errorCode) row.append(chip(detail));
+  return h("div", { class: "photo video-bubble failed" }, row);
+}
+
+function clipActions(m, id, wrap) {
+  const row = h("div", { class: "photo-actions" });
+  const approve = h("button", { type: "button", class: "btn small", text: "Approve" });
+  const reject = h("button", { type: "button", class: "btn small danger", text: "Reject" });
+  const act = async (decision) => {
+    approve.disabled = true;
+    reject.disabled = true;
+    try {
+      await api("POST", "/api/images/" + encodeURIComponent(id) + "/decide", { decision });
+      if (decision === "approve") {
+        state.approved.add(id);
+        row.remove();
+      } else {
+        state.rejected.add(id);
+        wrap.remove();
+      }
+    } catch (e) {
+      approve.disabled = false;
+      reject.disabled = false;
+      row.querySelectorAll(".chip").forEach((c) => c.remove());
+      row.append(chip(e.code || "error", "danger"));
+    }
+  };
+  approve.addEventListener("click", () => act("approve"));
+  reject.addEventListener("click", () => act("reject"));
+  row.append(approve, reject);
+  return row;
+}
+
+// The poll drives the task forward (a clip only moves when a page asks) and then the
+// message is read again so the bubble re-renders from what the server says.
+function startClipPoll(m) {
+  const id = m.image_id;
+  if (!id || state.clipPollers.has(id)) return;
+  let count = 0;
+  const timer = setInterval(async () => {
+    count++;
+    let r = null;
+    try {
+      r = await api("POST", "/api/video/" + encodeURIComponent(id) + "/poll", {});
+    } catch (e) {
+      if (e.status === 404 || e.status === 422 || e.status === 409) {
+        stopClipPoll(id);
+        replacePhoto({ ...m, image_status: "failed" }, e.code || "error", e);
+      }
+      return;
+    }
+    if (!state.clipPollers.has(id)) return;
+    if (r && r.asset) rememberAsset(r.asset);
+    const status = r && r.status;
+    if (status === "candidate" || status === "approved" || status === "failed") {
+      stopClipPoll(id);
+      let fresh = null;
+      try { fresh = await api("GET", "/api/messages/" + encodeURIComponent(m.id)); } catch { fresh = null; }
+      const base = fresh && fresh.id ? fresh : m;
+      replacePhoto({ ...base, image_id: id, image_status: status === "failed" ? "failed" : "ready" });
+      return;
+    }
+    if (count >= CLIP_POLL_MAX) {
+      stopClipPoll(id);
+      replacePhoto({ ...m, image_status: "failed" }, "timeout");
+    }
+  }, CLIP_POLL_MS);
+  state.clipPollers.set(id, timer);
+}
+
+function stopClipPoll(id) {
+  const t = state.clipPollers.get(id);
+  if (t) clearInterval(t);
+  state.clipPollers.delete(id);
 }
 
 // ------------------------------------------------------------ composer
@@ -1372,6 +1911,7 @@ async function loadScene() {
     state.scene = null;
   }
   renderScene();
+  applyPlaceBackground(undefined);
 }
 
 function renderScene() {
@@ -1383,18 +1923,92 @@ function renderScene() {
 async function setScene(status, location) {
   const base = state.scene && typeof state.scene === "object" ? state.scene : {};
   const next = { ...base, status, location: location || null };
+  if (status === "together" && location) storeSet(PLACE_KEY, location);
   els.sceneTogether.disabled = true;
   els.sceneApart.disabled = true;
+  let place;
   try {
     const r = await api("PUT", "/api/state/scene", { state: next, note: "toggle" });
     state.scene = r && r.state ? r.state : next;
+    // v4: the route names the place it matched, with or without a picture.
+    place = r && r.place !== undefined ? r.place : undefined;
+    state.placeRows = null;
   } catch (e) {
     showError(e.code || "error", false);
   } finally {
     els.sceneTogether.disabled = false;
     els.sceneApart.disabled = false;
     renderScene();
+    applyPlaceBackground(place);
   }
+}
+
+// ------------------------------------------------------------ places (v4 section 8)
+
+// The same normalisation src/places.ts uses for its title_norm: lowercase, one space.
+function placeNorm(s) {
+  return String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// Her known places (the places table, after its sync with her life threads), cached a
+// minute; null when the route is not there.
+async function loadPlaces(force) {
+  if (!force && state.placeRows && Date.now() - state.placeRowsAt < PLACES_TTL_MS) return state.placeRows;
+  try {
+    const r = await api("GET", "/api/places");
+    const list = Array.isArray(r) ? r : r && Array.isArray(r.places) ? r.places : [];
+    state.placeRows = list.filter((p) => p && p.id && p.title);
+    state.placeRowsAt = Date.now();
+  } catch {
+    state.placeRows = null;
+  }
+  return state.placeRows;
+}
+
+function setPlaceUrl(id) {
+  if (id) els.thread.style.setProperty("--place-url", "url(/media/place/" + encodeURIComponent(id) + ")");
+  else els.thread.style.removeProperty("--place-url");
+}
+
+// The picture of the scene's place behind the thread (the stylesheet paints .thread::before
+// from --place-url under the veil): set when the scene is together at a place that has a
+// picture, removed when apart, none, or the place has no picture. `known` is what the
+// scene PUT just answered ({ id, picture } or null); undefined means look it up.
+async function applyPlaceBackground(known) {
+  const s = state.scene;
+  if (!s || s.status !== "together" || !s.location) { setPlaceUrl(null); return; }
+  if (known !== undefined) {
+    setPlaceUrl(known && known.picture && known.id ? known.id : null);
+    return;
+  }
+  const rows = await loadPlaces(false);
+  if (!state.scene || state.scene.status !== "together" || state.scene.location !== s.location) return;
+  const want = placeNorm(s.location);
+  const hit = (rows || []).find((p) => placeNorm(p.title) === want && p.picture);
+  setPlaceUrl(hit ? hit.id : null);
+}
+
+// The box is never empty when a place is known: the scene's own place when together,
+// else the newest Together scene version's place, else the last place set on this device.
+async function prefillPlace() {
+  if (state.scene && state.scene.status === "together" && state.scene.location) return String(state.scene.location);
+  try {
+    const rows = await api("GET", "/api/state/versions/scene?limit=50");
+    for (const v of Array.isArray(rows) ? rows : []) {
+      const st = parseJson(v && v.state_json, null);
+      if (st && st.status === "together" && typeof st.location === "string" && st.location.trim()) return st.location.trim();
+    }
+  } catch {
+    /* no versions to read: the stored place is next */
+  }
+  return storeGet(PLACE_KEY) || "";
+}
+
+function placeButton(title, thumbId) {
+  const btn = h("button", { type: "button", class: "btn small quiet place-btn", onclick: () => { closeMenus(); setScene("together", title); } });
+  if (thumbId) btn.append(h("img", { class: "place-thumb", src: "/media/place/" + encodeURIComponent(thumbId), alt: "", width: "40", height: "40", loading: "lazy" }));
+  btn.append(document.createTextNode(title));
+  return btn;
 }
 
 // What the page shows depends on a few settings: the Call button, the Taste button,
@@ -1425,13 +2039,16 @@ async function openPlaces() {
   els.placesPop.classList.remove("hidden");
   els.placeInput.value = state.scene && state.scene.status === "together" && state.scene.location ? String(state.scene.location) : "";
   clear(els.placesList);
-  await loadLife();
+  const [where, rows] = await Promise.all([prefillPlace(), loadPlaces(true)]);
   if (els.placesPop.classList.contains("hidden")) return;
-  for (const p of state.places) {
-    els.placesList.append(h("button", {
-      type: "button", class: "btn small quiet", text: p.title,
-      onclick: () => { closeMenus(); setScene("together", p.title); },
-    }));
+  if (!els.placeInput.value && where) els.placeInput.value = where;
+  if (rows) {
+    for (const p of rows) els.placesList.append(placeButton(String(p.title), p.picture ? p.id : null));
+  } else {
+    // No places route: her life's place threads, as before.
+    await loadLife();
+    if (els.placesPop.classList.contains("hidden")) return;
+    for (const p of state.places) els.placesList.append(placeButton(p.title, null));
   }
   els.placeInput.focus();
 }
@@ -1458,18 +2075,69 @@ function openDrawer(drawer) {
   if (drawer === els.photosDrawer) els.photosBtn.setAttribute("aria-expanded", "true");
 }
 
+function drawers() {
+  return [els.photosDrawer, els.whyDrawer, els.phoneDrawer].filter(Boolean);
+}
+
 function closeDrawers() {
-  for (const d of [els.photosDrawer, els.whyDrawer]) {
+  for (const d of drawers()) {
     d.classList.remove("open");
     d.setAttribute("aria-hidden", "true");
   }
   els.photosBtn.setAttribute("aria-expanded", "false");
+  if (els.phoneBtn) els.phoneBtn.setAttribute("aria-expanded", "false");
   syncScrim();
 }
 
 function syncScrim() {
-  const open = els.sidebar.classList.contains("open") || els.photosDrawer.classList.contains("open") || els.whyDrawer.classList.contains("open");
+  const open = els.sidebar.classList.contains("open") || drawers().some((d) => d.classList.contains("open"));
   els.scrim.classList.toggle("hidden", !open);
+}
+
+// ------------------------------------------------------------ her phone (v4 section 1)
+
+// The ids phone.js renders into (SPEC_V4 section 0), minus the places list: the drawer
+// is read-only, and the chat page's own #placesList is the scene picker.
+const PHONE_IDS = ["phoneStatus", "phoneNow", "phoneWhere", "phoneWeather", "phoneOutfit", "phoneMood", "phoneWants", "phoneAsks", "phoneToday", "phoneListening", "phoneMap"];
+
+// The slide-in shows the same panel the Phone page does, from the same route, rendered by
+// the same function (phone.js, loaded when the drawer opens, never at page load).
+async function openPhone() {
+  if (!els.phoneDrawer || !els.phoneDrawerBody) return;
+  openDrawer(els.phoneDrawer);
+  els.phoneBtn.setAttribute("aria-expanded", "true");
+  const body = els.phoneDrawerBody;
+  clear(body);
+  body.append(h("div", { class: "chips" }, chip("loading")));
+  let mod = null;
+  let phone = null;
+  try {
+    [mod, phone] = await Promise.all([import("./phone.js"), api("GET", "/api/phone")]);
+  } catch (e) {
+    clear(body);
+    body.append(h("div", { class: "chips" }, chip(e && e.code ? e.code : "phone", "danger")));
+    return;
+  }
+  if (!els.phoneDrawer.classList.contains("open")) return;
+  clear(body);
+  const panel = h("div", { class: "phone-panel drawer-phone" });
+  for (const id of PHONE_IDS) {
+    if (!document.getElementById(id)) panel.append(h("div", { id, class: "phone-" + id.slice(5).toLowerCase() }));
+  }
+  body.append(panel);
+  try {
+    if (mod && typeof mod.renderPhone === "function") mod.renderPhone(panel, phone, { places: false, tap: false, readOnly: true });
+    else body.append(h("div", { class: "chips" }, chip("phone", "danger")));
+  } catch {
+    body.append(h("div", { class: "chips" }, chip("phone", "danger")));
+  }
+  // Read-only in the drawer: no places list, no status line for it, no tap on the map.
+  for (const id of ["placesList", "placesStatus"]) {
+    const stray = body.querySelector("#" + id);
+    if (stray) stray.remove();
+  }
+  const map = body.querySelector("svg.map");
+  if (map) map.classList.add("read-only");
 }
 
 function closeMenus() {
@@ -1693,6 +2361,10 @@ els.placeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.p
 els.photosBtn.addEventListener("click", () => (els.photosDrawer.classList.contains("open") ? closeDrawers() : openPhotos()));
 els.photosClose.addEventListener("click", closeDrawers);
 els.whyClose.addEventListener("click", closeDrawers);
+if (els.phoneBtn) els.phoneBtn.addEventListener("click", () => (els.phoneDrawer && els.phoneDrawer.classList.contains("open") ? closeDrawers() : openPhone()));
+if (els.phoneClose) els.phoneClose.addEventListener("click", closeDrawers);
+document.addEventListener("visibilitychange", onVisible);
+window.addEventListener("avelie:player", onPlayerEvent);
 els.moreBtn.addEventListener("click", toggleMore);
 els.attachBtn.addEventListener("click", () => els.fileInput.click());
 els.fileInput.addEventListener("change", () => addFiles(els.fileInput.files || []));
@@ -1722,6 +2394,7 @@ async function init() {
   els.operatorToggle.checked = false;
   els.timingToggle.checked = state.timing !== "instant";
   initMic();
+  mountTypingAvatar();
   updateSendState();
   try {
     await api("GET", "/api/me");

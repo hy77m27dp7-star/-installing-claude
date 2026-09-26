@@ -8,3 +8,4 @@ reports/
 *.log
 .DS_Store
 tests/integration/.state/
+tests/integration/.state-v4/

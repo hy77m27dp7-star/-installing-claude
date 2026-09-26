@@ -237,7 +237,9 @@ export async function exportCharacterJson(db: D1Database, _env: Env): Promise<Ch
     unknowns: unknowns.filter((u: UnknownRow) => u.status === "open").map((u) => ({ id: u.id, topic: u.topic, note: u.note })),
     relationship,
     scene,
-    images: assets.filter((a) => a.approval_status === "approved" && (a.role === "scene" || a.role === "master")).map(image),
+    // v4 (SPEC_V4 section 3): a picture with him in it (with_him = 1) never enters the
+    // package; a real person's face is not part of her.
+    images: assets.filter((a) => a.approval_status === "approved" && (a.role === "scene" || a.role === "master") && Number(a.with_him ?? 0) !== 1).map(image),
     mediaTitles: media.filter((m) => m.status === "active").map((m) => ({ kind: m.kind, title: m.title, description: m.description })),
     promptPrefixSha256: prefixHash,
     voiceLines: voiceLines.filter((v) => v.status === "approved").map((v) => ({ id: v.id, text: v.text, tags: tagsOf(v.tags_json), origin: v.origin })),

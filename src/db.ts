@@ -126,6 +126,26 @@ export const DEFAULT_SETTINGS: Settings = {
   hisFaceMax: 3,
   hisFaceInTogether: true,
   hisFaceApartEvery: 8,
+  // v4 (SPEC_V4 "Settings added"): the avatar (master-05, the black dress, his word "the
+  // sexiest master"; his pick on the Images page), the call face (three clips from the
+  // tight face crop), his face in a picture her line puts him in, Spotify off until the
+  // callback connects it, a place picture at the Runway gen4_image price, the daily
+  // "listening to" line on.
+  avatarAssetId: "master-05",
+  callFaceProvider: "clips",
+  callFaceSourceAssetId: "master-00",
+  hisFaceInPhotos: true,
+  spotifyEnabled: false,
+  spotifyPlaylistId: "",
+  spotifyPlaylistName: "songs from avelie",
+  placeCostUsd: 0.08,
+  listeningLineEnabled: true,
+  // v4 amendments A1 to A3: the SDK player, her ElevenLabs voice model and its
+  // text-to-speech price, and her [clip:] line on.
+  spotifyPlayer: "sdk",
+  elevenLabsModel: "eleven_multilingual_v2",
+  elevenLabsTtsPricePer1kChars: 0.3,
+  videoMarkerEnabled: true,
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -284,15 +304,22 @@ export async function nextSeq(db: D1Database, conversationId: string): Promise<n
   return (r?.m ?? 0) + 1;
 }
 
-// A call transcript row (SPEC_V3 section EE) names its call; the column exists from
-// migration 0005, so it is written only when set and every other insert keeps the v2 shape.
+// A call transcript row (SPEC_V3 section EE) names its call; a reply with a song (v4,
+// SPEC_V4 section 4) carries its Spotify status. Those columns exist from migrations 0005
+// and 0008, so each is written only when set and every other insert keeps the v2 shape.
 export function insertMessageStmt(db: D1Database, m: MessageRow): D1PreparedStatement {
+  const cols = ["id", "conversation_id", "channel", "role", "content", "created_at", "seq", "idempotency_key", "reply_to_id", "model_run_id", "flags_json", "image_id", "image_status", "deliver_at", "song_json", "audio_key", "images_json", "media_id"];
+  const vals: unknown[] = [m.id, m.conversation_id, m.channel, m.role, m.content, m.created_at, m.seq, m.idempotency_key, m.reply_to_id, m.model_run_id, m.flags_json, m.image_id, m.image_status, m.deliver_at ?? null, m.song_json ?? null, m.audio_key ?? null, m.images_json ?? null, m.media_id ?? null];
   if (typeof m.call_id === "string" && m.call_id) {
-    return db.prepare("INSERT INTO messages (id, conversation_id, channel, role, content, created_at, seq, idempotency_key, reply_to_id, model_run_id, flags_json, image_id, image_status, deliver_at, song_json, audio_key, images_json, media_id, call_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")
-      .bind(m.id, m.conversation_id, m.channel, m.role, m.content, m.created_at, m.seq, m.idempotency_key, m.reply_to_id, m.model_run_id, m.flags_json, m.image_id, m.image_status, m.deliver_at ?? null, m.song_json ?? null, m.audio_key ?? null, m.images_json ?? null, m.media_id ?? null, m.call_id);
+    cols.push("call_id");
+    vals.push(m.call_id);
   }
-  return db.prepare("INSERT INTO messages (id, conversation_id, channel, role, content, created_at, seq, idempotency_key, reply_to_id, model_run_id, flags_json, image_id, image_status, deliver_at, song_json, audio_key, images_json, media_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)")
-    .bind(m.id, m.conversation_id, m.channel, m.role, m.content, m.created_at, m.seq, m.idempotency_key, m.reply_to_id, m.model_run_id, m.flags_json, m.image_id, m.image_status, m.deliver_at ?? null, m.song_json ?? null, m.audio_key ?? null, m.images_json ?? null, m.media_id ?? null);
+  if (typeof m.spotify_status === "string" && m.spotify_status) {
+    cols.push("spotify_status");
+    vals.push(m.spotify_status);
+  }
+  const marks = cols.map((_, i) => "?" + (i + 1)).join(", ");
+  return db.prepare(`INSERT INTO messages (${cols.join(", ")}) VALUES (${marks})`).bind(...vals);
 }
 
 export function insertModelRunStmt(db: D1Database, r: ModelRunRow): D1PreparedStatement {

@@ -1,4 +1,6 @@
-// Web Push for her first texts (SPEC_V2 section U), and nothing else ever pushes.
+// Web Push for her first texts (SPEC_V2 section U) and, since v4 (SPEC_V4 section 6),
+// for a reply she held two minutes or more in real mode (src/deliveries.ts). Those are
+// the only two reasons; nothing else ever pushes, and sendPush refuses any other reason.
 //
 // The push carries no body: the Worker sends a VAPID-signed request with an empty payload
 // and the service worker fetches /api/push/latest to show her line. No payload means no
@@ -242,13 +244,30 @@ async function pushOne(keys: VapidKeys, endpoint: string, now: Date): Promise<{ 
   }
 }
 
-// One push to every subscription on file, for `reason` (only ever "her_first_text"). With no
-// VAPID keys or no subscriptions nothing is attempted and `skipped` says why. A push service
-// that reports an endpoint gone removes that row. Never throws: a notification is a courtesy,
+// The only two reasons a notification ever goes out: her first text of the day (an
+// opt-in under a daily cap and quiet hours) and a reply she held two minutes or more
+// (v4, the */20 cron). No "miss you", no streak, no nudge: a reason outside this list is
+// refused here, not just frowned on.
+export const PUSH_REASONS = ["her_first_text", "her_delayed_reply"] as const;
+export type PushReason = (typeof PUSH_REASONS)[number];
+
+export function isPushReason(reason: unknown): reason is PushReason {
+  return typeof reason === "string" && (PUSH_REASONS as ReadonlyArray<string>).includes(reason);
+}
+
+// One push to every subscription on file, for `reason` ("her_first_text" or
+// "her_delayed_reply"; anything else is skipped with `skipped` set). With no VAPID keys or
+// no subscriptions nothing is attempted and `skipped` says why. A push service that
+// reports an endpoint gone removes that row. Never throws: a notification is a courtesy,
 // the message she sent is the thing.
 export async function sendPush(env: Env, db: D1Database, reason: string, now: Date = new Date()): Promise<PushSendResult> {
   const why = typeof reason === "string" && reason.trim() ? reason.trim().slice(0, 80) : "unspecified";
   const result: PushSendResult = { reason: why, total: 0, sent: 0, failed: 0, removed: 0, skipped: null };
+  if (!isPushReason(why)) {
+    result.skipped = "reason not allowed";
+    console.warn("push refused", why, "only", PUSH_REASONS.join(" and "), "may push");
+    return result;
+  }
   let subs: PushSubscriptionRow[];
   try {
     subs = await listSubscriptions(db);

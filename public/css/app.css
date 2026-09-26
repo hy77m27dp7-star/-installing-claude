@@ -29,6 +29,28 @@
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Times New Roman", serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  /* v4 design tokens (every earlier token kept, values unchanged) */
+  --avatar-size: 36px;
+  --avatar-size-lg: 56px;
+  --avatar-ring: 0 0 0 2px var(--accent-ring);
+  --bubble-hers: var(--panel-2);
+  --bubble-his: var(--his);
+  --bubble-max: 78%;
+  --fs-0: 12px;
+  --fs-1: 13px;
+  --fs-2: 15px;
+  --fs-3: 17px;
+  --fs-4: 21px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --place-veil: linear-gradient(180deg, rgba(6, 10, 19, 0.82), rgba(6, 10, 19, 0.92));
+  --dial-track: var(--line-2);
+  --dial-fill: var(--accent-solid);
+  --safe-b: env(safe-area-inset-bottom, 0px);
   color-scheme: dark;
 }
 
@@ -95,6 +117,35 @@ ul.plain { margin: 0; padding-left: 18px; }
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
+
+/* The brand: her face, then her name, one link home. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+  padding: 2px 6px 2px 2px;
+  border-radius: 999px;
+  text-decoration: none;
+  flex: none;
+}
+
+.brand:hover { text-decoration: none; }
+
+/* Her face: a circular CSS crop of a master. The crop point comes from nav.js through the
+   CSSOM (object-position), never from an edited image. */
+.avatar {
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  flex: none;
+  border-radius: 50%;
+  object-fit: cover;
+  object-position: 50% 30%;
+  background: var(--panel-2);
+  box-shadow: var(--avatar-ring);
+}
+
+.avatar.lg { --avatar-size: var(--avatar-size-lg); }
 
 .wordmark {
   position: relative;
@@ -250,9 +301,9 @@ ul.plain { margin: 0; padding-left: 18px; }
 .icon-btn.primary { background: var(--accent); color: #04121a; }
 .icon-btn.primary:hover { color: #04121a; }
 .icon-btn[aria-pressed="true"] { color: var(--accent-solid); background: var(--accent-dim); }
-.icon-btn.recording { color: #fff; background: var(--danger); border-color: transparent; animation: breathe 1.2s ease-in-out infinite; }
+.icon-btn.recording { color: #fff; background: var(--danger); border-color: transparent; animation: ring-pulse 1.2s ease-in-out infinite; }
 
-@keyframes breathe {
+@keyframes ring-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(251, 111, 139, 0.45); }
   50% { box-shadow: 0 0 0 8px rgba(251, 111, 139, 0); }
 }
@@ -597,6 +648,7 @@ main.chat {
   min-width: 0;
 }
 
+
 .thread-bar {
   display: flex;
   align-items: center;
@@ -626,6 +678,8 @@ main.chat {
 }
 
 .thread {
+  position: relative;
+  isolation: isolate;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -634,17 +688,50 @@ main.chat {
   flex-direction: column;
   gap: 16px;
   overscroll-behavior: contain;
+  /* The place behind the chat (section 8), below. */
+  background-image: var(--place-veil), var(--place-url);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: scroll;
+  transition: background-image 0.4s var(--ease);
 }
+
+/* The place behind the chat (section 8). chat.js sets --place-url on .thread through the
+   CSSOM; the veil rides on top so every bubble stays at AA. Unset variable: no paint at
+   all (an invalid background-image computes to none). The paint is the thread's own
+   background: a scroll container's background stays fixed to its box while the contents
+   scroll over it (background-attachment scroll, the default), and it adds nothing to the
+   scroll range, where a sticky ::before box would. .thread::before stays free. */
+.thread::before { content: none; }
 
 .msg {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-width: min(84%, 34em);
+  max-width: min(var(--bubble-max), 34em);
 }
 
 .msg.his { align-self: flex-end; align-items: flex-end; }
 .msg.hers { align-self: flex-start; align-items: flex-start; }
+
+/* Hers: a 28px avatar column on the left. chat.js puts <img class="avatar msg-avatar"> on
+   the first message of a run and an empty spacer (.msg-avatar.spacer or .msg-spacer) on
+   the rest; the grid keeps the column either way so the bubbles of a run align. */
+.msg.hers:not(.tasting) {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  column-gap: var(--s-2);
+  row-gap: 4px;
+  align-items: end;
+  justify-items: start;
+  max-width: min(calc(var(--bubble-max) + 36px), 36em);
+}
+
+.msg.hers:not(.tasting) > :not(.msg-avatar):not(.msg-spacer) { grid-column: 2; }
+.msg-avatar, .msg-spacer { grid-column: 1; grid-row: 1; align-self: end; --avatar-size: 28px; width: 28px; height: 28px; }
+.msg-spacer, .msg-avatar.spacer { display: block; background: none; box-shadow: none; visibility: hidden; }
+.msg.hers .msg-avatar { box-shadow: none; }
 .msg.flash .bubble { box-shadow: 0 0 0 2px var(--accent-solid); }
 
 .bubbles { display: flex; flex-direction: column; gap: 3px; max-width: 100%; }
@@ -655,7 +742,7 @@ main.chat {
   max-width: 100%;
   padding: 10px 14px;
   border-radius: 18px;
-  background: var(--panel-2);
+  background: var(--bubble-hers);
   color: var(--text);
   font-size: 16px;
   line-height: 1.4;
@@ -668,7 +755,7 @@ main.chat {
 .msg.hers .bubble:not(:last-child) { border-bottom-left-radius: 6px; }
 .msg.hers .bubble:last-child { border-bottom-left-radius: 6px; }
 
-.msg.his .bubble { background: var(--his); }
+.msg.his .bubble { background: var(--bubble-his); }
 .msg.his .bubble:not(:first-child) { border-top-right-radius: 6px; }
 .msg.his .bubble:last-child { border-bottom-right-radius: 6px; }
 
@@ -718,7 +805,17 @@ main.chat {
 
 .mic-chip svg { width: 14px; height: 14px; }
 
-.audio-note { display: flex; align-items: center; gap: 8px; max-width: 100%; }
+/* A voice note: a rounded bar the width of a bubble with the native player inside. */
+.audio-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--bubble-hers);
+}
+.msg.his .audio-note { background: var(--bubble-his); }
 .audio-note audio { width: min(280px, 72vw); height: 40px; border-radius: 999px; }
 
 .thumbs { display: flex; flex-wrap: wrap; gap: 4px; max-width: 100%; }
@@ -737,8 +834,8 @@ main.chat {
 .photo { display: grid; gap: 6px; justify-items: start; }
 
 .photo img {
-  width: min(100%, 420px);
-  border-radius: 14px;
+  width: min(100%, 280px);
+  border-radius: 18px;
   background: var(--field);
   cursor: zoom-in;
 }
@@ -809,7 +906,16 @@ main.chat {
   padding: 13px 16px;
   border-radius: 18px;
   border-bottom-left-radius: 6px;
-  background: var(--panel-2);
+  background: var(--bubble-hers);
+}
+
+/* The typing indicator carries her avatar before its dots (chat.js prepends it). */
+.typing .msg-avatar, .typing .avatar {
+  --avatar-size: 28px;
+  width: 28px;
+  height: 28px;
+  margin: -6px 6px -6px -8px;
+  box-shadow: none;
 }
 
 .typing span {
@@ -1222,23 +1328,35 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .bar-tools { width: 100%; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
   .bar-tools::-webkit-scrollbar { display: none; }
   .msg { max-width: 88%; }
+  .msg.hers:not(.tasting) { max-width: 94%; }
   .block-times { grid-template-columns: 1fr 1fr; }
   .thread-row { grid-template-columns: minmax(0, 1fr); }
   .thread-row .actions { grid-row: auto; }
 }
 
 @media (max-width: 600px) {
-  .top { flex-wrap: wrap; justify-content: center; padding-bottom: 4px; }
+  .top { flex-wrap: wrap; justify-content: space-between; padding: 6px var(--gutter) 0; row-gap: 0; }
   .wordmark { font-size: 19px; }
-  .nav { width: 100%; justify-content: space-between; }
-  .nav a { flex: 1; justify-content: center; padding: 0 2px; font-size: 13px; }
-  .nav a.active::after { left: 6px; right: 6px; }
+  /* One scrollable row under the brand; no bottom bar. */
+  .nav {
+    width: calc(100% + var(--gutter) * 2);
+    margin: 0 calc(-1 * var(--gutter));
+    padding: 0 var(--gutter);
+    gap: 0;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav a { flex: none; scroll-snap-align: center; padding: 0 10px; font-size: var(--fs-1); }
+  .nav a.active::after { left: 10px; right: 10px; bottom: 4px; }
   .grid-form { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .photo-pending, .typing span, .icon-btn.recording, .bubble.enter { animation: none; }
-  .sidebar, .drawer, .btn, .switch .track, .switch .track::after, .seg button, .icon-btn { transition: none; }
+  .sidebar, .drawer, .btn, .switch .track, .switch .track::after, .seg button, .icon-btn, .thread { transition: none; }
 }
 
 /* ============================================================ v3 */
@@ -1371,7 +1489,7 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 /* A darker ground than --danger for the white glyph (5.0:1; the accent pink is 2.7:1). */
 .call-actions .icon-btn.end { background: #c8395a; color: #fff; border-color: transparent; }
 .call-actions .icon-btn[aria-pressed="true"] { color: var(--amber); background: rgba(242, 178, 60, 0.12); }
-.icon-btn.calling { color: var(--ok); animation: breathe 1.2s ease-in-out infinite; }
+.icon-btn.calling { color: var(--ok); animation: ring-pulse 1.2s ease-in-out infinite; }
 
 .call-card {
   display: grid;
@@ -1626,3 +1744,508 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .portrait .face.pending, .clip-card .clip-pending, .icon-btn.calling { animation: none; }
   .tasting-panel, .progress > span { transition: none; }
 }
+
+/* ============================================================ v4 */
+
+/* ------------------------------------------------------------ chips: us, song status */
+
+/* The two-of-you picture: one small accent chip. */
+.chip.us { border-color: rgba(34, 211, 238, 0.55); color: var(--accent-solid); background: var(--accent-dim); font-weight: 600; letter-spacing: 0.04em; }
+.chip.candidate { border-color: rgba(242, 178, 60, 0.55); color: var(--amber); }
+.chip.place { color: var(--text-2); }
+.chip.back { border-color: rgba(34, 211, 238, 0.55); color: var(--accent-solid); font-size: 10.5px; }
+.chip.sealed { color: var(--muted); border-style: dashed; }
+
+/* The song card keeps its shape and gains a status slot, a retry and a play control. */
+.song-card { flex-wrap: wrap; row-gap: 6px; }
+.song-card .song-status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; flex: none; }
+.song-card .song-retry { min-height: 28px; padding: 0 8px; font-size: var(--fs-0); }
+.song-card .song-play { width: 36px; height: 36px; border: 1px solid var(--line); color: var(--accent-solid); }
+.song-card .song-play[aria-pressed="true"] { background: var(--accent-dim); }
+.song-card .song-embed { width: 100%; }
+.song-card .song-embed iframe { width: 100%; height: 80px; border: 0; border-radius: 10px; }
+
+/* ------------------------------------------------------------ chat: photo bubble, video bubble */
+
+.photo img, .photo video { border-radius: 18px; }
+.msg.hers .photo img { border-bottom-left-radius: 6px; }
+.msg.his .photo img { border-bottom-right-radius: 6px; }
+
+/* A clip she sent (A3): the source photo as its poster, then the player from /media. */
+.video-bubble { display: grid; gap: 6px; justify-items: start; max-width: 100%; }
+
+.video-bubble video, .video-bubble .video-pending {
+  width: min(100%, 280px);
+  aspect-ratio: 9 / 16;
+  max-height: 420px;
+  border-radius: 18px;
+  background: #000;
+  object-fit: cover;
+}
+
+.msg.hers .video-bubble video, .msg.hers .video-bubble .video-pending { border-bottom-left-radius: 6px; }
+
+.video-bubble .video-pending {
+  background: linear-gradient(100deg, #0c1322 30%, #1a2740 50%, #0c1322 70%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+.video-bubble .video-pending img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; opacity: 0.6; }
+.video-bubble .video-links { display: flex; gap: 12px; font-size: var(--fs-0); }
+.video-bubble .video-links a { color: var(--muted); text-decoration: underline; }
+
+/* ------------------------------------------------------------ chat: now playing (A1) */
+
+.now-playing {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 6px max(var(--gutter), calc((100% - var(--thread-max)) / 2));
+  border-top: 1px solid var(--line);
+  background: rgba(6, 10, 19, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.now-playing .np-note {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--accent-dim);
+  color: var(--accent-solid);
+}
+
+.now-playing .np-note svg { width: 16px; height: 16px; }
+.now-playing .np-text { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
+.now-playing .np-title { font-size: var(--fs-1); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now-playing .np-artist { font-size: var(--fs-0); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now-playing .np-progress { height: 4px; border: none; background: var(--line); }
+.now-playing .np-progress > span { transition: width 0.5s linear; }
+.now-playing .np-time { flex: none; font-size: var(--fs-0); color: var(--muted); font-variant-numeric: tabular-nums; }
+.now-playing .icon-btn { width: 36px; height: 36px; border: 1px solid var(--line); color: var(--accent-solid); }
+
+/* ------------------------------------------------------------ chat: the phone slide-in */
+
+.drawer.phone-drawer { width: min(92vw, 420px); }
+.drawer.phone-drawer .drawer-body { padding: 8px 14px 24px; }
+.drawer.phone-drawer .card { padding: 12px 14px; }
+.drawer-head .avatar { --avatar-size: 28px; box-shadow: none; }
+.drawer-head .title-row { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+
+/* ------------------------------------------------------------ chat: the call face (section 2) */
+
+.call-sheet { grid-template-rows: auto auto auto auto; }
+
+#callFace {
+  position: relative;
+  width: min(80vw, 320px);
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel-2);
+  box-shadow: 0 0 0 1px var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  isolation: isolate;
+}
+
+/* Three pairs of stacked, muted, looped videos; callface.js drives their opacity through the
+   CSSOM (a class "on" reads the same). Nothing shows until the script says which. */
+#callFace video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+  pointer-events: none;
+}
+
+#callFace video.on { opacity: 1; }
+#callFace .face-pair { position: absolute; inset: 0; }
+#callFace .face-pair.active { z-index: 1; }
+
+/* No clips yet, or the provider off: her avatar, breathing softly. */
+#callFace .avatar {
+  --avatar-size: 160px;
+  width: 160px;
+  height: 160px;
+  box-shadow: var(--avatar-ring), 0 0 40px rgba(34, 211, 238, 0.12);
+  animation: breathe 4s ease-in-out infinite;
+}
+
+#callFace .face-word {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  z-index: 2;
+  font-size: var(--fs-0);
+  color: var(--text-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(6, 10, 19, 0.7);
+}
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.94; }
+  50% { transform: scale(1.04); opacity: 1; }
+}
+
+/* ------------------------------------------------------------ images: the avatar picker, the call face card */
+
+.avatar-pick { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+
+.avatar-pick button {
+  position: relative;
+  width: var(--avatar-size-lg);
+  height: var(--avatar-size-lg);
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--field);
+  overflow: hidden;
+  flex: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.avatar-pick button img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 30%;
+  border-radius: 50%;
+}
+
+.avatar-pick button:hover { border-color: var(--line-2); }
+.avatar-pick button[aria-pressed="true"] { border-color: var(--accent-solid); box-shadow: var(--avatar-ring); }
+.avatar-pick button:focus-visible { outline-offset: 3px; }
+.avatar-pick .avatar-now { display: inline-flex; align-items: center; gap: 8px; margin-left: 4px; }
+
+.face-slots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+
+.face-slot {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  padding: 8px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  min-width: 0;
+}
+
+.face-slot .face-kind { font-size: var(--fs-0); font-weight: 600; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.face-slot video, .face-slot .clip-pending { width: 100%; aspect-ratio: 1 / 1; max-height: none; border-radius: 8px; background: #000; object-fit: cover; }
+.face-slot .clip-pending { background: linear-gradient(100deg, #0c1322 30%, #1a2740 50%, #0c1322 70%); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
+.face-slot .row { gap: 4px; }
+.source-picker.round button { width: 56px; height: 56px; border-radius: 50%; }
+.source-picker.round button img { border-radius: 50%; }
+
+/* ------------------------------------------------------------ phone: the panel (section 1) */
+
+main.page.phone { display: grid; gap: var(--s-4); align-content: start; }
+.phone-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-4); align-items: start; }
+.phone-cols > .stack { min-width: 0; }
+
+.phone-now { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+.phone-now .clock { font-size: var(--fs-4); font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.phone-now .day { color: var(--text-2); font-size: var(--fs-2); }
+.phone-now .tod { color: var(--muted); font-size: var(--fs-1); }
+
+.phone-line { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; align-items: baseline; font-size: var(--fs-2); }
+.phone-line .k { color: var(--muted); font-size: var(--fs-0); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.phone-line .v { overflow-wrap: anywhere; color: var(--text); }
+.phone-line .v .sub { color: var(--text-2); font-size: var(--fs-1); margin-left: 6px; }
+.phone-line .chips { margin-top: 2px; }
+
+.weather-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.weather-line .temp { font-size: var(--fs-4); font-weight: 600; font-variant-numeric: tabular-nums; }
+.weather-line .words { color: var(--text-2); }
+.weather-line .sub { color: var(--muted); font-size: var(--fs-0); }
+
+/* The mood dial: two circles the script fills through the stroke-dasharray attribute. */
+.dial-wrap { display: flex; align-items: center; gap: 14px; }
+.dial { width: 88px; height: 88px; flex: none; transform: rotate(-90deg); overflow: visible; }
+.dial-track { fill: none; stroke: var(--dial-track); stroke-width: 9; }
+.dial-fill { fill: none; stroke: var(--dial-fill); stroke-width: 9; stroke-linecap: round; transition: stroke-dasharray 0.4s var(--ease); }
+.dial-wrap .dial-text { display: grid; gap: 4px; min-width: 0; }
+.dial-wrap .dial-mood { font-size: var(--fs-3); font-weight: 600; overflow-wrap: anywhere; }
+.dial-wrap .dial-age { color: var(--muted); font-size: var(--fs-0); }
+
+.want-meter { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--line); }
+.want-meter:first-child { border-top: none; padding-top: 0; }
+.want-meter .want-title { font-weight: 600; font-size: var(--fs-2); overflow-wrap: anywhere; }
+.want-meter .want-sub { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font-size: var(--fs-0); }
+
+.listening { display: flex; align-items: center; gap: 10px; }
+.listening .np-note { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 10px; background: var(--accent-dim); color: var(--accent-solid); }
+.listening .np-note svg { width: 18px; height: 18px; }
+.listening .song-text { display: grid; gap: 1px; min-width: 0; }
+.listening .song-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listening .song-artist { color: var(--text-2); font-size: var(--fs-1); }
+.listening .song-line { color: var(--muted); font-size: var(--fs-1); font-style: italic; overflow-wrap: anywhere; }
+
+/* The drawn map: inline SVG from map.js; every colour lives here (no style attributes). */
+.map {
+  display: block;
+  width: 100%;
+  max-width: 520px;
+  aspect-ratio: 3 / 2;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  overflow: hidden;
+  touch-action: manipulation;
+}
+
+.map.armed { cursor: crosshair; box-shadow: 0 0 0 3px var(--accent-ring); }
+.map-water { fill: var(--bg-2); }
+.map-land { fill: var(--panel-2); stroke: var(--line-2); stroke-width: 1.5; stroke-linejoin: round; }
+.map-dot { fill: var(--accent-solid); stroke: var(--bg); stroke-width: 2; transform-box: fill-box; transform-origin: center; }
+.map-dot.here { animation: map-pulse 2s ease-in-out infinite; }
+.map-label {
+  fill: var(--text-2);
+  font-family: var(--sans);
+  font-size: var(--fs-0);
+  font-weight: 500;
+  text-anchor: middle;
+  paint-order: stroke fill;
+  stroke: var(--bg-2);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.map g[tabindex] { cursor: pointer; outline: none; }
+.map g[tabindex]:focus-visible .map-dot, .map g[tabindex]:hover .map-dot { stroke: #ffffff; stroke-width: 3; }
+.map g[tabindex]:focus-visible .map-label { fill: var(--text); }
+.map-pin { fill: none; stroke: var(--accent-solid); stroke-width: 1.5; stroke-dasharray: 3 3; }
+
+@keyframes map-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.5); opacity: 0.55; }
+}
+
+.map-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--fs-0); color: var(--muted); }
+
+/* The places list under the map. */
+.place-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 6px 12px;
+  align-items: start;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.place-row:first-child { border-top: none; padding-top: 0; }
+.place-row.inactive { opacity: 0.6; }
+.place-row .place-thumb { width: 56px; height: 56px; border-radius: 10px; object-fit: cover; background: var(--field); border: 1px solid var(--line); }
+.place-row .place-thumb.empty { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); font-size: var(--fs-0); }
+.place-row .place-text { display: grid; gap: 2px; min-width: 0; }
+.place-row .place-title { font-weight: 600; overflow-wrap: anywhere; }
+.place-row .place-detail { color: var(--text-2); font-size: var(--fs-1); overflow-wrap: anywhere; }
+.place-row .place-coords { color: var(--muted); font-size: var(--fs-0); font-variant-numeric: tabular-nums; }
+.place-row .place-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 6px; }
+.place-row .place-actions .chips { width: 100%; }
+.place-add { display: grid; gap: 8px; }
+
+/* ------------------------------------------------------------ album (section 5) */
+
+main.page.album { display: grid; gap: var(--s-4); align-content: start; }
+.album-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.album-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); }
+
+/* A Polaroid: a 6px --panel frame, a taller bottom edge for the date and the chips. */
+.polaroid {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  padding: 6px 6px 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid rgba(26, 39, 64, 0.8);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  min-width: 0;
+  transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+
+.polaroid:hover { transform: rotate(-1deg) translateY(-2px); box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45); }
+.polaroid:nth-child(even):hover { transform: rotate(1deg) translateY(-2px); }
+.polaroid > a.shot { display: block; border-radius: 3px; overflow: hidden; background: var(--field); }
+.polaroid img, .polaroid video { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; background: var(--field); display: block; }
+.polaroid .pfoot { display: grid; gap: 4px; padding: 0 2px; }
+.polaroid .pdate {
+  min-height: 28px;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--serif);
+  font-size: var(--fs-1);
+  text-align: left;
+  border-radius: 6px;
+}
+.polaroid .pdate:hover { color: var(--accent-solid); }
+.polaroid .chips { gap: 4px; }
+.polaroid .pactions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.polaroid .pactions a, .polaroid .pactions .btn { font-size: var(--fs-0); }
+.polaroid .pactions .btn.small { min-height: 32px; padding: 0 8px; }
+.polaroid.candidate { border-color: rgba(242, 178, 60, 0.45); }
+.polaroid.us { border-color: rgba(34, 211, 238, 0.4); }
+.polaroid .corner { position: absolute; top: 10px; left: 10px; z-index: 1; }
+
+/* ------------------------------------------------------------ memory (section 7) */
+
+main.page.memory { display: grid; gap: var(--s-4); align-content: start; }
+
+/* Four phases, four opacities of the one accent; three sizes by weight. */
+.phase-vivid { --phase-a: 0.26; --phase-line: 0.6; }
+.phase-firm { --phase-a: 0.16; --phase-line: 0.42; }
+.phase-fading { --phase-a: 0.09; --phase-line: 0.26; }
+.phase-faded { --phase-a: 0.04; --phase-line: 0.14; }
+
+.memory-legend { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.memory-legend .chip.phase-vivid, .memory-legend .chip.phase-firm, .memory-legend .chip.phase-fading, .memory-legend .chip.phase-faded,
+.chip.phase-vivid, .chip.phase-firm, .chip.phase-fading, .chip.phase-faded {
+  background: rgba(34, 211, 238, var(--phase-a, 0.1));
+  border-color: rgba(34, 211, 238, var(--phase-line, 0.3));
+  color: var(--text-2);
+}
+
+.memory-field { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+
+.tile {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  flex: 1 1 140px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-s);
+  border: 1px solid rgba(34, 211, 238, var(--phase-line, 0.3));
+  background: rgba(34, 211, 238, var(--phase-a, 0.1));
+  color: var(--text);
+  text-decoration: none;
+  font-size: var(--fs-1);
+  line-height: 1.4;
+  transition: border-color 0.15s;
+}
+
+.tile:hover { text-decoration: none; border-color: var(--accent-solid); }
+.tile.low { flex: 1 1 140px; max-width: 100%; font-size: var(--fs-0); }
+.tile.mid { flex: 2 1 220px; font-size: var(--fs-1); }
+.tile.high { flex: 3 1 320px; font-size: var(--fs-2); }
+.tile.phase-faded, .tile.phase-fading { color: var(--text-2); }
+.tile .subject { font-size: var(--fs-0); font-weight: 600; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.tile .text { overflow-wrap: anywhere; }
+.tile .tile-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--fs-0); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* An untold fact: a closed envelope, the subject only. */
+.tile.envelope {
+  position: relative;
+  flex: 1 1 150px;
+  padding-top: 26px;
+  overflow: hidden;
+  border-style: dashed;
+  background: var(--panel-2);
+  color: var(--text-2);
+}
+
+.tile.envelope::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 20px;
+  background: linear-gradient(to bottom right, transparent 49.5%, rgba(34, 211, 238, 0.18) 50%) left / 50% 100% no-repeat, linear-gradient(to bottom left, transparent 49.5%, rgba(34, 211, 238, 0.18) 50%) right / 50% 100% no-repeat;
+  pointer-events: none;
+}
+
+.mem-list { display: grid; gap: 2px; }
+.mem-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: var(--fs-1); }
+.mem-row:first-child { border-top: none; }
+.mem-row .text { overflow-wrap: anywhere; }
+.mem-row .age { color: var(--muted); font-size: var(--fs-0); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* The history timeline: one vertical line, one node per entry. */
+.mem-timeline { position: relative; display: grid; gap: 12px; padding-left: 22px; }
+.mem-timeline::before { content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 2px; border-radius: 2px; background: var(--line-2); }
+
+.mem-node { position: relative; display: grid; gap: 2px; min-width: 0; }
+.mem-node::before {
+  content: "";
+  position: absolute;
+  left: -22px;
+  top: 5px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(34, 211, 238, calc(var(--phase-line, 0.3) + 0.3));
+  background: rgba(34, 211, 238, var(--phase-a, 0.1));
+  box-shadow: 0 0 0 3px var(--bg);
+}
+
+.mem-node .title { font-weight: 600; overflow-wrap: anywhere; }
+.mem-node .when { color: var(--muted); font-size: var(--fs-0); font-variant-numeric: tabular-nums; }
+.mem-node.phase-faded .title, .mem-node.phase-fading .title { color: var(--text-2); font-weight: 500; }
+
+.kept-row { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 4px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: var(--fs-1); }
+.kept-row:first-child { border-top: none; }
+.kept-row .text { overflow-wrap: anywhere; }
+.kept-row .when { color: var(--muted); font-size: var(--fs-0); font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------ model: spotify card, her texts */
+
+#spotifyCard .spotify-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#spotifyPlaylist { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--fs-1); color: var(--text-2); }
+#spotifyPlaylist .name { font-weight: 600; color: var(--text); }
+#herTextsBtn[aria-pressed="true"] { background: var(--accent-dim); border-color: rgba(34, 211, 238, 0.5); color: var(--accent-solid); }
+
+/* ------------------------------------------------------------ v4 widths */
+
+@media (min-width: 761px) {
+  .album-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (min-width: 901px) {
+  .phone-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+
+@media (min-width: 1101px) {
+  .album-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@media (max-width: 600px) {
+  .face-slots { grid-template-columns: 1fr; }
+  .polaroid .pactions .btn.small { min-height: 40px; }
+  .polaroid .pdate { min-height: var(--tap); }
+  .place-row { grid-template-columns: 48px minmax(0, 1fr); }
+  .place-row .place-thumb { width: 48px; height: 48px; }
+  .tile.high, .tile.mid { flex-basis: 100%; }
+  #callFace { width: min(80vw, 320px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-dot.here, #callFace .avatar, .video-bubble .video-pending, .face-slot .clip-pending { animation: none; }
+  .polaroid, .polaroid:hover, .polaroid:nth-child(even):hover { transform: none; transition: none; }
+}
+
+/* The same, keyed off the class album.js sets when the viewer prefers reduced motion. */
+.album-grid.reduced-motion .polaroid, .album-grid.reduced-motion .polaroid:hover, .album-grid.reduced-motion .polaroid:nth-child(even):hover { transform: none; transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  #callFace video, .dial-fill, .tile, .now-playing .np-progress > span, .avatar-pick button { transition: none; }
+}
+
+a.btn, a.btn:hover { text-decoration: none; }

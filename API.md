@@ -318,7 +318,7 @@ Mood: the relationship state may carry `mood_set_at` (ISO) and `mood_days` (1..1
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | /api/calls/start | `{ conversationId }` | 201 `{ call, provider, clientSecret, expiresAt, sdpUrl, model, voice, maxSeconds, tickSeconds }`. The only place the client secret ever appears: not stored, not audited, not logged, not in any later read. 503 `provider_not_configured` when `callProvider` is `off` or the reserved `elevenlabs` (detail `reserved_v3_1`), 409 `call_in_progress` while a call is live anywhere (a live call with no tick for 120 s is expired first), 402 when two minutes at the per-minute price do not fit under the caps. |
+| POST | /api/calls/start | `{ conversationId }` | 201 `{ call, provider, clientSecret, expiresAt, sdpUrl, model, voice, maxSeconds, tickSeconds }`. The only place the client secret ever appears: not stored, not audited, not logged, not in any later read. 503 `provider_not_configured` when `callProvider` is `off`, or `elevenlabs` without `ELEVENLABS_API_KEY` and an agent id (detail `elevenlabs`; built in v4 A2, the start response then carries `transport`, `agentId` and `overrides`), 409 `call_in_progress` while a call is live anywhere (a live call with no tick for 120 s is expired first), 402 when two minutes at the per-minute price do not fit under the caps. |
 | POST | /api/calls/:id/tick | `{ seconds, usage? }` (`usage` cumulative token counts `{ audioIn, audioOut, textIn, textOut }`, non-negative integers) | `{ ok, secondsTotal, costUsd, stop, reason? }` (`stop` with `max_minutes` or `budget`; the crossing tick is still recorded) |
 | POST | /api/calls/:id/end | `{ reason, segments: [{ who: him|her, text, at }], usage?, seconds? }` (at most 2,000 raw segments, 4,000 characters each; consecutive same-speaker segments are merged, empties dropped, the transcript capped at 80 rows; `seconds` is the page's count since the call went live, taken up to the ticks recorded plus 60, so the per-minute floor sees the time since the last tick and a call that ends before its first tick is not free) | `{ call, messageIds }` (409 `call_over` once ended; the rows are story messages with `call_id`, her rows flagged by the flag-only checks, the proposal pass runs over them) |
 | GET | /api/calls | `?conversationId=&limit=50` | rows (no secret) |
@@ -372,6 +372,85 @@ What the export carries, said plainly: his approved facts, his recorded name and
 
 The words reach every turn as the WHAT HE LOOKS LIKE section; the photos ride on the provider call (never on his stored message) on his first turn of a conversation (her opener does not count), whenever he mentions his looks, on every Together turn while `hisFaceInTogether` is on, and every `hisFaceApartEvery` turns in Apart mode; never when a performer on the call cannot see (on a tasting turn both performers must). `GET /api/messages/:id/context` carries `hisFace: { section, shown, photos }`. `GET /api/assets` never lists a role `him` row.
 
+## v4 (SPEC_V4, 2026-09-26): her face, her phone, the call face, the two of us, her playlist and player, the album, deliveries, the memory map, the scene as a place, her clips
+
+Every route below is owner-only behind the same door; the cross-site gate covers every POST, PUT and DELETE. Errors keep the v1 shape (`{ error, code, retryable?, detail? }`). No new state section: `PROMPT_VERSION` still ends `-p7`; the stable prefix moved exactly once, for the CLIPS overlay (amendment A3).
+
+### The avatar (section 0)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/avatar | | `{ assetId, file, focus: [x, y] }` (the stored `avatarAssetId` when it names an approved master, else `master-05`; `file` is the master's path under `/images/masters/`, `focus` the face-centred crop in percent of width and height, the same table public/js/nav.js applies through the CSSOM) |
+
+### Her phone and her places (sections 1 and 8)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/phone | | `PhoneState`: `now`, `tz`, `localClock`, `weekday`, `timeOfDay`, `where { busy, label, until }`, `scene { status, location }`, `weather`, `city`, `outfit`, `mood { mood, phase, setAt, days, ageDays, fraction }` (null when none; `fraction` = ageDays / (2 x days), capped at 1), `wants` (capped at `wantsShown`), `asks` (open), `today`, `listening { artist, title, line, day }` (null with `listeningLineEnabled` off, on a refusal, or under the caps; one small paid call a day on the story performer, cached per her local day in `panel_cache`, run kind `listening`), `places` (each `{ id, title, detail, lat, lon, active, picture, here }`; never the R2 key), `map { bounds, view, outline }`. Writes on a read: `syncPlaces` (a place thread's row) and the listening cache, nothing else |
+| GET | /api/places | | `{ places: PlaceRow[] }` after `syncPlaces` (every column but `picture_key`, plus `active` and `picture`) |
+| POST | /api/places | `{ title, detail?, lat?, lon? }` | 201 the row (a title already on file answers its row, the pin and detail applied) |
+| PUT | /api/places/:id | `{ lat?, lon?, detail?, geocodedBy?: "owner" \| "map" }` | the row (400 on one coordinate without the other or out of range; 404) |
+| POST | /api/places/:id/geocode | | the row with `geocoded_by openmeteo` (404 `no_match` when nothing within 30 km of her city; 502 `provider_failed`; the stub answers Stubtown, which is not near Portland) |
+| POST | /api/places/:id/picture | `{ remake?: boolean }` | the row with `picture: true` (held open like a photo; 402 under the caps or `price_unknown` at 0 on a paid image provider, 404, 409 `already_generated` without `remake`, 502, 503); one `model_runs` row of kind `place` at `placeCostUsd`; no `visual_assets` row, no approval flow, never the outfit rule or the character export |
+| DELETE | /api/places/:id/picture | | the row with `picture: false` |
+| GET | /media/place/:id | | `image/png`, `private, no-store`; 404 without a picture |
+
+A place row shadows the newest active place thread per normalised title (`thread_id` is the current head, refreshed on every read); a dropped thread keeps its row, listed with `active: false`. `PUT /api/state/scene` now answers `{ version, state, place: { id, picture } | null }` and, for a Together scene at a known place, touches the place's `last_used_at` (best effort).
+
+### The call face (section 2)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/callface | | `{ provider, source, clips: { idle, listening, talking }, candidates, generating, ready }` (200 whatever the provider; `ready` only on `clips` with all three approved) |
+| POST | /api/callface/make | `{ kind: "idle" \| "listening" \| "talking" }` | 202 `{ asset }` (role `callface`, generating; the same clip path as `POST /api/video/generate` with the ratio `960:960` and five seconds, charged at start at `videoCostUsd`); 400; 402; 409 `in_progress` while a clip of that kind generates; 503 `provider_not_configured` with detail `off`, `reserved_v4_1` (lipsync) or `runway` without the key |
+
+Polling through `POST /api/video/:id/poll` (a call-face candidate keeps `callface:<kind>` in `notes`); decisions through `POST /api/images/:id/decide` (approving a kind archives the earlier approved clip of that kind; a rejected face's hash is blacklisted like any clip). `GET /media/:id` streams role `callface` as `video/mp4` with Range. `GET /api/assets` gains `callface` (approved) and lists face candidates and generating rows with the clips.
+
+### Him in the picture (section 3)
+
+No new route. When her photo line says he is in it (`photoIncludesHim`, src/markers.ts) and `hisFaceInPhotos` is on, his newest approved reference photo rides as the third tagged reference (`@him` on Runway; one more `image[]` part on OpenAI) with two of hers; the candidate row carries `with_him = 1`, the audit's `after.withHim` says so, and the reply carries the flag `photo_with_him`. With no photo of him on file the picture is of her alone and the message carries `him_not_on_file` (or `him_photo_too_large` past the 5 MB data-URI cap). `GET /api/assets` rows and `GET /api/album` items carry `with_him` / `withHim`; the character package never carries a with-him picture; the Images page never lists his own photos; the outfit rule never reads them.
+
+### Her playlist and the player on his Spotify (section 4 and amendment A1)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/spotify | | `{ connected, displayName, playlistId, playlistName, scope, configured, playlist: { ok, name } \| null }` (never a token) |
+| GET | /api/spotify/connect | | 302 to `accounts.spotify.com/authorize` with `response_type=code`, the seven scopes (`playlist-modify-private playlist-read-private streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state`), the redirect URI (this origin plus `/api/spotify/callback`) and a single-use 32-hex `state`; 503 `provider_not_configured` without both secrets (locally `SPOTIFY_STUB=1` counts while `ACCESS_AUD` is empty). A second press on a connected row rewrites the state only |
+| GET | /api/spotify/callback | `?code&state` (or `?error`) | 302 to `/model#spotify`; 400 `validation` on `error`; 403 `forbidden` on a state mismatch (nothing stored); 502 `provider_failed` on a token or profile failure (detail `me_forbidden`, `no_refresh_token`). Stores the tokens in `spotify_auth`, creates the private playlist once when `spotifyPlaylistId` is empty, sets `spotifyEnabled` true, audits `spotify.connected` with ids only |
+| GET | /api/spotify/token | | `{ accessToken, expiresAt, premium, deviceName: "Avelie", player }` for the Web Playback SDK (refreshed under five minutes; `premium` from `/v1/me` cached a day); 403 `not_connected`. Never audited, never logged; the refresh token never leaves the Worker |
+| POST | /api/spotify/disconnect | | `{ ok: true }` (the row deleted, `spotifyEnabled` false; the playlist stays on his account) |
+| POST | /api/messages/:id/spotify | | `{ status }`: `added`, `already`, `not_found`, `failed`, `off` (the add by hand; 400 when the message carries no song; 404) |
+
+The add runs after her reply is stored (`afterReply`, best effort): `messages.spotify_status` starts as `pending` when a reply carries a song and the playlist is on, and `song_json` gains `trackUrl` and `uri` once a track is found. `GET /api/conversations/:id/messages` rows carry `spotify_status` and `pushed_at`. The page talks to Spotify itself only through the SDK loaded from `sdk.scdn.co` with the token above; the CSP names `sdk.scdn.co` (script and frame), `open.spotify.com` (the embed frame) and `api.spotify.com`, `*.spotify.com`, `wss://*.spotify.com` (connect). A song he sends her is never added.
+
+### The album (section 5)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/album | `?limit=100&before=<ISO>&group=all\|approved\|candidates\|us` | `{ items: [{ id, messageId, conversationId, at, status, withHim, description, place, sceneStatus, bytes, provider, kind: "photo" \| "clip" }], nextBefore }` (every picture she sent in a conversation, newest first; the place from the scene version in force when the message was sent; never a role him, portrait, call-face or owner-fired row; never the R2 key; limit 1..200) |
+
+### Deliveries and her first texts (section 6)
+
+No new route. In real mode a reply held two minutes or more (`DELAY_PUSH_MIN_MS`) that lands inside the 25-minute window (`DUE_WINDOW_MS`) gets ONE Web Push for the batch on the `*/20` cron (reason `her_delayed_reply`, the only reason beside `her_first_text`); every row the cron sees is stamped `messages.pushed_at`, pushed or not, so no reply is considered twice; a free-branch reply (5 to 90 s) is stamped without a push. `GET /api/push/latest` answers, in order: her newest first text within the window, else the newest reply the cron stamped, else the newest first text. "Get her texts on this phone" on the Model page subscribes push and sets `herFirstTextsPerDay` 2 with the shipped quiet hours; the defaults stay off (`herFirstTextsPerDay` 0, `replyDelayMode` instant).
+
+### The memory map (section 7)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/memory/map | | `{ facts: [{ id, subject, text, weight, lastTouched, touches, score, recency, halfLifeDays, phase, returned, createdAt }], history: [{ id, seq, title, occurred, weight, score, phase, createdAt }], sealed: [{ id, subject, createdAt }], keptToday: [{ id, kind, proposal, decidedAt }], counts: { facts, vivid, firm, fading, faded, returned, sealed, keptToday }, settings, now }` (read-only; facts about him of scope justin and shared, approved; `phase` vivid/firm/fading/faded; `returned` when a stored row was touched within 7 days and created at least 14 days before that touch; `sealed` = her untold facts by subject only, the text never in the body; `keptToday` = proposals kept automatically on her local day, at most 100) |
+
+### The scene as a place (section 8)
+
+No new route beyond the places above. A promoted `scene` proposal now takes `status`, `location`, `time` and `present` from its payload and keeps the rest; a promoted `relationship` proposal takes `status`, `his_name` (null clears), `trust`, `affection`, `attraction` and `nicknames` and keeps the rest (the v3.2 gap). The proposal system prompt asks for those fields; the stub's `[[SCENE:x]]`, `[[SCENE]]` and `[[REL:status|name]]` drive them.
+
+### Her clips from the chat (amendment A3)
+
+No new route. A reply ending in `[clip: what the clip shows]` (at most one; a photo line beside it keeps the clip and flags `clip_with_photo`) starts a clip after the reply is stored: the source is the newest approved photo she sent in this conversation today, else her newest approved photo, else the avatar master; role `video` bound to the conversation and the message, reusing `messages.image_id` / `image_status` (a message carries a photo or a clip, never both), the flag `clip_pending` with the asset id, polled through `POST /api/video/:id/poll`, a candidate until he approves, blacklisted by hash on a rejection. With `videoMarkerEnabled` false, the provider off or its key missing, the line is stripped and the message carries `clip_unavailable`. `GET /api/album` lists clips beside photos with `kind: "clip"`.
+
+### Changed routes (v4)
+
+`POST /api/images/:id/decide` accepts role `callface`; `GET /api/assets` gains `callface` and every row carries `with_him`; `GET /media/:id` serves role `callface` as `video/mp4` with Range; `GET /api/push/latest` also answers a stamped delayed reply; `PUT /api/state/scene` answers `place`; `GET /api/conversations/:id/messages` rows carry `spotify_status` and `pushed_at`; `GET /api/system` counts gain `placesWithPicture`, `callFaceClips` (approved) and `spotifyConnected` (0 or 1), and `providerKeys` gains `spotify` (both secrets present, or the local stub); `GET /api/export` carries `places` (never `spotify_auth`, never the panel cache) and the import accepts `places`, `with_him`, `spotify_status`, `pushed_at` and role `callface` (a `spotifyAuth` key in a payload is ignored); the `*/20 * * * *` cron runs `pushDueReplies` before `maybeTextFirst`. The router matches on segment count, so `/api/memory/map` never meets `PUT /api/memory/:entity/:id`.
+
 ## Settings added in v3
 
 | Key | Default | Accepted |
@@ -395,7 +474,7 @@ The words reach every turn as the WHAT HE LOOKS LIKE section; the photos ride on
 | weatherUnits | `"fahrenheit"` | `fahrenheit`, `celsius` |
 | portraitCostUsd | 0.04 | 0 to 100 (above 0 on a paid image provider) |
 | portraitSize | `"1024x1024"` | like `imageSize` |
-| callProvider | `"openai"` | `openai`, `stub`, `off`, `elevenlabs` (reserved: 503 on start) |
+| callProvider | `"openai"` | `openai`, `stub`, `off`, `elevenlabs` (v4 A2: needs `ELEVENLABS_API_KEY` and `elevenLabsAgentId`, else 503 on start) |
 | callModel | `"gpt-realtime"` | a string up to 120 characters |
 | callVoice | `"marin"` | up to 40 characters |
 | callTranscribeModel | `"gpt-4o-mini-transcribe"` | up to 120 characters |
@@ -403,8 +482,8 @@ The words reach every turn as the WHAT HE LOOKS LIKE section; the photos ride on
 | callMaxMinutes | 20 | 1 to 60 |
 | callPricePerMinute | 0.30 | 0 to 100 (the floor of the meter) |
 | callPrices | `{ audioInPerMTok: 32, audioOutPerMTok: 64, textInPerMTok: 4, textOutPerMTok: 16 }` | the four keys, each 0 to 100000, nothing else |
-| elevenLabsAgentId | `""` | up to 120 characters (reserved) |
-| elevenLabsCallPricePerMinute | 0.10 | 0 to 100 (reserved) |
+| elevenLabsAgentId | `""` | up to 120 characters (v4 A2: the Conversational AI agent with overrides enabled) |
+| elevenLabsCallPricePerMinute | 0.10 | 0 to 100 (v4 A2: the floor of the meter on an ElevenLabs call; 0 refuses the start) |
 | videoProvider | `"runway"` | `runway`, `stub`, `off` (no key: reports not configured) |
 | videoModel | `"gen4_turbo"` | up to 60 characters |
 | videoSeconds | 5 | 5 or 10 |
@@ -445,3 +524,37 @@ A database seeded before these keys existed reads them as the defaults; the depl
 ## Cron (unchanged triggers)
 
 No new trigger. The 07:00 UTC daily handler runs the backup and then the maintenance pass (`src/maintenance.ts`): weather cache rows older than a day deleted, open asks older than `askLetGoDays` let go, pending tastings older than 30 minutes expired, calls with no tick for two minutes expired. Each change is audited; a failure there is logged by class and never stops the backup.
+
+## Settings added in v4 (SPEC_V4 "Settings added" and amendments A1 to A3)
+
+| Key | Default | Accepted |
+|---|---|---|
+| avatarAssetId | `"master-05"` | `^master-0[0-5]$` (his pick on the Images page; `GET /api/avatar` reads it) |
+| callFaceProvider | `"clips"` | `clips`, `off`, `lipsync` (reserved: 503 `reserved_v4_1` on make, `ready: false`) |
+| callFaceSourceAssetId | `"master-00"` | `^master-0[0-5]$` (the tight face crop keeps the whole face in a square) |
+| hisFaceInPhotos | `true` | boolean (his reference photo may ride into a picture her line puts him in) |
+| spotifyEnabled | `false` | boolean (the callback sets it true, disconnect false; his switch too) |
+| spotifyPlaylistId | `""` | `^[A-Za-z0-9]{0,62}$` (written by the app; editable) |
+| spotifyPlaylistName | `"songs from avelie"` | 1 to 100 characters (used at creation) |
+| placeCostUsd | 0.08 | 0 to 100; above 0 unless the image provider is keyless (`assertSettingsConsistent`) |
+| listeningLineEnabled | `true` | boolean (one small paid line a day on the phone panel) |
+| spotifyPlayer | `"sdk"` | `sdk`, `embed`, `off` (A1: the Web Playback SDK device, the embed fallback, or no player) |
+| elevenLabsModel | `"eleven_multilingual_v2"` | a string, at most 60 characters (A2) |
+| elevenLabsTtsPricePer1kChars | 0.3 | 0 to 100 (A2: her voice notes on ElevenLabs, through the caps) |
+| videoMarkerEnabled | `true` | boolean (A3: her `[clip:]` line makes a clip; off strips it with `clip_unavailable`) |
+
+Migration `0008_v4.sql` (additive, applied remotely BEFORE the deploy): the `places`, `spotify_auth` and `panel_cache` tables, `idx_places_title_norm`, the columns `visual_assets.with_him` (NOT NULL DEFAULT 0), `messages.spotify_status` and `messages.pushed_at`, and `INSERT OR IGNORE` rows for the thirteen keys (the nine of the spec table and the amendment's four: `spotifyPlayer`, `elevenLabsModel`, `elevenLabsTtsPricePer1kChars`, `videoMarkerEnabled`; the integrator added the four so `npm run db:remote` is the whole settings step); a stored table without a key would read it as the default (`DEFAULT_SETTINGS`) either way.
+
+## Secrets added in v4 (optional)
+
+| Secret | Used by |
+|---|---|
+| SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET | the Spotify connect flow (a confidential client; the Worker exchanges the code and refreshes the token). Without both, every Spotify route answers 503 `provider_not_configured` and `spotify_status` is `off`. On the Mac: `pbpaste \| npx wrangler secret put SPOTIFY_CLIENT_ID`, then the secret the same way, `printf '' \| pbcopy` after each. Locally `SPOTIFY_STUB=1` (with `ACCESS_AUD` empty) drives the stub instead |
+| VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY | still optional; `node scripts/gen_vapid.mjs --apply` from the deploy session sets both without showing the private key; until then the phone notification is skipped and "Get her texts on this phone" turns her first texts on without it |
+| ELEVENLABS_API_KEY | her voice notes and calls on ElevenLabs (A2; docs/ELEVENLABS.md) |
+
+The Spotify tokens live in `spotify_auth` only: never in a response body, an audit row, a log line, the export, the character package or the browser; `GET /api/spotify/token` hands the page the short-lived access token and nothing else.
+
+## Cron (v4)
+
+No new trigger. The `*/20 * * * *` handler runs `pushDueReplies` (one notification for the delayed replies that landed since the last tick and were held two minutes or more; every seen row stamped) and then `maybeTextFirst`, and returns both results. The other three are unchanged.

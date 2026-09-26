@@ -10,7 +10,17 @@
 // stub); the API route runs the normal turn with the transcript.
 //
 // The marker parser is pure. Nothing here ever prints a key.
-import { auditStmt, insertModelRunStmt, newId, nowIso } from "./db";
+//
+// v4 (SPEC_V4 Amendment A2, lane L10): the ElevenLabs branch rides on
+// providers/elevenlabs.ts (the same adapter the calls use), reads the model from the
+// setting elevenLabsModel, and is priced: characters at elevenLabsTtsPricePer1kChars
+// through assertBudget before the call, the cost on the run row and in usage_daily after
+// it. A price of 0 refuses the note (a paid path never meters at nothing). Workers AI and
+// the stub are unchanged.
+import { assertBudget } from "./budget";
+import { auditStmt, dayKey, insertModelRunStmt, newId, nowIso, usageStmt } from "./db";
+import { ApiHttpError } from "./errors";
+import { ELEVENLABS_DEFAULT_MODEL, elevenLabsProviderFor, elevenLabsSettingsOf, elevenLabsVoiceConfigured, ttsEstimateUsd } from "./providers/elevenlabs";
 import { redactSecrets, safeErrorMessage } from "./providers/types";
 import { ProviderError } from "./types";
 import type { Env, ModelRunRow, Settings } from "./types";
@@ -34,20 +44,20 @@ export const WORKERS_AI_MODELS = Object.freeze({
 
 export const OPENAI_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
 export const OPENAI_TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcriptions";
-export const ELEVENLABS_TTS_MODEL = "eleven_multilingual_v2";
-const ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech/";
-const ELEVENLABS_OUTPUT = "mp3_44100_128";
+// The default ElevenLabs model (the setting elevenLabsModel overrides it per note).
+export const ELEVENLABS_TTS_MODEL: string = ELEVENLABS_DEFAULT_MODEL;
 
 export const VOICE_PREFIX = "voice/";
 // More than she would ever say in one note; ElevenLabs stops at 5000.
 export const MAX_SPEECH_CHARS = 2500;
-const TTS_TIMEOUT_MS = 60_000;
 const STT_TIMEOUT_MS = 90_000;
 
 export interface SynthesisResult {
   mp3: ArrayBuffer;
   provider: string;
   model: string;
+  // v4 A2: the characters an ElevenLabs note billed (absent on the other providers).
+  chars?: number;
 }
 
 export interface Transcript {
@@ -111,7 +121,7 @@ export function voiceConfigured(env: Env, settings: Settings): boolean {
     case "workersai":
       return true;
     case "elevenlabs":
-      return hasKey(env.ELEVENLABS_API_KEY) && hasKey(settings.elevenLabsVoiceId);
+      return elevenLabsVoiceConfigured(env, settings);
     default:
       return false;
   }
@@ -257,28 +267,36 @@ async function workersAiSpeech(env: Env, speech: string): Promise<SynthesisResul
   return { mp3, provider: "workersai", model };
 }
 
+// Her voice from ElevenLabs (v4 A2): the adapter in providers/elevenlabs.ts makes the
+// call; the key and the voice id are checked there (503 config errors). The characters
+// billed ride back on `chars` for the run row.
 async function elevenLabsSpeech(env: Env, settings: Settings, speech: string): Promise<SynthesisResult> {
-  const key = (env.ELEVENLABS_API_KEY ?? "").trim();
-  if (!key) throw new ProviderError("elevenlabs", "config", "ELEVENLABS_API_KEY not set", 503, false);
-  const voiceId = (settings.elevenLabsVoiceId ?? "").trim();
-  if (!voiceId) throw new ProviderError("elevenlabs", "config", "elevenLabsVoiceId not set", 503, false);
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(voiceId)) throw new ProviderError("elevenlabs", "config", "elevenLabsVoiceId is not a voice id", 503, false);
+  const es = elevenLabsSettingsOf(settings);
+  if (!es.voiceId) throw new ProviderError("elevenlabs", "config", "elevenLabsVoiceId not set", 503, false);
+  const r = await elevenLabsProviderFor(env).textToSpeech(env, { voiceId: es.voiceId, text: speech, model: es.model });
+  return { mp3: r.mp3, provider: "elevenlabs", model: r.model, chars: r.chars };
+}
 
-  let res: Response;
-  try {
-    res = await fetch(ELEVENLABS_URL + encodeURIComponent(voiceId) + "?output_format=" + ELEVENLABS_OUTPUT, {
-      method: "POST",
-      headers: { "xi-api-key": key, "content-type": "application/json", accept: "audio/mpeg" },
-      body: JSON.stringify({ text: speech, model_id: ELEVENLABS_TTS_MODEL }),
-      signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
-    });
-  } catch (e) {
-    throw networkError(e, "elevenlabs");
+// The cost of an ElevenLabs note in micro-USD, from the characters sent.
+export function elevenLabsNoteCostMicro(chars: number, pricePer1kChars: number): number {
+  const c = Math.max(0, Math.floor(chars));
+  const p = Math.max(0, pricePer1kChars);
+  return Math.ceil((c / 1000) * p * 1_000_000);
+}
+
+// The paid gate on an ElevenLabs note (v4 A2), run before anything is spent: a price of
+// 0 is refused (402 price_unknown, the same law as every other paid path), then the
+// estimate must fit under the caps. Workers AI and the stub bill nothing here.
+export async function assertVoiceBudget(db: D1Database, settings: Settings, text: string): Promise<{ estimateUsd: number; chars: number }> {
+  const chars = (text ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_SPEECH_CHARS).length;
+  if (settings.voiceProvider !== "elevenlabs") return { estimateUsd: 0, chars };
+  const price = elevenLabsSettingsOf(settings).ttsPricePer1kChars;
+  if (!(price > 0)) {
+    throw new ApiHttpError(402, "price_unknown", "elevenLabsTtsPricePer1kChars is 0; set the price per 1k characters in the Voice section of the Model page before a note", false, "elevenlabs");
   }
-  if (!res.ok) throw await httpError(res, "elevenlabs", key);
-  const mp3 = await res.arrayBuffer();
-  if (!mp3.byteLength) throw new ProviderError("elevenlabs", "server", "empty audio", 502, true);
-  return { mp3, provider: "elevenlabs", model: ELEVENLABS_TTS_MODEL };
+  const estimateUsd = ttsEstimateUsd(chars, price);
+  await assertBudget(db, settings, estimateUsd);
+  return { estimateUsd, chars };
 }
 
 // Her words as audio. The text arrives already stripped of markers; it is flattened to
@@ -317,8 +335,12 @@ export async function attachVoiceNote(env: Env, db: D1Database, settings: Settin
   const provider = settings.voiceProvider;
   let model = "";
   try {
+    // v4 A2: the ElevenLabs note is priced before the call and metered after it.
+    await assertVoiceBudget(db, settings, args.text);
     const r = await synthesize(env, settings, args.text);
     model = r.model;
+    const chars = provider === "elevenlabs" && typeof r.chars === "number" ? r.chars : 0;
+    const costMicro = provider === "elevenlabs" ? elevenLabsNoteCostMicro(chars, elevenLabsSettingsOf(settings).ttsPricePer1kChars) : 0;
     const key = VOICE_PREFIX + args.messageId + ".mp3";
     await env.MEDIA.put(key, r.mp3, { httpMetadata: { contentType: "audio/mpeg" } });
     // Only her message, and only once: a second note for the same message is dropped.
@@ -343,20 +365,23 @@ export async function attachVoiceNote(env: Env, db: D1Database, settings: Settin
       prompt_version: null,
       input_tokens: 0,
       output_tokens: 0,
-      cost_usd_micro: 0,
+      cost_usd_micro: costMicro,
       latency_ms: Date.now() - started,
       status: "ok",
       error: null,
       flags_json: null,
       created_at: nowIso(),
     };
-    await db.batch([
+    const stmts: D1PreparedStatement[] = [
       insertModelRunStmt(db, run),
-      auditStmt(db, actor, "voice.synthesize", "message", args.messageId, null, { key, bytes: r.mp3.byteLength, provider: r.provider, model: r.model }),
-    ]);
+      auditStmt(db, actor, "voice.synthesize", "message", args.messageId, null, { key, bytes: r.mp3.byteLength, provider: r.provider, model: r.model, chars, cost_usd_micro: costMicro }),
+    ];
+    // The note is one request in the usage table, so the caps see it (v4 A2).
+    if (provider === "elevenlabs") stmts.push(usageStmt(db, dayKey(), r.provider, r.model, 0, 0, costMicro, 1));
+    await db.batch(stmts);
     return { key, bytes: r.mp3.byteLength };
   } catch (e) {
-    const cls = e instanceof ProviderError ? e.kind : e instanceof Error ? e.name || "Error" : "error";
+    const cls = e instanceof ProviderError ? e.kind : e instanceof ApiHttpError ? e.code : e instanceof Error ? e.name || "Error" : "error";
     console.warn("voice note failed", provider, cls, safeErrorMessage(e, 200));
     const failed: ModelRunRow = {
       id: newId("r"),

@@ -223,6 +223,52 @@ export async function countHimPhotos(db: D1Database): Promise<number> {
   return Number(r?.n ?? 0);
 }
 
+// ------------------------------------------------------------------ him in a picture (v4, SPEC_V4 section 3)
+
+// Whether his reference photo may ride into a picture of the two of them (the setting
+// hisFaceInPhotos, default true; a table without the key reads as on). Read here rather
+// than through hisFaceSettings so that function's shape stays what the v3.1 suite compares.
+export function hisFaceInPhotosEnabled(settings: Partial<Settings> | Record<string, unknown> | null | undefined): boolean {
+  const v = ((settings ?? {}) as Record<string, unknown>).hisFaceInPhotos;
+  return v !== false;
+}
+
+// The data URI cap of the image models that take references (Runway's referenceImages;
+// the same 5 MB video.ts MAX_ENCODED_SOURCE applies to a clip's source). The arithmetic is
+// video.ts encodedDataUriLength's, kept here so this module pulls in no pipeline module
+// (video.ts imports images.ts, which imports this file).
+export const HIM_REFERENCE_MAX_ENCODED = 5 * 1024 * 1024;
+
+export function himReferenceEncodedLength(byteLength: number, mime: string): number {
+  const n = typeof byteLength === "number" && Number.isFinite(byteLength) ? Math.max(0, byteLength) : 0;
+  return ("data:" + mime + ";base64,").length + Math.ceil(n / 3) * 4;
+}
+
+export interface HimReference { id: string; name: string; bytes: ArrayBuffer; mime: string; tooLarge?: false }
+export interface HimReferenceTooLarge { id: string; name: string; bytes: null; mime: string; tooLarge: true }
+
+// The newest approved photo of him as an image reference: its bytes from R2, or null when
+// none is on file (or its file is gone). A photo whose data URI would pass the cap answers
+// bytes null and tooLarge true; the caller treats that as none and flags him_photo_too_large.
+export async function loadHimReference(env: Env, db: D1Database): Promise<HimReference | HimReferenceTooLarge | null> {
+  const rows = await listHimPhotos(db, 1);
+  const row = rows[0];
+  if (!row) return null;
+  const mime = mimeOfKey(row.file);
+  const name = row.file.split("/").pop() || row.id;
+  const obj = await env.MEDIA.get(row.file);
+  if (!obj) return null;
+  if (himReferenceEncodedLength(obj.size, mime) > HIM_REFERENCE_MAX_ENCODED) {
+    try { await obj.body?.cancel(); } catch { /* the stream was never read */ }
+    return { id: row.id, name, bytes: null, mime, tooLarge: true };
+  }
+  const bytes = await obj.arrayBuffer();
+  if (himReferenceEncodedLength(bytes.byteLength, mime) > HIM_REFERENCE_MAX_ENCODED) {
+    return { id: row.id, name, bytes: null, mime, tooLarge: true };
+  }
+  return { id: row.id, name, bytes, mime };
+}
+
 // Which turn since the photos last rode along this turn is, in this conversation: her
 // replies since that one plus this turn itself, so the turn right after a showing is 1 and
 // a cadence of N fires on every N-th turn (N = 1 is every turn). Infinity when never shown

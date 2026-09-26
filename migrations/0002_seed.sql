@@ -125,4 +125,17 @@ INSERT INTO settings (key, value, updated_at) VALUES ('hisLookText', '""', '2026
 INSERT INTO settings (key, value, updated_at) VALUES ('hisFaceMax', '3', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('hisFaceInTogether', 'true', '2026-09-24T00:00:00.000Z');
 INSERT INTO settings (key, value, updated_at) VALUES ('hisFaceApartEvery', '8', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('avatarAssetId', '"master-05"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('callFaceProvider', '"clips"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('callFaceSourceAssetId', '"master-00"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('hisFaceInPhotos', 'true', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('spotifyEnabled', 'false', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('spotifyPlaylistId', '""', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('spotifyPlaylistName', '"songs from avelie"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('placeCostUsd', '0.08', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('listeningLineEnabled', 'true', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('spotifyPlayer', '"sdk"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('elevenLabsModel', '"eleven_multilingual_v2"', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('elevenLabsTtsPricePer1kChars', '0.3', '2026-09-24T00:00:00.000Z');
+INSERT INTO settings (key, value, updated_at) VALUES ('videoMarkerEnabled', 'true', '2026-09-24T00:00:00.000Z');
 INSERT INTO audit_events (id, actor, action, entity, entity_id, before_json, after_json, created_at) VALUES ('seed-f17d143313c8a20b', 'system', 'seed', 'database', NULL, NULL, '{"facts":33,"assets":13,"note":"Fresh start at 22. Music anchor list removed per Justin 2026-09-24."}', '2026-09-24T00:00:00.000Z');

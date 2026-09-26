@@ -140,6 +140,82 @@ the names it tried when none is found, as the v2 additional-scope files did.
 - scenarios_v3 (and scenarios_v2, updated to 50): the nine v3 scenarios H01 to H09, tagged
   `v3`, with setup notes, the recall scenario carrying `settings`.
 
+v4 files (`*_v4.test.mjs`; fixtures in `helpers_v4.mjs`: a `placeRow`, a `spotifyAuthRow`, a
+`callfaceRow`, `settingsV4` built on `settingsV3`, `V4_SETTINGS_TABLE` and
+`V4_AMENDMENT_SETTINGS_TABLE` in the `[default, good, bad]` shape, a `fakeR2` (`get`, `put`,
+`delete`, `head` over a Map) and a `fakeFetch` recorder). The same guard rule as v3: a module
+not in the tree reads as skipped, never as passed; the integrator makes every file run.
+
+- nav_v4: public/js/nav.js read as text (it builds the nav at load): the eight links in order,
+  `AVATAR_FOCUS` equal to the copy in src/api.ts, the crop through the CSSOM, `/api/avatar` and
+  the `avelie.avatar` storage key.
+- ui_v4: every page carries the shell once, no `style=` attribute and no inline script anywhere,
+  the design tokens in app.css, every class name of the cross-lane contract, the ids of the
+  phone, album and memory pages, sw.js's shell list and cache name, typography under public/.
+- phone_v4: `LISTENING_PREFIX` equal in phone.ts and stub.ts, `listeningSystem` (her facts, never
+  his), `parseListening` (plain, fenced, junk, the 90-character line), the cache key by her
+  local day, `phoneState` on the stand-in (every key, the mood dial's fraction, `here` by the
+  whereabouts label and by a together scene, the one write on a read), map.js projecting
+  exactly as src/places.ts.
+- places_v4: `project`/`unproject` round-trip and clamp, the outline inside the bounds, the
+  haversine, `placeTitleNorm` and `placeSlug` (40 + 7), `syncPlaces` (a new head moves
+  `thread_id`, a new title inserts, a dropped thread keeps its row), `seasonOf`, `lightOf`,
+  `placePicturePrompt` (no people, under 900), `makePlacePicture` on the stand-ins (the R2 key
+  from the slug, the run row of kind place, the usage row, the audit, 409 without remake, the
+  price refusals), `deletePlacePicture`, `servePlacePicture` 404 and 200.
+- callface_v4: the three prompts under 1000 and free of the moderation words, the notes
+  round-trip (bare, with his note, inside a claim note), `callFaceStateOf` (ready only with all
+  three approved on clips), the make gates (off, reserved_v4_1, in_progress), the browser's
+  `faceStateFor` table (enter 0.020, hold 0.012, the 350 ms hold, listening while he speaks).
+- video_v4: `claimNote` with a kind and its re-stamp, `pollClip` on a call-face row (no 404,
+  the kind kept on a takeover, `callface:<kind>` on the candidate, NULL on a plain clip),
+  `startClip` with role, kind, ratio and seconds (the provider and the audit see them),
+  `chooseClipSource` (today's photo here, else her newest, else the avatar master),
+  `clipPromptText`, `startClipForMessage` binding the row to its message.
+- markers_v4: `photoIncludesHim` on the twelve positives and thirteen negatives,
+  `parseClipMarker`, `stripAllMarkers` gaining `clip` while `stripMarkers` keeps its shape.
+- images_v4: `loadMasterBytes(env, db, 2, MASTER_ORDER_WITH_HIM)` answering 05 then 00,
+  `loadHimReference` (newest approved, none, the file gone, too large), `generateCandidate`
+  writing `with_him` and the `him_not_on_file` flag on a fake D1 answering by SQL,
+  `decideImage` archiving the earlier call face of a kind, `serveMedia` streaming a face with
+  Range, the character export leaving a with-him picture out.
+- runway_v4: the prompt with him (under 1000 with a 400-character scene, `@him` once, the
+  figure clause about her only), the body with three references tagged avelie, avelie_2, him
+  through `makeRunwayImageProvider` with the Runway stand-in, the OpenAI form with four
+  `image[]` parts.
+- spotify_v4: `authorizeUrl` with the seven scopes, `searchQuery`, `pickTrack`, `statusView`
+  without a token, `beginConnect` (a pending row with a 32-hex state, the audit without it, a
+  connected row keeping its tokens), `finishConnect` on the stub fetch (tokens stored, the
+  playlist created once, `spotifyEnabled` set, a state mismatch 403 storing nothing),
+  `accessToken` with rotation and the revoked grant, `tokenView` (403 not connected, the
+  five-minute window, premium from /me cached for a day, never a refresh token, never
+  audited), `addSongForMessage` outcomes (added, already, not_found, failed, off, the
+  playlist recreated once), `disconnect`, `playlistStatus`, `statusResponse`.
+- album_v4: `sceneAt` and `listAlbum` on the stand-in (order, paging, the message join, the
+  groups, never a him, portrait, call-face or owner-fired row, clips beside photos).
+- deliveries_v4: `dueReplies` on a fixed table (the window, the two-minute floor),
+  `pushDueReplies` on the stand-in with a VAPID-less env (one push attempt, every row stamped,
+  chunks of 90), the two push reasons.
+- bubbles_v4: `DOTS_LEAD_MS` and `dotsLeadMs`.
+- memory_v4: `phaseOf`, `returnedRecently`, `keptOnDay` by her local day, `memoryMap` on the
+  stand-in (faded, vivid, returned, sealed with no text, kept today, the counts, read-only).
+- proposals_v4: `mergeSceneState` and `mergeRelationshipState` (take what the payload carries,
+  keep the rest; the regression guards), the parse of the new payload keys, the stub's
+  `[[SCENE:x]]`, `[[SCENE]]` and `[[REL:status|name]]`, the proposal system prompt's lines.
+- settings_v4: `validateSettingsPatch` for every row of both tables, the edges, the place price
+  rule, the defaults in `DEFAULT_SETTINGS` and the seed.
+- migrations_v4: 0008 carries the three tables, the index, the three columns and the thirteen
+  `INSERT OR IGNORE` rows (the nine of the spec table and the amendment's four) with the fixed stamp; nothing destructive; 0001 to 0007 match HEAD.
+- entry_v4: src/index.ts read as text (the AMENDED CSP with the Spotify SDK, the Spotify and
+  ElevenLabs connect origins, nothing loosened; the place media path; deliveries before her
+  first texts on the cron), every v4 route registered in src/api.ts, package.json's chain.
+- prompt_v4: PROMPT_VERSION ends `-p7`, the stable prefix sha256 pinned to the value AFTER the
+  CLIPS overlay (the v3.3 value holds while the overlay is absent), the CLIPS section's rules,
+  the proposal system prompt's scene and relationship lines.
+- exportImport_v4: places exported, `spotify_auth` never (and a `spotifyAuth` key ignored on
+  import), `with_him`, `spotify_status` and `pushed_at` in the whitelists, a call-face row
+  round-tripped, the panel cache left out.
+
 ## Integration (`npm run test:integration`)
 
     node tests/integration/run.mjs
@@ -192,6 +268,57 @@ every turn shape, pick, again, `[[BFAIL]]`, neither then the retry, promote, the
 marks and the fine-tune export (keep, drop, delete, the dedupe with a rewrite, the JSONL and the
 sidecar chain, `stripHim`, `/use` and `/revert` with the dummy OpenAI key the runner passes as a
 `--var`, the price refusals); the nightly cron with its maintenance row.
+
+The v4 block (2026-09-26) runs in its OWN phase on a FRESH local state
+(`tests/integration/.state-v4`, migrations 0001 to 0008 applied by the runner) booted with
+`--var SPOTIFY_STUB:1` and `--test-scheduled`, after the Runway phase and before the gate. Why a
+fresh state: the stub image and video providers return the same bytes on purpose, and the v1 and
+v3 blocks each reject one of them so their blacklist checks hold, which would blacklist every v4
+photo and clip on the shared state; the v4 block therefore makes everything it needs itself (a
+photo of him, a faded fact, her places) and never rejects a picture or a clip. In the spec's
+order: the settings table and its refusals (the nine keys and the amendment's four); the avatar
+(master-05, a PUT of master-02, master-09 refused); her phone (every key, the stub weather,
+listening null with the switch off and the stub's Stub Artist with it on, one run for two
+reads) and her places (create, pin, one coordinate 400, geocode 404 no_match on the stub and
+200 openmeteo with her coordinates at Stubtown, a place thread's row following the thread
+head, a dropped thread listed inactive); the call face on the stub (make idle 202, a second
+idle 409, running then candidate with `callface:idle`, video/mp4 with Range 206, approve,
+listening and talking, ready true, a second idle archiving the first, lipsync 503
+reserved_v4_1, off 503); her own voice on the `[[ELEVEN]]` stub (A2, the phase boots with
+`ELEVENLABS_STUB:1` and a dummy key: no agent id -> 503 detail elevenlabs; with one -> 201
+transport webrtc, clientSecret stub-token, the overrides carrying her instructions, no
+credential in the call read or the audit, end 200); him in the picture (a photo of him uploaded, an owner-completed
+photo whose description names him -> `with_him` 1 and the audit's `after.withHim`; no photo
+of him -> `him_not_on_file` on the message; the switch off -> 0 and no flag; the character
+package without the with-him row); Spotify on the stub (configured, not connected, token 403,
+connect 302 with the seven scopes and a state, a wrong state 403, the callback 302 to
+/model#spotify, connected as Stub Listener with playlist stubplaylist, the token route with
+an access token only and no audit row, `[[SONG]]` pending then added with trackUrl and uri,
+the same song already, the add by hand, off with the switch off, no body anywhere carrying
+`refresh_token`); the album (groups, paging, the owner-fired picture absent); deliveries
+(real mode with a busy routine now, the reply's deliverAt, the */20 cron stamping pushed_at
+once it lands, a second tick changing nothing, GET /api/push/latest answering it) and her
+first texts (cap 2, the window about to close, one first text with no ask leading it, ahead
+of the delayed reply on /api/push/latest, restored to 0); the memory map (a fact weighted 0.2
+and 40 days untouched faded, vivid after Remind her, the seeded untold facts sealed by
+subject with no text, keptToday empty with auto-keep off and one row with it on); scene and
+relationship promotion (`[[SCENE:x]]` moving the place, the bare `[[SCENE]]` keeping it,
+`[[REL:s|n]]` setting status and his_name, a mood-only proposal losing nothing); place
+pictures (200 on the stub with a place run row and usage up by placeCostUsd, /media/place/:id
+image/png, 409 again, remake, the scene PUT answering `place` and touching `last_used_at`,
+DELETE); the system counts; a UI smoke (every page with the shell and the CSP, every script,
+the stylesheet, sw.js, the manifest, the six masters, `node --check` on every public/js file);
+and A3 (a `[[CLIP]]` turn binding one video row to its message, ready after the poll, in the
+album as a clip; `videoMarkerEnabled` false and the provider off -> `clip_unavailable` and no
+row). The gate phase also checks the v4 routes, the callback, the three new pages and
+`/media/place/x` -> 401.
+
+Notes on the v4 phase: the two-minute push floor is never crossed with `realDelayMaxMinutes`
+at 1, so the cron STAMPS the delayed reply without a push attempt (the floor is what the unit
+suite proves); the reply's own `photo_with_him` flag needs a stub reply that names him in its
+photo line, which the stub does not have (the with-him path is proven through the owner's
+completion of a `[[PHOTO]]` message and in the unit suite); the runner never rejects a v4
+picture or clip, so the stub's bytes stay usable for the whole phase.
 
 It then restarts `wrangler dev` on the same state with `ACCESS_AUD` set and checks the
 production gate: no token 401, garbage token or cookie 403, the dev actor and a client email

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#060a13">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Avelie">
+<title>Avelie Album</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="page-album">
+<header class="top">
+  <a class="brand" href="/" aria-label="Avelie, home">
+    <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
+    <span class="wordmark">AVELIE</span>
+  </a>
+  <nav class="nav" aria-label="Sections"></nav>
+</header>
+
+<main class="page album">
+  <div class="album-head">
+    <div class="row">
+      <h2 class="section-title">Album</h2>
+      <span class="chips" id="albumStatus"></span>
+    </div>
+    <div class="filter-chips" id="albumFilter" role="group" aria-label="Show">
+      <button type="button" data-group="all" aria-pressed="true">all</button>
+      <button type="button" data-group="approved" aria-pressed="false">approved</button>
+      <button type="button" data-group="candidates" aria-pressed="false">candidates</button>
+      <button type="button" data-group="us" aria-pressed="false">us</button>
+    </div>
+  </div>
+  <div class="album-grid" id="albumGrid" aria-live="polite"></div>
+  <div class="row">
+    <button type="button" class="btn hidden" id="albumOlder">Load older</button>
+  </div>
+</main>
+
+<script type="module" src="/js/nav.js"></script>
+<script type="module" src="/js/album.js"></script>
+</body>
+</html>

@@ -12,6 +12,11 @@
 // (EE), video clips (FF), blind tastings on the turn route (HH), marks and the fine-tune
 // export (II), and the settings validation for every v3 row. The v3 modules are imported by
 // the names SPEC_V3 fixes; a name that drifted in a lane is the integrator's to settle.
+//
+// v4 (SPEC_V4): the avatar (0), her phone and her places (1, 8), the call face (2), him in
+// a picture on GET /api/assets (3), Spotify and a song's status (4, A1), the album (5), the
+// widened push/latest (6), the memory map (7), the scene PUT's place (8), the v4 settings
+// rows and the place price rule. The v4 modules are imported by the names SPEC_V4 fixes.
 import { ApiHttpError, errorResponse, json } from "./errors";
 import {
   DEFAULT_SETTINGS, auditStmt, createConversation, getConversation, getMessage, getSettings, listAssets, listConversations,
@@ -59,6 +64,16 @@ import {
   runTastingTurn,
 } from "./tastings";
 import { exportSidecar, exportTrainingStream, finetuneStatus, revertTexter, useTexter } from "./finetune";
+// v4 modules (SPEC_V4 Build lanes L1, L2, L4, L5, L6, L7), by the export names the spec fixes.
+import { phoneState } from "./phone";
+import {
+  createPlace, deletePlacePicture, findPlaceByTitle, geocodePlace, listPlaces, makePlacePicture, publicPlace, syncPlaces, touchPlaceStmt, updatePlace,
+} from "./places";
+import { CALL_FACE_KINDS, callFaceState, makeCallFace } from "./callface";
+import { addSongForMessage, beginConnect, disconnect as spotifyDisconnect, finishConnect, statusResponse as spotifyStatus, tokenView as spotifyTokenView } from "./spotify";
+import { ALBUM_GROUPS, listAlbum } from "./album";
+import { DUE_WINDOW_MS } from "./deliveries";
+import { memoryMap } from "./memory";
 import { ADAPTATIONS, ALWAYS_ON, CONSTITUTION_VERSION, OVERLAY } from "./generated/constitution";
 import { PROMPT_VERSION } from "./prompt";
 import { ProviderError } from "./types";
@@ -422,6 +437,20 @@ const V3_EXTRA_KEYS: readonly string[] = [
 // carries them: the live settings table is not reseeded on deploy, so a missing key reads
 // as its default (hisFace.ts hisFaceSettings) until the owner saves it.
 const V31_EXTRA_KEYS: readonly string[] = ["hisLookText", "hisFaceMax", "hisFaceInTogether", "hisFaceApartEvery"];
+// v4 (SPEC_V4 "Settings added" plus amendments A1 to A3). Validated whether or not the
+// stored table carries them (0008 inserts the rows with INSERT OR IGNORE; a table seeded
+// before it reads the defaults until the owner saves).
+const MASTER_ID_RE = /^master-0[0-5]$/;
+const CALL_FACE_PROVIDERS = ["clips", "off", "lipsync"] as const;
+const SPOTIFY_PLAYERS = ["sdk", "embed", "off"] as const;
+const SPOTIFY_PLAYLIST_ID_RE = /^[A-Za-z0-9]{0,62}$/;
+const MAX_PLAYLIST_NAME = 100;
+const MAX_ELEVENLABS_MODEL = 60;
+const V4_EXTRA_KEYS: readonly string[] = [
+  "avatarAssetId", "callFaceProvider", "callFaceSourceAssetId", "hisFaceInPhotos",
+  "spotifyEnabled", "spotifyPlaylistId", "spotifyPlaylistName", "placeCostUsd", "listeningLineEnabled",
+  "spotifyPlayer", "elevenLabsModel", "elevenLabsTtsPricePer1kChars", "videoMarkerEnabled",
+];
 
 function validatePrices(v: unknown): Settings["prices"] {
   if (typeof v !== "object" || v === null || Array.isArray(v)) throw invalid("prices must be an object");
@@ -511,7 +540,7 @@ function validateTexterPrevious(v: unknown): { provider: ProviderName; model: st
 
 export function validateSettingsPatch(body: Body): Partial<Settings> {
   for (const key of Object.keys(body)) {
-    if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key) && !V2_EXTRA_KEYS.includes(key) && !V3_EXTRA_KEYS.includes(key) && !V31_EXTRA_KEYS.includes(key)) throw invalid("unknown setting: " + key);
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key) && !V2_EXTRA_KEYS.includes(key) && !V3_EXTRA_KEYS.includes(key) && !V31_EXTRA_KEYS.includes(key) && !V4_EXTRA_KEYS.includes(key)) throw invalid("unknown setting: " + key);
   }
   const p: Record<string, unknown> = {};
   const v = body;
@@ -637,7 +666,33 @@ export function validateSettingsPatch(body: Body): Partial<Settings> {
   if (v.hisFaceMax !== undefined) p.hisFaceMax = int(v.hisFaceMax, "hisFaceMax", 1, HIS_FACE_MAX_LIMIT);
   if (v.hisFaceInTogether !== undefined) boolSetting(v, "hisFaceInTogether", p);
   if (v.hisFaceApartEvery !== undefined) p.hisFaceApartEvery = int(v.hisFaceApartEvery, "hisFaceApartEvery", 0, HIS_FACE_APART_EVERY_LIMIT);
+  // v4: the avatar and the call face (a master id each), his face in her pictures, Spotify,
+  // the place price, the listening line, the player, her ElevenLabs model and its price,
+  // her clip line.
+  if (v.avatarAssetId !== undefined) p.avatarAssetId = masterId(v.avatarAssetId, "avatarAssetId");
+  if (v.callFaceProvider !== undefined) p.callFaceProvider = oneOf(v.callFaceProvider, CALL_FACE_PROVIDERS, "callFaceProvider");
+  if (v.callFaceSourceAssetId !== undefined) p.callFaceSourceAssetId = masterId(v.callFaceSourceAssetId, "callFaceSourceAssetId");
+  if (v.hisFaceInPhotos !== undefined) boolSetting(v, "hisFaceInPhotos", p);
+  if (v.spotifyEnabled !== undefined) boolSetting(v, "spotifyEnabled", p);
+  if (v.spotifyPlaylistId !== undefined) {
+    const id = emptyableString(v, "spotifyPlaylistId", 62);
+    if (!SPOTIFY_PLAYLIST_ID_RE.test(id)) throw invalid("spotifyPlaylistId must be letters and digits, at most 62");
+    p.spotifyPlaylistId = id;
+  }
+  if (v.spotifyPlaylistName !== undefined) p.spotifyPlaylistName = reqString(v, "spotifyPlaylistName", MAX_PLAYLIST_NAME).trim();
+  if (v.placeCostUsd !== undefined) p.placeCostUsd = num(v.placeCostUsd, "placeCostUsd", 0, 100);
+  if (v.listeningLineEnabled !== undefined) boolSetting(v, "listeningLineEnabled", p);
+  if (v.spotifyPlayer !== undefined) p.spotifyPlayer = oneOf(v.spotifyPlayer, SPOTIFY_PLAYERS, "spotifyPlayer");
+  if (v.elevenLabsModel !== undefined) p.elevenLabsModel = reqString(v, "elevenLabsModel", MAX_ELEVENLABS_MODEL).trim();
+  if (v.elevenLabsTtsPricePer1kChars !== undefined) p.elevenLabsTtsPricePer1kChars = num(v.elevenLabsTtsPricePer1kChars, "elevenLabsTtsPricePer1kChars", 0, 100);
+  if (v.videoMarkerEnabled !== undefined) boolSetting(v, "videoMarkerEnabled", p);
   return p as Partial<Settings>;
+}
+
+// A master id (v4): master-00 to master-05, the six identity references.
+function masterId(v: unknown, key: string): string {
+  if (typeof v !== "string" || !MASTER_ID_RE.test(v.trim())) throw invalid(key + " must be one of master-00 to master-05");
+  return v.trim();
 }
 
 // The description of him (v3.1): a string, trimmed, house typography, at most 600 characters
@@ -680,6 +735,12 @@ export function assertSettingsConsistent(current: Settings, patch: Partial<Setti
       throw invalid(`portraitCostUsd must be above 0 for image provider ${String(next.imageProvider)}; only a keyless provider may run at 0`);
     }
   }
+  // v4 (SPEC_V4 section 8): a place picture on a paid image provider carries a price too.
+  if ((touched("placeCostUsd") || touched("imageProvider")) && typeof next.placeCostUsd === "number") {
+    if (!isKeylessImageProvider(next.imageProvider) && !(next.placeCostUsd > 0)) {
+      throw invalid(`placeCostUsd must be above 0 for image provider ${String(next.imageProvider)}; only a keyless provider may run at 0`);
+    }
+  }
   if ((touched("videoCostUsd") || touched("videoProvider")) && typeof next.videoCostUsd === "number" && next.videoProvider === "runway" && !(next.videoCostUsd > 0)) {
     throw invalid("videoCostUsd must be above 0 for video provider runway; only the stub may run at 0");
   }
@@ -714,6 +775,38 @@ route("GET", "/api/rulebook", async () => json({
   overlay: OVERLAY,
   alwaysOn: ALWAYS_ON,
 }));
+
+// ------------------------------------------------------------------ the avatar (SPEC_V4 section 0)
+
+// The face-centred crop of each master as [x%, y%] of its width and height (the eyes and
+// mouth inside the circle), read off the masters on 2026-09-26. public/js/nav.js holds the
+// same table for the first paint; nav_v4.test.mjs keeps the two equal.
+export const AVATAR_FOCUS: Record<string, [number, number]> = {
+  "master-00": [50, 40],
+  "master-01": [48, 28],
+  "master-02": [58, 24],
+  "master-03": [50, 32],
+  "master-04": [44, 27],
+  "master-05": [50, 24],
+};
+export const AVATAR_FOCUS_DEFAULT: [number, number] = [50, 30];
+const AVATAR_FALLBACK_ID = "master-05";
+
+export function avatarFocus(assetId: unknown): [number, number] {
+  const f = typeof assetId === "string" ? AVATAR_FOCUS[assetId] : undefined;
+  return f ? [f[0], f[1]] : [AVATAR_FOCUS_DEFAULT[0], AVATAR_FOCUS_DEFAULT[1]];
+}
+
+// The master the header and the thread show: the stored id when it names an approved
+// master, else master-05, else the first approved master on file.
+route("GET", "/api/avatar", async (c) => {
+  const settings = await loadSettings(c);
+  const masters = (await listAssets(c.db, "approved")).filter((a) => a.role === "master");
+  const wanted = typeof settings.avatarAssetId === "string" ? settings.avatarAssetId.trim() : "";
+  const master = masters.find((a) => a.id === wanted) ?? masters.find((a) => a.id === AVATAR_FALLBACK_ID) ?? masters[0];
+  if (!master) throw new ApiHttpError(404, "not_found", "no approved master on file");
+  return json({ assetId: master.id, file: master.file, focus: avatarFocus(master.id) });
+});
 
 // ------------------------------------------------------------------ conversations and turns
 
@@ -974,7 +1067,30 @@ async function putStateRoute(c: RouteCtx, entity: "relationship" | "scene"): Pro
   const state = body.state;
   if (typeof state !== "object" || state === null || Array.isArray(state)) throw invalid("state must be a JSON object");
   const note = optString(body, "note", 1000);
-  return json(await putState(c.db, entity, state as Record<string, unknown>, note ?? null, c.actor));
+  const r = await putState(c.db, entity, state as Record<string, unknown>, note ?? null, c.actor);
+  if (entity !== "scene") return json(r);
+  // v4 (SPEC_V4 section 8): a Together scene at a known place touches the place's
+  // last_used_at (best effort) and the response says which place, and whether it has a
+  // picture, so the chat can paint it behind the thread.
+  return json({ ...r, place: await scenePlace(c.db, r.state) });
+}
+
+async function scenePlace(db: D1Database, state: Record<string, unknown>): Promise<{ id: string; picture: boolean } | null> {
+  if (state.status !== "together" || typeof state.location !== "string" || !state.location.trim()) return null;
+  try {
+    const place = await findPlaceByTitle(db, state.location);
+    if (!place) return null;
+    try {
+      await touchPlaceStmt(db, place.id, new Date()).run();
+    } catch (e) {
+      console.warn("place not touched", e instanceof Error ? e.name : "error");
+    }
+    return { id: place.id, picture: publicPlace(place).picture };
+  } catch (e) {
+    // A database behind 0008 has no places table: the scene is stored, the place is null.
+    console.warn("place lookup skipped", e instanceof Error ? e.name : "error");
+    return null;
+  }
 }
 
 route("PUT", "/api/state/relationship", (c) => putStateRoute(c, "relationship"));
@@ -1244,7 +1360,9 @@ route("GET", "/api/audit", async (c) => {
 
 route("GET", "/api/assets", async (c) => {
   // v3.1: his reference photos (role him) belong to the State page, never to the Images page.
-  const rows = (await listAssets(c.db)).filter((a) => a.role !== HIM_ROLE);
+  // v4 (SPEC_V4 section 3): every row carries with_him (0 on a database behind 0008), so
+  // the page can show the `us` chip; his own photos are still never here.
+  const rows = (await listAssets(c.db)).filter((a) => a.role !== HIM_ROLE).map((a) => ({ ...a, with_him: Number(a.with_him ?? 0) }));
   return json({
     masters: rows.filter((a) => a.role === "master"),
     candidates: rows.filter((a) => a.approval_status === "candidate"),
@@ -1254,6 +1372,9 @@ route("GET", "/api/assets", async (c) => {
     // when the page polls it, so a reload must find it again).
     videos: rows.filter((a) => a.role === "video" && a.approval_status === "approved"),
     portraits: rows.filter((a) => a.role === "portrait" && a.approval_status === "approved"),
+    // v4 (SPEC_V4 section 2): the approved call-face clips; their candidates and the ones
+    // generating sit in `candidates` and `generating` with the clips.
+    callface: rows.filter((a) => a.role === "callface" && a.approval_status === "approved"),
     generating: rows.filter((a) => a.approval_status === "generating"),
     rejected: rows.filter((a) => a.approval_status === "rejected"),
     archive: rows.filter((a) => a.role === "legacy_archive" || a.approval_status === "archive"),
@@ -1370,13 +1491,31 @@ route("DELETE", "/api/push/subscribe", async (c) => {
   return json({ ok: true });
 });
 
-// Her latest first text: the newest message of hers that answered nothing of his (an
-// opener or a first text), once it has arrived. The service worker shows this line.
+// The line the service worker shows for a notification (v4, SPEC_V4 section 6), in order:
+// her newest first text (an opener or a first text: reply_to_id null, arrived) within the
+// due window; else the newest reply the 20-minute cron pushed (pushed_at set, newest push
+// first, within the same window); else the newest arrived first text as before. A reply
+// that was never pushed is never the notification's text, so a first text and an ordinary
+// reply landing in one window cannot swap.
 route("GET", "/api/push/latest", async (c) => {
-  const row = await c.db
-    .prepare("SELECT * FROM messages WHERE role = 'assistant' AND channel = 'story' AND reply_to_id IS NULL AND (deliver_at IS NULL OR deliver_at <= ?1) ORDER BY created_at DESC LIMIT 1")
-    .bind(nowIso())
-    .first<MessageRow>();
+  const now = new Date();
+  const at = now.toISOString();
+  const since = new Date(now.getTime() - DUE_WINDOW_MS).toISOString();
+  const firstSql = "SELECT * FROM messages WHERE role = 'assistant' AND channel = 'story' AND reply_to_id IS NULL AND (deliver_at IS NULL OR deliver_at <= ?1)";
+  let row = await c.db.prepare(firstSql + " AND created_at >= ?2 ORDER BY created_at DESC LIMIT 1").bind(at, since).first<MessageRow>();
+  if (!row) {
+    try {
+      row = await c.db
+        .prepare("SELECT * FROM messages WHERE role = 'assistant' AND channel = 'story' AND pushed_at IS NOT NULL AND pushed_at >= ?1 ORDER BY pushed_at DESC LIMIT 1")
+        .bind(since)
+        .first<MessageRow>();
+    } catch (e) {
+      // A database behind 0008 has no pushed_at: only first texts can be the line.
+      console.warn("push/latest: pushed_at unreadable", e instanceof Error ? e.name : "error");
+      row = null;
+    }
+  }
+  if (!row) row = await c.db.prepare(firstSql + " ORDER BY created_at DESC LIMIT 1").bind(at).first<MessageRow>();
   if (!row) return json({ text: null, messageId: null, conversationId: null, createdAt: null });
   return json({ text: row.content, messageId: row.id, conversationId: row.conversation_id, createdAt: row.created_at });
 });
@@ -2253,3 +2392,180 @@ route("POST", "/api/finetune/use", async (c) => {
 });
 
 route("POST", "/api/finetune/revert", async (c) => json(await revertTexter(c.env, c.db, await storedSettings(c), c.actor)));
+
+// ================================================================== v4 (SPEC_V4)
+
+// ------------------------------------------------------------------ her phone and her places (sections 1 and 8)
+
+const MAX_PLACE_TITLE = 300;
+const MAX_PLACE_DETAIL = 1000;
+const PLACE_GEOCODED_BY = ["owner", "map"] as const;
+
+// A coordinate: a finite number in range, or null to clear it; absent stays absent
+// (updatePlace refuses one coordinate without the other).
+function coordinate(b: Body, key: string, min: number, max: number): number | null | undefined {
+  if (!(key in b) || b[key] === undefined) return undefined;
+  if (b[key] === null) return null;
+  return num(b[key], key, min, max);
+}
+
+route("GET", "/api/phone", async (c) => {
+  const settings = await loadSettings(c);
+  return json(await phoneState(c.env, c.db, settings, new Date()));
+});
+
+// After syncPlaces (the active place threads get their rows); never the R2 key.
+route("GET", "/api/places", async (c) => {
+  await syncPlaces(c.db, await listThreads(c.db, "active"));
+  const rows = await listPlaces(c.db);
+  return json({ places: rows.map(publicPlace) });
+});
+
+route("POST", "/api/places", async (c) => {
+  const body = await readBody(c.request);
+  const title = reqString(body, "title", MAX_PLACE_TITLE).trim();
+  const detail = optString(body, "detail", MAX_PLACE_DETAIL);
+  const lat = coordinate(body, "lat", -90, 90);
+  const lon = coordinate(body, "lon", -180, 180);
+  const row = await createPlace(c.db, {
+    title,
+    detail: detail === undefined ? null : detail,
+    ...(lat !== undefined ? { lat } : {}),
+    ...(lon !== undefined ? { lon } : {}),
+  }, c.actor);
+  return json(publicPlace(row), 201);
+});
+
+route("PUT", "/api/places/:id", async (c) => {
+  const id = idParam(c, "id");
+  const body = await readBody(c.request);
+  const patch: { lat?: number | null; lon?: number | null; detail?: string | null; geocodedBy?: "owner" | "map" } = {};
+  const lat = coordinate(body, "lat", -90, 90);
+  const lon = coordinate(body, "lon", -180, 180);
+  if (lat !== undefined) patch.lat = lat;
+  if (lon !== undefined) patch.lon = lon;
+  if (body.detail !== undefined) {
+    const detail = optString(body, "detail", MAX_PLACE_DETAIL);
+    patch.detail = detail === undefined ? null : detail;
+  }
+  if (body.geocodedBy !== undefined) patch.geocodedBy = oneOf(body.geocodedBy, PLACE_GEOCODED_BY, "geocodedBy");
+  return json(publicPlace(await updatePlace(c.db, id, patch, c.actor)));
+});
+
+route("POST", "/api/places/:id/geocode", async (c) => {
+  const settings = await loadSettings(c);
+  return json(publicPlace(await geocodePlace(c.env, c.db, settings, idParam(c, "id"), c.actor)));
+});
+
+// Held open like a photo: the image call runs inside the request.
+route("POST", "/api/places/:id/picture", async (c) => {
+  const id = idParam(c, "id");
+  const body = await readBody(c.request);
+  const remake = optBool(body, "remake") === true;
+  const settings = await loadSettings(c);
+  return json(publicPlace(await makePlacePicture(c.env, c.db, settings, { id, remake, actor: c.actor })));
+});
+
+route("DELETE", "/api/places/:id/picture", async (c) => json(publicPlace(await deletePlacePicture(c.env, c.db, idParam(c, "id"), c.actor))));
+
+// ------------------------------------------------------------------ the call face (section 2)
+
+route("GET", "/api/callface", async (c) => {
+  const settings = await loadSettings(c);
+  return json(await callFaceState(c.db, settings));
+});
+
+route("POST", "/api/callface/make", async (c) => {
+  const body = await readBody(c.request);
+  const kind = oneOf(body.kind, CALL_FACE_KINDS, "kind");
+  const settings = await loadSettings(c);
+  const asset = await makeCallFace(c.env, c.db, settings, { kind, actor: c.actor });
+  return json({ asset }, 202);
+});
+
+// ------------------------------------------------------------------ the album (section 5)
+
+route("GET", "/api/album", async (c) => {
+  const limit = intQuery(c.url, "limit", 100, 1, 200);
+  const beforeRaw = c.url.searchParams.get("before");
+  const before = beforeRaw && beforeRaw.trim() ? beforeRaw.trim().slice(0, 64) : undefined;
+  const groupRaw = c.url.searchParams.get("group");
+  const group = groupRaw !== null && groupRaw !== "" ? oneOf(groupRaw, ALBUM_GROUPS, "group") : undefined;
+  return json(await listAlbum(c.db, { limit, ...(before !== undefined ? { before } : {}), ...(group !== undefined ? { group } : {}) }));
+});
+
+// ------------------------------------------------------------------ the memory map (section 7)
+
+// Three segments: never meets PUT /api/memory/:entity/:id (four); matchRoute counts first.
+route("GET", "/api/memory/map", async (c) => {
+  const settings = await loadSettings(c);
+  return json(await memoryMap(c.db, settings, new Date()));
+});
+
+// ------------------------------------------------------------------ Spotify (section 4, amendment A1)
+
+// Never a token in any body below: the status view, the redirects and the outcomes only.
+// The token route hands the page a short-lived access token for the Web Playback SDK and
+// nothing else; the refresh token never leaves the Worker.
+const MAX_SPOTIFY_PARAM = 2000;
+const MODEL_PAGE_SPOTIFY = "/model#spotify";
+
+function redirect(location: string): Response {
+  return new Response(null, { status: 302, headers: { location, "cache-control": "no-store" } });
+}
+
+function spotifyParam(url: URL, key: string): string | undefined {
+  const v = url.searchParams.get(key);
+  if (v === null) return undefined;
+  const t = v.trim();
+  if (!t) return undefined;
+  if (t.length > MAX_SPOTIFY_PARAM) throw invalid(key + " is too long");
+  return t;
+}
+
+route("GET", "/api/spotify", async (c) => {
+  const settings = await loadSettings(c);
+  return json(await spotifyStatus(c.env, c.db, settings));
+});
+
+// A top-level navigation to Spotify's consent page (a plain link on the Model page).
+route("GET", "/api/spotify/connect", async (c) => {
+  const { url } = await beginConnect(c.env, c.db, c.request.url, c.actor);
+  return redirect(url);
+});
+
+// Spotify sends him back here; the state must match the row's, single-use. Back to the
+// Model page's Spotify card on success; the error shapes are the module's (400, 403, 502).
+route("GET", "/api/spotify/callback", async (c) => {
+  const settings = await loadSettings(c);
+  const params: { code?: string; state?: string; error?: string } = {};
+  const code = spotifyParam(c.url, "code");
+  const state = spotifyParam(c.url, "state");
+  const error = spotifyParam(c.url, "error");
+  if (code !== undefined) params.code = code;
+  if (state !== undefined) params.state = state;
+  if (error !== undefined) params.error = error;
+  await finishConnect(c.env, c.db, settings, c.request.url, params, c.actor);
+  return redirect(MODEL_PAGE_SPOTIFY);
+});
+
+route("POST", "/api/spotify/disconnect", async (c) => {
+  await spotifyDisconnect(c.env, c.db, c.actor);
+  return json({ ok: true });
+});
+
+route("GET", "/api/spotify/token", async (c) => {
+  const settings = await loadSettings(c);
+  return json(await spotifyTokenView(c.env, c.db, settings));
+});
+
+// The add by hand (the chat's Retry on a failed or not-found song).
+route("POST", "/api/messages/:id/spotify", async (c) => {
+  const id = idParam(c, "id");
+  const row = await getMessage(c.db, id);
+  if (!row || row.channel !== "story" || row.role !== "assistant") throw new ApiHttpError(404, "not_found", "message not found");
+  if (typeof row.song_json !== "string" || !row.song_json.trim()) throw invalid("this message carries no song");
+  const settings = await loadSettings(c);
+  const status = await addSongForMessage(c.env, c.db, settings, id);
+  return json({ status });
+});

@@ -13,14 +13,11 @@
 </head>
 <body class="page-model">
 <header class="top">
-  <a class="wordmark" href="/">AVELIE</a>
-  <nav class="nav" aria-label="Sections">
-    <a href="/">Chat</a>
-    <a href="/state">State</a>
-    <a href="/model">Model</a>
-    <a href="/images">Images</a>
-    <a href="/timeline">Timeline</a>
-  </nav>
+  <a class="brand" href="/" aria-label="Avelie, home">
+    <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
+    <span class="wordmark">AVELIE</span>
+  </a>
+  <nav class="nav" aria-label="Sections"></nav>
 </header>
 
 <main class="page stack">
@@ -158,6 +155,10 @@
         <button type="button" class="btn" id="herFirstRun">Send one now</button>
         <span class="chips" id="herfirst-status"></span>
       </div>
+      <div class="row">
+        <button type="button" class="btn" id="herTextsBtn" aria-pressed="false">Get her texts on this phone</button>
+        <span class="chips" id="herTextsStatus"></span>
+      </div>
     </div>
 
     <h2 class="section-title">Voice</h2>
@@ -179,6 +180,12 @@
       <label class="field">ElevenLabs voice id
         <input type="text" name="elevenLabsVoiceId" placeholder="Voice id" maxlength="120">
       </label>
+      <label class="field">ElevenLabs model
+        <input type="text" name="elevenLabsModel" placeholder="eleven_multilingual_v2" maxlength="60">
+      </label>
+      <label class="field">ElevenLabs price per 1k characters USD
+        <input type="number" name="elevenLabsTtsPricePer1kChars" min="0" max="100" step="any" inputmode="decimal">
+      </label>
       <label class="field">Transcribe provider
         <select name="transcribeProvider">
           <option value="workersai">workersai</option>
@@ -192,7 +199,7 @@
       <label class="field">Call provider
         <select name="callProvider">
           <option value="openai">openai</option>
-          <option value="elevenlabs">elevenlabs (reserved)</option>
+          <option value="elevenlabs">elevenlabs</option>
           <option value="stub">stub</option>
           <option value="off">off</option>
         </select>
@@ -230,11 +237,18 @@
       <label class="field">Text out per 1M
         <input type="number" name="callPrices.textOutPerMTok" min="0" step="any" inputmode="decimal">
       </label>
-      <label class="field">ElevenLabs agent id (Reserved)
-        <input type="text" name="elevenLabsAgentId" placeholder="Reserved" maxlength="120" disabled data-reserved="1">
+      <label class="field">ElevenLabs agent id
+        <input type="text" name="elevenLabsAgentId" placeholder="Agent id" maxlength="120">
       </label>
-      <label class="field">ElevenLabs price per minute (Reserved)
-        <input type="number" name="elevenLabsCallPricePerMinute" min="0" max="100" step="any" inputmode="decimal" disabled data-reserved="1">
+      <label class="field">ElevenLabs price per minute USD
+        <input type="number" name="elevenLabsCallPricePerMinute" min="0" max="100" step="any" inputmode="decimal">
+      </label>
+      <label class="field">Call face
+        <select name="callFaceProvider">
+          <option value="clips">clips</option>
+          <option value="off">off</option>
+          <option value="lipsync">lipsync (reserved)</option>
+        </select>
       </label>
     </div>
 
@@ -359,11 +373,17 @@
       <label class="field">Video cost USD per 5 s
         <input type="number" name="videoCostUsd" min="0" max="100" step="any" inputmode="decimal">
       </label>
+      <label class="check"><input type="checkbox" name="videoMarkerEnabled"> She sends clips</label>
+      <label class="field">Place picture cost USD
+        <input type="number" name="placeCostUsd" min="0" max="100" step="any" inputmode="decimal">
+      </label>
+      <label class="check"><input type="checkbox" name="listeningLineEnabled"> Listening line (one call a day)</label>
     </div>
 
     <h2 class="section-title">His face</h2>
     <div class="grid-form">
       <label class="check"><input type="checkbox" name="hisFaceInTogether"> Photos on every Together turn</label>
+      <label class="check"><input type="checkbox" name="hisFaceInPhotos"> Him in her pictures when she says so</label>
       <label class="field">Apart: every N turns (0 = first turn only)
         <input type="number" name="hisFaceApartEvery" min="0" max="50" step="1" inputmode="numeric">
       </label>
@@ -388,6 +408,37 @@
       <span class="chips" id="settings-status"></span>
     </div>
   </form>
+
+  <section class="card stack" id="spotifyCard" aria-label="Spotify">
+    <div class="row between">
+      <h2 class="section-title">Spotify</h2>
+      <span class="chips" id="spotifyStatus"></span>
+    </div>
+    <div id="spotifyPlaylist"></div>
+    <div class="spotify-row">
+      <a class="btn primary" id="spotifyConnect" href="/api/spotify/connect">Connect</a>
+      <button type="button" class="btn danger" id="spotifyDisconnect">Disconnect</button>
+    </div>
+    <div class="grid-form">
+      <label class="check"><input type="checkbox" name="spotifyEnabled" form="settingsForm"> Add her songs to the playlist</label>
+      <label class="field">Playlist name
+        <input type="text" name="spotifyPlaylistName" form="settingsForm" placeholder="songs from avelie" maxlength="100">
+      </label>
+      <label class="field">Playlist id
+        <input type="text" name="spotifyPlaylistId" form="settingsForm" placeholder="Playlist id" maxlength="62" pattern="[A-Za-z0-9]*">
+      </label>
+      <label class="field">Player
+        <select name="spotifyPlayer" form="settingsForm">
+          <option value="sdk">sdk</option>
+          <option value="embed">embed</option>
+          <option value="off">off</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <button type="submit" class="btn primary" form="settingsForm">Save</button>
+    </div>
+  </section>
 
   <section class="card stack" id="texterBox">
     <div class="row between">

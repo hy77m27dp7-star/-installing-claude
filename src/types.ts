@@ -35,6 +35,16 @@ export interface Env {
   // when imageProvider is runway. Absent = video is off and a Runway photo fails as a
   // config error (503 provider_not_configured) until the secret exists.
   RUNWAY_API_KEY?: string;
+  // v4 (SPEC_V4 section 4): Justin's Spotify developer app, both optional; without them
+  // every Spotify route answers 503 provider_not_configured and a song's status is "off".
+  SPOTIFY_CLIENT_ID?: string;
+  SPOTIFY_CLIENT_SECRET?: string;
+  // Local-only (from .dev.vars or --var): "1" routes every Spotify call to the stub fetch
+  // while ACCESS_AUD is empty. Production never has it set.
+  SPOTIFY_STUB?: string;
+  // Local-only (v4 A2): "1" routes the ElevenLabs mint and text-to-speech calls to the stub
+  // fetch while ACCESS_AUD is empty; the key is still required (a dummy --var locally).
+  ELEVENLABS_STUB?: string;
 }
 
 export type Channel = "story" | "operator";
@@ -57,6 +67,12 @@ export type WeatherProviderName = "openmeteo" | "stub" | "off";
 export type WeatherUnits = "fahrenheit" | "celsius";
 export type CallProviderName = "openai" | "elevenlabs" | "stub" | "off";
 export type VideoProviderName = "runway" | "stub" | "off";
+// v4 (SPEC_V4 section 2): the call face. clips: three looped clips of her; off: the avatar
+// with a breathing pulse; lipsync: reserved for v4.1 (a valid value that answers 503 on make).
+export type CallFaceProviderName = "clips" | "off" | "lipsync";
+// v4 (SPEC_V4 A1): which player the page builds for a song she sends. sdk: the Web
+// Playback SDK on his Premium account; embed: Spotify's embedded player; off: the link only.
+export type SpotifyPlayerMode = "sdk" | "embed" | "off";
 // compact: ALWAYS_ON + OVERLAY as the prefix (calls, the fine-tune export); full: the whole stable prefix.
 export type SystemMode = "compact" | "full";
 // What a realtime session bills, priced per million tokens (EE).
@@ -165,6 +181,28 @@ export interface Settings {
   hisFaceMax: number;
   hisFaceInTogether: boolean;
   hisFaceApartEvery: number;
+  // v4 (SPEC_V4 "Settings added"). The avatar the header and the thread show (a master
+  // id, section 0); the call face provider and its source master (section 2); whether his
+  // reference photo rides into a picture her line puts him in (section 3); the one private
+  // playlist on his Spotify (section 4); the price of a place picture (section 8); the
+  // paid "listening to" line, one call a day (section 1).
+  avatarAssetId: string;
+  callFaceProvider: CallFaceProviderName;
+  callFaceSourceAssetId: string;
+  hisFaceInPhotos: boolean;
+  spotifyEnabled: boolean;
+  spotifyPlaylistId: string;
+  spotifyPlaylistName: string;
+  placeCostUsd: number;
+  listeningLineEnabled: boolean;
+  // v4 amendment A1: the player the page builds for her songs.
+  spotifyPlayer: SpotifyPlayerMode;
+  // v4 amendment A2: her ElevenLabs voice model and the text-to-speech price per 1k characters.
+  elevenLabsModel: string;
+  elevenLabsTtsPricePer1kChars: number;
+  // v4 amendment A3: whether her [clip: ...] line starts a clip (false: the line is
+  // stripped and the message carries the flag clip_unavailable).
+  videoMarkerEnabled: boolean;
 }
 
 export interface ConversationRow {
@@ -206,6 +244,11 @@ export interface MessageRow {
   media_id?: string | null;
   // v3 (migration 0005): the call a transcript row belongs to (SPEC_V3 section EE).
   call_id?: string | null;
+  // v4 (migration 0008). The Spotify outcome of the song this message carried (added,
+  // already, not_found, failed, off, pending; null = no song), and the instant a delayed
+  // reply's notification was sent (null otherwise).
+  spotify_status?: string | null;
+  pushed_at?: string | null;
 }
 
 export interface ModelRunRow {
@@ -215,7 +258,9 @@ export interface ModelRunRow {
     // v3: a phone call (EE), a clip (FF), a tasting draft (HH), a portrait (DD).
     | "call" | "video" | "tasting" | "portrait"
     // v3.1 (JJ): the owner's "Describe from photo" call on his reference photos.
-    | "describe";
+    | "describe"
+    // v4 (SPEC_V4 sections 8 and 1): a place picture and the daily "listening to" line.
+    | "place" | "listening";
   provider: string;
   model: string;
   prompt_version: string | null;
@@ -360,7 +405,10 @@ export interface VisualAssetRow {
     | "portrait" | "video"
     // v3.1 (JJ): a reference photo of him, owner-uploaded, approved at upload, never
     // generated, never listed with her pictures, never exported.
-    | "him";
+    | "him"
+    // v4 (SPEC_V4 section 2): one of the three call-face clips (idle, listening, talking),
+    // made once from a master and approved like any clip.
+    | "callface";
   sha256: string | null;
   bytes: number | null;
   // pending / generating / failed: a requested photo before any bytes exist (role candidate).
@@ -375,6 +423,10 @@ export interface VisualAssetRow {
   notes: string | null;
   created_at: string;
   decided_at: string | null;
+  // v4 (migration 0008, SPEC_V4 section 3): 1 when his reference photo rode into this
+  // picture because her line put him in it. Optional in the type so v1 to v3 writers
+  // keep compiling; a row read from D1 after 0008 always carries it (0 by default).
+  with_him?: number | null;
 }
 
 // The owner's media library (SPEC_V2 section V): things on her phone she could send.
@@ -455,6 +507,10 @@ export interface ImageGenerateRequest {
   model: string;
   quality: "low" | "medium" | "high";
   size: string;
+  // v4 (SPEC_V4 section 3): his reference photo, riding as one more tagged reference when
+  // her description puts him in the picture; `look` is the words on file about him.
+  // Absent or null: the picture is of her alone.
+  him?: { name: string; bytes: ArrayBuffer; look: string } | null;
 }
 
 export interface ImageGenerateResult {

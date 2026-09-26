@@ -63,6 +63,10 @@ const EXTRA_TABLES: ReadonlyArray<{ key: string; sql: string }> = [
   { key: "tastings", sql: "SELECT * FROM tastings ORDER BY created_at, id" },
   { key: "tastingCandidates", sql: "SELECT * FROM tasting_candidates ORDER BY created_at, id" },
   { key: "messageMarks", sql: "SELECT * FROM message_marks ORDER BY created_at, message_id" },
+  // v4 (SPEC_V4 section 8): her places (the picture was paid for; the R2 object stays
+  // under its key). NEVER spotify_auth (the tokens live in D1 only and leave through
+  // nothing), never panel_cache (a cache).
+  { key: "places", sql: "SELECT * FROM places ORDER BY created_at, id" },
 ];
 
 async function collectRows(db: D1Database): Promise<Record<string, unknown>> {
@@ -183,6 +187,11 @@ const MESSAGES: TableSpec = {
     { name: "image_status", type: "text", max: 40 },
     // v3 (0005_v3.sql): the call a transcript row belongs to.
     { name: "call_id", type: "text", max: ID_MAX },
+    // v4 (0008_v4.sql): the song's Spotify outcome and the delayed reply's notification stamp.
+    // pushed_at is a nullable time: type text (as decided_at is), so a never-pushed reply
+    // stays never pushed instead of being stamped with the import time.
+    { name: "spotify_status", type: "text", max: 20 },
+    { name: "pushed_at", type: "text", max: TIME_MAX },
   ],
 };
 
@@ -277,7 +286,10 @@ const PROPOSALS: TableSpec = {
 // Only what the runtime itself produces is imported: masters and archive rows come from
 // the seed, and a payload cannot add a "master" that points at an arbitrary file. v3 adds
 // the portrait (DD) and the clip (FF), each under its own prefix.
-const RUNTIME_ASSET_ROLES: readonly string[] = ["candidate", "scene", "portrait", "video"];
+// v4: a call-face clip (role callface) sits under the videos/ prefix, so ASSET_PREFIXES is
+// unchanged; without the role here the first snapshot restore after a face clip exists
+// would refuse the whole payload.
+const RUNTIME_ASSET_ROLES: readonly string[] = ["candidate", "scene", "portrait", "video", "callface"];
 const ASSET_STATUSES: readonly string[] = ["approved", "candidate", "rejected", "archive", "missing", "pending", "generating", "failed"];
 const CANDIDATE_PREFIX = "candidates/";
 const PORTRAIT_PREFIX = "portraits/";
@@ -302,6 +314,8 @@ const VISUAL_ASSETS: TableSpec = {
     { name: "notes", type: "text", max: 300 },
     { name: "created_at", type: "time", max: TIME_MAX },
     { name: "decided_at", type: "text", max: TIME_MAX },
+    // v4 (0008_v4.sql, SPEC_V4 section 3): 1 when his reference photo rode into the picture.
+    { name: "with_him", type: "int", default: 0 },
   ],
 };
 
@@ -537,9 +551,43 @@ const MESSAGE_MARKS: TableSpec = {
 };
 
 // The v3 tables an import replaces when the payload carries them (absent = untouched).
+// ------------------------------------------------------------------ v4 tables (SPEC_V4 migration 0008)
+
+// Her places (section 8). picture_key is the R2 key under places/; the object itself is
+// not in the export. The one Spotify row is not a table here on purpose: never exported,
+// and a spotifyAuth key on import is ignored (importAll reads named keys only).
+const PLACES: TableSpec = {
+  table: "places",
+  key: "places",
+  cols: [
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "thread_id", type: "text", max: ID_MAX },
+    { name: "title", type: "text", required: true, max: 300 },
+    { name: "title_norm", type: "text", required: true, max: 300 },
+    { name: "detail", type: "text", max: 1000 },
+    { name: "lat", type: "num" },
+    { name: "lon", type: "num" },
+    { name: "geocoded_by", type: "text", oneOf: ["owner", "openmeteo", "map"] },
+    { name: "picture_key", type: "text", max: 300 },
+    { name: "picture_sha256", type: "text", max: 64 },
+    { name: "picture_bytes", type: "int" },
+    { name: "picture_light", type: "text", oneOf: ["day", "night"] },
+    { name: "picture_season", type: "text", max: 20 },
+    { name: "picture_prompt", type: "text", max: 1000 },
+    { name: "picture_provider", type: "text", max: 40 },
+    { name: "picture_model", type: "text", max: 200 },
+    { name: "picture_made_at", type: "text", max: TIME_MAX },
+    { name: "last_used_at", type: "text", max: TIME_MAX },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
+  ],
+};
+
 const V3_TABLES: readonly TableSpec[] = [
   VOICE_LINES, VOICE_LINE_USES, CORRECTIONS, MEMORY_WEIGHTS, MEMORY_RECALLS, WANTS, WANT_LOG, ASKS, GROUNDING_LOG, CALLS, TASTINGS,
   TASTING_CANDIDATES, MESSAGE_MARKS,
+  // v4
+  PLACES,
 ];
 
 type Cell = string | number | null;
@@ -672,6 +720,12 @@ export async function importAll(
 ): Promise<{ snapshotId: string; counts: Record<string, number> }> {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) throw bad("payload", "must be an object");
   if (payload.version !== 1) throw bad("payload", "version must be 1");
+  // v4: the Spotify tokens never travel. A payload that carries a spotifyAuth key (a
+  // hand-made one; no export writes it) is imported without it, and nothing is logged.
+  if ("spotifyAuth" in payload) {
+    payload = { ...payload };
+    delete payload.spotifyAuth;
+  }
 
   const at = nowIso();
   const conversations = prepareRows(CONVERSATIONS, payload.conversations, at);

@@ -485,6 +485,74 @@ function sameName(a: unknown, b: string): boolean {
   return typeof a === "string" && normText(a) === normText(b);
 }
 
+// ------------------------------------------------------------------ the scene and relationship merges (v4, SPEC_V4 section 8)
+
+// A non-empty string from a payload field, cut at max; undefined when the field is absent,
+// empty or not a string (the current value then stands).
+function payloadText(v: unknown, max: number): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const t = v.trim();
+  return t ? t.slice(0, max) : undefined;
+}
+
+const SCENE_STATUSES: readonly string[] = ["together", "apart", "none"];
+const SCENE_LOCATION_MAX = 300;
+const SCENE_TIME_MAX = 100;
+const SCENE_PRESENT_MAX = 10;
+const SCENE_PERSON_MAX = 100;
+const RELATIONSHIP_FIELD_MAX = 200;
+const RELATIONSHIP_TEXT_FIELDS = ["status", "trust", "affection", "attraction", "nicknames"] as const;
+
+// The next scene state from a promoted scene proposal (pure). The previous version's fields
+// are kept and the payload's status, location, time and present are TAKEN when it carries
+// them: before v4 the promotion wrote summary and last_beat only, so a scene that moved
+// somewhere new stayed apart at the old place (HQ CONFLICTS 33a). A status of together
+// with no location keeps the previous location.
+export function mergeSceneState(cur: SceneState, payload: Record<string, unknown>, text: string): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...cur, summary: text, last_beat: text };
+  const p = payload && typeof payload === "object" ? payload : {};
+  const status = payloadText(p.status, 20);
+  if (status && SCENE_STATUSES.includes(status.toLowerCase())) next.status = status.toLowerCase();
+  const location = payloadText(p.location, SCENE_LOCATION_MAX);
+  if (location) next.location = location;
+  const time = payloadText(p.time, SCENE_TIME_MAX);
+  if (time) next.time = time;
+  if (Array.isArray(p.present)) {
+    const present = p.present
+      .map((x) => payloadText(x, SCENE_PERSON_MAX))
+      .filter((x): x is string => typeof x === "string")
+      .slice(0, SCENE_PRESENT_MAX);
+    if (present.length) next.present = present;
+  }
+  return next;
+}
+
+// The next relationship state from a promoted relationship proposal (pure): summary and the
+// frontier as before, the mood keys from the payload, and status, his_name, trust,
+// affection, attraction and nicknames TAKEN when the payload carries them (his_name accepts
+// null to clear it, never undefined). This is the v3.2 gap: the auto-kept relationship
+// proposals only appended to the frontier, so the state still read strangers and his_name
+// null after two days of talking.
+export function mergeRelationshipState(cur: RelationshipState, payload: Record<string, unknown>, text: string, now: Date): Record<string, unknown> {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const next: Record<string, unknown> = {
+    ...cur,
+    summary: text,
+    frontier: appendText(cur.frontier, text, " | "),
+    ...relationshipMood(p, now),
+  };
+  for (const key of RELATIONSHIP_TEXT_FIELDS) {
+    const v = payloadText(p[key], RELATIONSHIP_FIELD_MAX);
+    if (v) next[key] = v;
+  }
+  if (p.his_name === null) next.his_name = null;
+  else {
+    const name = payloadText(p.his_name, RELATIONSHIP_FIELD_MAX);
+    if (name) next.his_name = name;
+  }
+  return next;
+}
+
 async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text: string, actor: string): Promise<string> {
   const source = `proposal ${p.id}`;
   const payload = proposalPayload(p);
@@ -600,12 +668,7 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
     }
     case "relationship": {
       const cur = await getCurrentState<RelationshipState>(db, "relationship");
-      const next: Record<string, unknown> = {
-        ...cur.state,
-        summary: text,
-        frontier: appendText(cur.state.frontier, text, " | "),
-        ...relationshipMood(payload, new Date()),
-      };
+      const next = mergeRelationshipState(cur.state, payload, text, new Date());
       const r = await putState(db, "relationship", next, source, actor, "proposal");
       return `relationship:v${r.version}`;
     }
@@ -622,7 +685,7 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
     }
     case "scene": {
       const cur = await getCurrentState<SceneState>(db, "scene");
-      const next: Record<string, unknown> = { ...cur.state, summary: text, last_beat: text };
+      const next = mergeSceneState(cur.state, payload, text);
       const r = await putState(db, "scene", next, source, actor, "proposal");
       return `scene:v${r.version}`;
     }

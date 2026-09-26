@@ -20,10 +20,13 @@
     "db:remote": "wrangler d1 migrations apply avelie --remote",
     "dev": "wrangler dev --port 8787 --var ACCESS_AUD:",
     "deploy": "npm test && npm run check:deploy && wrangler deploy",
-    "export:remote": "wrangler d1 export avelie --remote --output backups/avelie-export.sql"
+    "export:remote": "wrangler d1 export avelie --remote --output backups/avelie-export.sql",
+    "vendor:elevenlabs": "node scripts/vendor_elevenlabs.mjs",
+    "check:vendor": "node scripts/vendor_elevenlabs.mjs --check"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.128.0"
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@elevenlabs/client": "^1.25.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260924.1",
