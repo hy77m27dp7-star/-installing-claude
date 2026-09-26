@@ -81,6 +81,27 @@ const HHMM_RE = /^(\d{1,2}):(\d{2})$/;
 export const EMPTY_LIFE_LINE =
   "Nothing about your days has been written down yet. You still have days. Mention ordinary things when they fit; they become real once they are written down.";
 
+// v5 (SPEC_V5 section 8): the titles that stand for a person who has no name yet. A person
+// thread titled with one of these may be named once; after that the name is locked and only
+// the owner's Rename (updateThread with allowRename) changes it.
+export const PLACEHOLDER_NAMES: readonly string[] = [
+  "her mother", "my mother", "mother", "her mom", "my mom", "mom", "mum", "mama",
+  "her father", "my father", "father", "her dad", "my dad", "dad",
+  "her best friend", "my best friend", "best friend", "her friend", "my friend",
+  "her boss", "my boss", "boss", "the shop owner", "her ex", "my ex", "the ex",
+  "her roommate", "my roommate", "roommate", "her sister", "her brother",
+];
+const PLACEHOLDER_SET = new Set(PLACEHOLDER_NAMES);
+
+export function isPlaceholderName(name: unknown): boolean {
+  if (typeof name !== "string") return false;
+  return PLACEHOLDER_SET.has(name.trim().toLowerCase().replace(/\s+/g, " "));
+}
+
+function titleKey(title: unknown): string {
+  return typeof title === "string" ? title.trim().toLowerCase().replace(/\s+/g, " ") : "";
+}
+
 // ------------------------------------------------------------------ small pure helpers
 
 function isKind(v: unknown): v is ThreadKind {
@@ -148,7 +169,7 @@ export function parseSchedule(json: string | null): Schedule | null {
 
 // ------------------------------------------------------------------ timezone math (Intl only)
 
-interface LocalParts {
+export interface LocalParts {
   year: number;
   month: number;
   day: number;
@@ -306,14 +327,29 @@ export function whereSheIs(threads: LifeThread[], now: Date, tz: string): Wherea
 
 // ------------------------------------------------------------------ the prompt section (pure)
 
-function nextEvent(threads: LifeThread[], now: Date): { thread: LifeThread; at: Date; sched: Schedule } | null {
+// v5: `deferAt` reads an event's instant as it stands once held spans of a Together scene
+// are taken out (prompt.ts passes clock.ts's deferredInstant; life.ts never imports clock.ts,
+// which imports this file). A throwing or unreadable answer falls back to the stored instant.
+function eventInstant(at: string, deferAt: ((iso: string) => string) | null | undefined): number {
+  if (typeof deferAt === "function") {
+    try {
+      const moved = Date.parse(deferAt(at));
+      if (Number.isFinite(moved)) return moved;
+    } catch {
+      // the stored instant below
+    }
+  }
+  return Date.parse(at);
+}
+
+function nextEvent(threads: LifeThread[], now: Date, deferAt: ((iso: string) => string) | null = null): { thread: LifeThread; at: Date; sched: Schedule } | null {
   let best: { thread: LifeThread; at: Date; sched: Schedule } | null = null;
   const horizon = now.getTime() + 7 * DAY_MS;
   for (const t of threads) {
     if (t.status !== "active") continue;
     const sched = parseSchedule(t.schedule_json);
     if (!sched || !sched.at) continue;
-    const at = Date.parse(sched.at);
+    const at = eventInstant(sched.at, deferAt);
     if (!Number.isFinite(at) || at <= now.getTime() || at > horizon) continue;
     if (!best || at < best.at.getTime()) best = { thread: t, at: new Date(at), sched };
   }
@@ -333,7 +369,19 @@ function routineLine(t: LifeThread): string {
   return `- ${t.title}${tail ? ": " + tail : ""}`;
 }
 
-export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz: string): string {
+// v5 (SPEC_V5 section 1, Justin's rule): the options of a turn read on the story clock.
+// `together`: she is with him, so the "You are {label} until ..." and "Nothing on your
+// schedule right now." halves of the first line are dropped; `clockWords`: the scene's own
+// time words replace the clock ("It is Tuesday, late night."); `deferAt`: the Next up event
+// read through the held spans. Active threads only, as always: a person from her past (a
+// thread of status done, her ex) never enters her present day.
+export interface LifeSectionOptions {
+  together?: boolean;
+  clockWords?: string | null;
+  deferAt?: ((iso: string) => string) | null;
+}
+
+export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz: string, opts: LifeSectionOptions = {}): string {
   const zone = safeTimezone(tz);
   const all = Array.isArray(threads) ? threads.filter((t) => t && t.status === "active") : [];
   const notes = (Array.isArray(log) ? log.slice() : [])
@@ -351,18 +399,25 @@ export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz
     return out.join("\n");
   }
 
+  const o = opts && typeof opts === "object" ? opts : {};
+  const together = o.together === true;
+  const words = typeof o.clockWords === "string" ? o.clockWords.replace(/\s+/g, " ").trim().replace(/[.]+$/, "") : "";
   const p = localParts(now, zone);
-  const where = whereSheIs(all, now, zone);
-  let line = `It is ${WEEKDAYS[p.weekday] ?? ""} ${formatClock(p.hour * 60 + p.minute)}.`;
-  if (where.busy && where.label) {
-    const untilText = where.until ? " until " + formatClock((() => { const u = localParts(where.until, zone); return u.hour * 60 + u.minute; })()) : "";
-    line += ` You are ${where.label}${untilText}.`;
-  } else {
-    line += " Nothing on your schedule right now.";
+  let line = words
+    ? `It is ${WEEKDAYS[p.weekday] ?? ""}, ${words}.`
+    : `It is ${WEEKDAYS[p.weekday] ?? ""} ${formatClock(p.hour * 60 + p.minute)}.`;
+  if (!together) {
+    const where = whereSheIs(all, now, zone);
+    if (where.busy && where.label) {
+      const untilText = where.until ? " until " + formatClock((() => { const u = localParts(where.until, zone); return u.hour * 60 + u.minute; })()) : "";
+      line += ` You are ${where.label}${untilText}.`;
+    } else {
+      line += " Nothing on your schedule right now.";
+    }
   }
   out.push(line);
 
-  const next = nextEvent(all, now);
+  const next = nextEvent(all, now, typeof o.deferAt === "function" ? o.deferAt : null);
   if (next) {
     const gap = localDayNumber(localParts(next.at, zone)) - localDayNumber(p);
     const inWords = gap <= 0 ? "today" : gap === 1 ? "tomorrow" : `in ${gap} days`;
@@ -593,15 +648,32 @@ export async function createThread(
   return row;
 }
 
+// v5 (SPEC_V5 section 8): a person's name is locked once it is a real name. A title change
+// on a person thread whose current title is not a placeholder is refused (409 name_locked)
+// unless the caller passes allowRename (the owner's Rename, and resolveLifePerson naming a
+// placeholder). A placeholder may be named once: the new name is real and locks. Places and
+// every other kind are unaffected.
 export async function updateThread(
   db: D1Database,
   id: string,
   patch: Partial<{ title: string; detail: string | null; schedule_json: string | null; relation: string | null; status: "active" | "done" }>,
   actor: string,
+  opts: { allowRename?: boolean } = {},
 ): Promise<LifeThread> {
   const old = await requireThread(db, id);
   if (old.status === "superseded") throw new ApiHttpError(409, "not_current", "only the current version of a thread can be edited");
   if (old.status === "dropped") throw new ApiHttpError(409, "dropped", "restore the thread before editing it");
+  if (
+    old.kind === "person" &&
+    patch.title !== undefined &&
+    typeof patch.title === "string" &&
+    patch.title.trim() &&
+    titleKey(patch.title) !== titleKey(old.title) &&
+    !isPlaceholderName(old.title) &&
+    !(opts && opts.allowRename === true)
+  ) {
+    throw new ApiHttpError(409, "name_locked", "a person's name never changes; use Rename on the State page");
+  }
   if (patch.status !== undefined && patch.status !== "active" && patch.status !== "done") {
     throw new ApiHttpError(400, "validation", "status must be active or done");
   }

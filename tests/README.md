@@ -216,6 +216,109 @@ not in the tree reads as skipped, never as passed; the integrator makes every fi
   import), `with_him`, `spotify_status` and `pushed_at` in the whitelists, a call-face row
   round-tripped, the panel cache left out.
 
+v5 files (`*_v5.test.mjs`; fixtures in `helpers_v5.mjs`, built on `helpers_v4.mjs` and never
+changing an earlier helper: `clockSpan(overrides)` (one `story_clock` row), `storyClock({ spans,
+real, enabled })` (a `StoryClock` as src/clock.ts builds it), the fixed instants `TUE_2350_NY`,
+`WED_0030_NY`, `TUE_2100_NY`, `FRI_1000_NY` and `FRI_1005_NY`, `beatRow`, `beatRunRow`,
+`beatView`, `viewRow`, `personRow` (a `people` row, not v2's thread), `worldFactRow`,
+`knownArtistRow`, `settingsV5` on `settingsV4`, `V5_SETTINGS_TABLE` in the `[default, good, bad]`
+shape, `repoText` (a repo file read as text), and `scriptedD1`: a D1 stand-in whose
+`prepare(sql).bind(...).all/first/run/raw` and `batch` answer from a list of `[regex, answer]`
+pairs (rows, a number of changes, or a function of the binds) and record every statement, with
+`clockScript` answering the reads `syncStoryClock` makes from a list of scene versions). The
+same guard rule as v3 and v4: a module not in the tree reads as skipped, never as passed.
+
+- clock_v5: `storyNow`, `storyElapsedMs`, `frozenOverlapMs`, `storyInstantOf`, `spansFromVersions`,
+  `gapWords`, `timeSinceSection` (never in together, never on an opener, never who wrote last),
+  `localInstant` across the November DST change, `herDayKey` (always the day that has ended),
+  `deferredInstant`, `clockWordsFor` (carried words ignored), `heldGrounding`, `clockView`,
+  `syncStoryClock` cases A to D on `scriptedD1`, the stale guard, the `sc_v7` id collision,
+  `loadStoryClock` never throwing, `lastExchange`, `holdWeatherStmt`, `shiftBeatsForSpan` to the
+  millisecond with its want_log note, and no import cycle through clock.ts.
+- nightly_v5: `herDaySystem`, `herDayUser`, `parseHerDay` (unknown thread, "none", a leak, his
+  name, a bad time, an hour not yet happened, the cap), `fileNightlyProposals` (one entry per
+  row, null for a refile, the same words on two days both filed), `runNightlyStory` (off,
+  frozen, already done, force, the budget line, the audit row), `listNightlyRuns`.
+- consumers_v5: her first texts stop on a together scene and on a held clock before the day's
+  count and the cap, and read the last message's age in story time; `pushDueReplies` with
+  `frozen`; `lifeSection` with `deferAt`; `pickCallbacks` with a clock.
+- arcs_v5: `validateVariants`, `dueAtFor` summer and winter, `beatIsDue`, `outcomeWords`,
+  `hisPartSentence`, `beatLines` (coming, passed, Lately with and without the his-part sentence,
+  story ages), `arcSystem`, `parseArcAnswer` (variant wins, "came" and "forgot" guarded),
+  `HIS_PART_RE`, `createBeatFromProposal` twice making one beat.
+- wants_v5: `moodNow` with a clock, `beatLinesByWant` caps and order, `wantsSection` with beat
+  lines and story ages, `letGoStaleStmts` with held days, `pickCallbacks` kind beat (never a
+  his-part sentence, never a setback on an opener, a pending beat's day).
+- views_v5: `subjectNorm`, `confidenceWords`, `viewsSection`, `viewsSystem` (never about his
+  absence), `viewsUser`, `parseViewOps` (evidence, the body and absence drops, the clamp, the
+  cap), `applyViewProposal` (new, same subject as confirm, weaken retiring, wrong, 409),
+  `retireView`.
+- standing_v5: the ladder table (the live hand-written status reads rung 3), `stepStatus` for
+  every rule, `mergeNicknames`, `frictionNow` and `frictionLine` on story time,
+  `relationshipMood`, `coolingOffNow`, `moveRelationship` field by field, `displayStatus`, the
+  six hidden keys, `normalizeSceneFields` (every key, the place, the time words).
+- state_v5: the six new relationship keys validated, the friction stamp through `putState`,
+  the strict scene PUT, `createFact` writing `inferred` only for a guess, `updateFact` carrying
+  it, `setFactInferred`, `mergeFacts` (the batch shape, the weight upsert with HAVING, the
+  refusals).
+- proposals_v5: the seven kinds parse and promote on fakes, `NIGHTLY_ONLY_KINDS` dropped from a
+  per-turn reading (the extractor driven through a Workers AI stand-in), the extractor's
+  "Today, in her timezone, is" line, `life_update` with `her_day` and no thread, the occurred
+  stamp while held, the ladder note on a relationship promotion, the auto-keep exemption for
+  dated beats, `duplicateKey` folding number words.
+- rhythm_v5: `stripActionLines`, `observedRhythm`, the action-free `signature` (the eight v3
+  fixtures unchanged), `rhythmTable` over 4,000 seeds (base shares, history, apart, together,
+  opener, intimate, substantive), `rhythmCue` determinism, `rhythmSection`, `rhythmAsShapeCue`.
+- checks_v5: `denied_send` (the tense rule, the day narrowing, a bare send with anything),
+  `name_drift`, `rhythm_missed`, the action-free `shape_uniform`, the four gap complaints of
+  `dependency_hook` and not "the landlord never answered".
+- honest_v5: `sentWords`, `listSent` on `scriptedD1` (every kind, a rejected photo skipped, one
+  message giving two items, the window, the limit, a failed read), `sentSection` day words and
+  a held span across midnight, `sentForCheck`.
+- songs_v5: `artistNorm`, `songsSection`, `isListedArtist`, `setKnownArtist` upsert,
+  `missingSongNotice`, `songToldStmt`.
+- world_v5: `relationNorm`, `syncPeople` (Mason's done thread named, the placeholder unnamed, a
+  rename following the chain, a quiet read writing nothing), `resolveLifePerson`,
+  `mentionedEntities` (his "my mom" is his own), `whoAndWhereSection`, `addWorldFact`.
+- life_v5: `isPlaceholderName`, the name lock and `allowRename`, `lifeSection` together and with
+  clock words, Mason never in her present day or a callback.
+- hygiene_v5: `exactDuplicateGroups` (44 and forty-four; pronouns keep "He trusts her" and "She
+  trusts him" apart), `rawKey`, `nearDuplicateGroups`, `mergeGuard`, `parseMergeAnswer`,
+  `parseInferredAnswer`, `proposalUserMessageId`, `inferredCandidates`, and `scoreDetail` with
+  `ageDaysOf` (held days never fade a memory).
+- said_v5: `numberWordsToDigits`, `saidKey` folding it, `buildSaidHere` against every approved fact.
+- prompt_v5: `PROMPT_VERSION` ends `-p8`, the stable prefix sha256 equal to the value
+  prompt_v4 pins, the v5 section order on a full fixture and none of the five new sections on
+  a v4 one, HOW YOU READ HIM never on an opener, TIME SINCE never together, IN BED still last,
+  the ten hidden keys, the guesses sub-list, THIS MESSAGE as the rhythm.
+- settings_v5: every row of the table through `validateSettingsPatch`, the edges, the two price
+  rules, the defaults in `DEFAULT_SETTINGS`, the seed and 0009, `overlaySettings` setting
+  `nightlyProvider`.
+- migrations_v5: 0009 is the spec's SQL verbatim, the eight tables and seven indexes, the two
+  columns, the two guarded canon people, the twenty settings rows, nothing destructive, 0001 to
+  0008 unchanged.
+- entry_v5: src/index.ts read as text (the nightly story pass after the maintenance on
+  `0 7 * * *`, `frozen` passed to `pushDueReplies`, no new trigger, the CSP line by line equal to
+  v4's), every v5 route registered, the edit check on proposals.ts's `PROPOSAL_KINDS`.
+- exportImport_v5: every new table exported and round-tripped, `facts.inferred` and
+  `messages.song_told_at`, the three `story_clock` rules of an import, the character package
+  carrying nothing of him, `stripHimFromState` dropping the Friction line and the his-part
+  sentence.
+- ui_v5: the v5 ids on the four pages, the song card's buttons, the State page's calls, the
+  twenty settings on the Model page, the stylesheet's classes with the one accent, no style
+  attribute, no inline script, typography.
+- stub_v5: the five nightly prefix copies in stub.ts equal their modules' constants (read as
+  text), and every v5 stub answer: the story replies, the four nightly passes, the proposal
+  triggers with their payloads, `[[VIEW]]` not a trigger, and a search naming "notfound".
+
+v5 changes five v3/v4 expectations on purpose (SPEC_V5 "Tests added"): prompt_v4's
+`PROMPT_VERSION` (and the nickname wording of the extractor it quotes), proposals_v4's ladder,
+appended nickname and time-words cases, and in the integration runner the v4 `[[REL]]`
+expectation (talking), the v3 typo prediction (through `rhythmCue`) and the together scene PUTs
+(each already carried a place). Four more v3/v4 files move with the tree: hisface_v31 and
+inbed_v33 read `-p8`, memory_v4 lists `inferred` among a map fact's keys, and migrations_v4
+lets 0009 sort after 0008.
+
 ## Integration (`npm run test:integration`)
 
     node tests/integration/run.mjs
@@ -353,6 +456,25 @@ Notes on the environment:
 - The her-first check sets her timezone to UTC and the quiet window to start 25 minutes from
   now, so the waking window has one tick left and the per-tick probability is 1; it passes
   `{ force: true }` as well, which a runner may ignore.
+- v5 phase (after the v4 phase): its own FRESH state (`tests/integration/.state-v5`, 0001 to
+  0009 applied), `--test-scheduled` and `--var SPOTIFY_STUB:1`, the caps raised and every
+  setting it touches put back (`nightlyProvider` reads `stub` through the local overlay; its
+  stored value is written back as the seed's `anthropic`). In order: the twenty settings; the
+  clock (together without a place 400, frozen at the version's `created_at`, a held turn, her
+  first text stopping on "together", resumed); the nightly pass (her day filed and kept, the
+  frozen skips, the budget line, the `0 7` cron's `nightly.story` audit row); arcs (the stub's
+  v1 outcome, `[[BEAT]]`, `[[OUTCOME]]`, 409 on a resolved beat); her read (two `[[VIEW]]`
+  turns, retire); state that moves (the ladder, cooling off, friction, nicknames); the rhythm
+  (and the three acted turns with no `shape_uniform`); honest to the record (`[[SONG]]` then
+  `[[DENY]]` retried); hygiene (the exact merge with no model run, the three LA wordings,
+  `[[INFER]]`, `[[HERSAYS]]` marked); the world (0009's two people, the name lock, fixed facts,
+  `[[WORLD]]`, `[[PERSON]]`, `[[NAMEDRIFT]]` retried); the song loop (Spotify connected on the
+  stub, "know it", `[[SONGNF]]` told once, `[[KNOWN]]`, remove); the export round trip of the
+  eight tables; the system counts; the UI smoke. The stub files `[[BEAT]]` as kind event, so
+  the extractor's outcome check uses `went` (an event outcome) where the spec wrote `did_it`.
+  "The state text" of a turn is `message_context.state_text`, read through `GET /api/export`
+  (`messageContext`), since the context route answers the provenance JSON only.
+- The gate phase adds every v5 route to its 401 list.
 - Port: set `AVELIE_TEST_PORT` to move off 8790.
 
 ## Behavior (`npm run behavior`)
@@ -366,7 +488,7 @@ The full list is about a hundred turns and every turn is charged against the spe
 halfway; `--daily-cap` sets `dailyCapUsd` for the run (and lifts `monthlyCapUsd` to at
 least that) and restores both afterwards. A turn refused with 402 is recorded as an error
 and the summary prints the hint.
-`tests/behavior/scenarios.json` holds 50 scenarios: 12 acceptance tests from the handoff test
+`tests/behavior/scenarios.json` holds 55 scenarios: 12 acceptance tests from the handoff test
 plan adapted to a fresh start (A01 to A12), the 10 V5 pending tests adapted the same way
 (V01 to V10), the 15 pressure tests (P01 to P15), the 4 life scenarios of SPEC_V2 (L01 to
 L04: her own day when apart, a cancellation because of a person in her life, a callback
@@ -374,10 +496,14 @@ landing naturally, cooling-off shortening replies without punishment) and the 9 
 of SPEC_V3 (H01 to H09, tagged `"v3": true`: a want and its setback brought up on her own; one
 small ask let go when ignored; a half-remembered detail and his correction taken in one line;
 a no she holds; a typo she fixes herself; a one-word reply; the weather in passing; a stub call
-transcript reading as speech; two tasting candidates reading as the same person). H03 carries
+transcript reading as speech; two tasting candidates reading as the same person), and the 5 v5
+scenarios of SPEC_V5 (R01 to R05, group `v5`, tagged `"v5": true`: she owns a song she sent; a
+one-line rhythm cue reads as a person's text; her read of him colours a reply without being
+said; she brings up how her dated step went on her own; back after three days with her last
+text unanswered, TIME SINCE reading "You last talked 3 days ago." and no complaint). H03 carries
 `"settings": { "provisionalRecallEvery": 8 }`: the runner writes it before the scenario and
 puts the old value back after, whatever happens; that scenario is the gate for turning the
-setting on for real. `--only` takes group names too (`--only v3`, `--only life`). Each scenario is a
+setting on for real. `--only` takes group names too (`--only v3`, `--only v5`, `--only life`). Each scenario is a
 fresh conversation; a turn that starts with `OPERATOR: ` is sent to `/api/operator` instead
 of the story. The life scenarios carry a `notes` field with the setup they need (a routine,
 a person, shared history, a cooling-off state); run them after setting that up on the State
@@ -388,7 +514,8 @@ keeps the two in step).
 `autoChecks` are mechanical only: Archivist flag codes that must not appear on any reply
 (the v1 codes plus `song_marker_dup`, `callback_forced`, `media_unknown`, `truncated`, and in
 v3 `written_joke`, `exemplar_verbatim`, `ask_nag`, `shape_uniform`, `over_polish`,
-`retry_skipped`, `tasting_void`), and
+`retry_skipped`, `tasting_void`, and in v5 `denied_send`, `name_drift`, `rhythm_missed`,
+`song_known_artist`), and
 simple assertions (`no_name_before_told`, `no_question_chain`, `no_prior_history`,
 `no_tech_terms`, `no_love_declaration`, `no_lists`, `no_em_dash`, `reply_length_varies`,
 `max_name_uses:N`, `mentions_emergency_help`, `operator_reply_present`). Anything else in the

@@ -1,7 +1,8 @@
 // Deterministic, key-free providers for tests. Text replies are driven by markers in the
 // last user message; the image provider hands back a master's bytes unchanged; the video
 // stub (v3) answers a task that succeeds on its second poll with a tiny mp4 whose hash is
-// stable. Every v1 and v2 trigger is kept; v3 adds the ones SPEC_V3 "Stub additions" lists.
+// stable. Every v1 and v2 trigger is kept; v3 adds the ones SPEC_V3 "Stub additions" lists,
+// v4 SPEC_V4's, v5 SPEC_V5's (the nightly passes, the reply shapes, the record triggers).
 import { ProviderError } from "../types";
 import type {
   Env, GenerateRequest, GenerateResult, ImageGenerateRequest, ImageGenerateResult, TextProvider,
@@ -16,7 +17,7 @@ const EM_DASH = String.fromCharCode(0x2014);
 const PROPOSAL_PREFIX = "You read one exchange";
 // chat.ts retryMessages: the note appended as the last user turn on a retry.
 const RETRY_NOTE_PREFIX = "OPERATOR NOTE (not part of the story";
-const STUB_MARKER_RE = /\[\[[A-Z_]+(?::[^\]]*)?\]\]/g;
+const STUB_MARKER_RE = /\[\[[A-Z0-9_]+(?::[^\]]*)?\]\]/g;
 
 function stripStubMarkers(text: string): string {
   const out = text.replace(STUB_MARKER_RE, " ").replace(/\s+/g, " ").trim();
@@ -43,6 +44,15 @@ const DESCRIBE_PREFIX = "Describe this man";
 // file, so an import the other way would be a module cycle. phone_v4 asserts the two
 // strings are equal.
 const LISTENING_PREFIX = "Name one real song";
+// v5 (SPEC_V5 "Stub additions"): the nightly story passes, recognised by the start of their
+// system text. COPIES of each module's constant, never imports: nightly.ts, arcs.ts, views.ts
+// and hygiene.ts import providers/index.ts (through storycall.ts), which imports this file.
+// stub_v5 reads the five modules as text and asserts every copy equals its constant.
+const HER_DAY_PREFIX = "Write what happened in Avelie's day";
+const ARC_PREFIX = "Decide how one dated step";
+const VIEWS_PREFIX = "Read the record for how Avelie";
+const MERGE_PREFIX = "Decide which groups of facts";
+const INFERRED_PREFIX = "Decide whether he said";
 const LISTENING_REPLY = "{\"artist\":\"Stub Artist\",\"title\":\"Stub Song\",\"line\":\"stuck in my head since the shop\"}";
 export const STUB_LOOK = "Medium build, a little over average height. Short dark hair, a close-cut beard with some grey in it, dark eyes, no glasses. Looks around forty. The first things anyone notices are the beard and the steady look.";
 // The tasting performer's model id (SPEC_V3 HH): its replies carry the "b: " prefix so
@@ -71,6 +81,13 @@ const TYPO_REPLY = "ok that was werid\n\nweird*";
 const ONEWORD_REPLY = "no";
 const LOWER_REPLY = "cant. tired. tomorrow maybe";
 const SAME_REPLY = "Fine, that is fair. I did not think of it that way.";
+// v5 (SPEC_V5 sections 5, 6, 8, 9): the reply shapes and the record the v5 checks read.
+const DENY_REPLY = "wait i never sent you a song. did i";
+const NAMEDRIFT_REPLY = "my mom Linda called, she says hi";
+const ACTED_REPLY = "*looks at you*\n\nno\n\n*shrugs*";
+const ACTED2_REPLY = "*leans on the counter*\n\nok so the thing about the shop is nobody ever asks what i think about the windows\n\n*shrugs*";
+const ACTED3_REPLY = "*laughs*\n\nfine. fine\n\nyou win this one\n\n*sits back*";
+const SONGNF_REPLY = "found it again\n[song: Nobody Real - Notfound Song]";
 const POLISH_REPLY =
   "It was not the rain that ruined the evening; it was the waiting. I stood there with my coffee, my phone, and my patience. " +
   "Some nights simply do not want to be saved.";
@@ -94,6 +111,18 @@ const LIFEUP_MARKER = /\[\[LIFEUP:([^\]|]+)\|([^\]]+)\]\]/g;
 // mergeRelationshipState read.
 const SCENE_MARKER = /\[\[SCENE(?::([^\]]*))?\]\]/g;
 const REL_MARKER = /\[\[REL:([^\]|]*)(?:\|([^\]]*))?\]\]/g;
+// v5 proposal triggers (SPEC_V5 "Stub additions"; [[VIEW]] is NOT one: the views stub reads
+// it from the MESSAGES block of the nightly pass). [[REL:status|name]] above also takes a
+// lateral status (cooling off, on a break, over) as its status text, unchanged.
+const BEAT_MARKER = /\[\[BEAT:([^\]|]+)\|([^\]|]+)\|([^\]|]+)\]\]/g;
+const OUTCOME_MARKER = /\[\[OUTCOME:([^\]|]+)\|([^\]|]+)\]\]/g;
+const FRICTION_MARKER = /\[\[FRICTION:([^\]|]+)(?:\|([^\]|]*))?\]\]/g;
+const NICK_MARKER = /\[\[NICK:([^\]]+)\]\]/g;
+const INFER_MARKER = /\[\[INFER:([^\]]+)\]\]/g;
+const HERSAYS_MARKER = /\[\[HERSAYS:([^\]]+)\]\]/g;
+const WORLD_MARKER = /\[\[WORLD:([^\]|]+)\|([^\]]+)\]\]/g;
+const PERSON_MARKER = /\[\[PERSON:([^\]|]+)\|([^\]]+)\]\]/g;
+const KNOWN_MARKER = /\[\[KNOWN:([^\]|]+)\|([^\]]+)\]\]/g;
 const NAME_MARKER = /\[\[NAME:([^\]]+)\]\]/;
 const MEDIA_MARKER = /\[\[MEDIA:([^\]]+)\]\]/;
 // v3 story triggers (SPEC_V3 AA, CC).
@@ -198,8 +227,158 @@ function proposalReply(req: GenerateRequest): string {
         confidence: "high", scope: "general", payload,
       });
     }
+    // v5 (SPEC_V5 sections 2, 4, 7, 8, 9).
+    for (const hit of m.content.matchAll(BEAT_MARKER)) {
+      const want = (hit[1] ?? "").trim();
+      const title = (hit[2] ?? "").trim();
+      const dueOn = (hit[3] ?? "").trim();
+      if (!want || !title || !dueOn) continue;
+      out.push({
+        kind: "want_beat", proposal: title + " on " + dueOn, evidence: "[[BEAT:" + want + "|" + title + "|" + dueOn + "]]", confidence: "high", scope: "general",
+        payload: { want, title, due_on: dueOn, kind: "event" },
+      });
+    }
+    for (const hit of m.content.matchAll(OUTCOME_MARKER)) {
+      const beat = (hit[1] ?? "").trim();
+      const outcome = (hit[2] ?? "").trim();
+      if (!beat || !outcome) continue;
+      out.push({
+        kind: "beat_outcome", proposal: beat + ": " + outcome, evidence: "[[OUTCOME:" + beat + "|" + outcome + "]]", confidence: "high", scope: "general",
+        payload: { beat, outcome, note: "stub" },
+      });
+    }
+    for (const hit of m.content.matchAll(FRICTION_MARKER)) {
+      const x = (hit[1] ?? "").trim();
+      if (!x) continue;
+      const payload: Record<string, unknown> = { friction: x };
+      const days = (hit[2] ?? "").trim();
+      if (days) payload.friction_days = numberOr(days, 4);
+      out.push({ kind: "relationship", proposal: "a sore spot between them: " + x, evidence: "[[FRICTION:" + x + "]]", confidence: "high", scope: "general", payload });
+    }
+    for (const hit of m.content.matchAll(NICK_MARKER)) {
+      const x = (hit[1] ?? "").trim();
+      if (!x) continue;
+      out.push({ kind: "relationship", proposal: "a nickname stuck: " + x, evidence: "[[NICK:" + x + "]]", confidence: "high", scope: "general", payload: { nicknames: x } });
+    }
+    for (const hit of m.content.matchAll(INFER_MARKER)) {
+      const x = (hit[1] ?? "").trim();
+      if (!x) continue;
+      out.push({ kind: "justin_fact", proposal: x, evidence: "[[INFER:" + x + "]]", confidence: "medium", scope: "general", payload: { said_by: "inferred" } });
+    }
+    for (const hit of m.content.matchAll(HERSAYS_MARKER)) {
+      const x = (hit[1] ?? "").trim();
+      if (!x) continue;
+      out.push({ kind: "justin_fact", proposal: x, evidence: "she said so", confidence: "high", scope: "general", payload: { said_by: "him" } });
+    }
+    for (const hit of m.content.matchAll(WORLD_MARKER)) {
+      const entity = (hit[1] ?? "").trim();
+      const fact = (hit[2] ?? "").trim();
+      if (!entity || !fact) continue;
+      out.push({ kind: "world_fact", proposal: entity + ": " + fact, evidence: "[[WORLD:" + entity + "|" + fact + "]]", confidence: "high", scope: "general", payload: { entity, fact } });
+    }
+    for (const hit of m.content.matchAll(PERSON_MARKER)) {
+      const name = (hit[1] ?? "").trim();
+      const relation = (hit[2] ?? "").trim();
+      if (!name) continue;
+      out.push({
+        kind: "life", proposal: name + (relation ? ", her " + relation : ""), evidence: "[[PERSON:" + name + "|" + relation + "]]", confidence: "high", scope: "general",
+        payload: { kind: "person", title: name, relation },
+      });
+    }
+    for (const hit of m.content.matchAll(KNOWN_MARKER)) {
+      const artist = (hit[1] ?? "").trim();
+      const kind = (hit[2] ?? "").trim();
+      if (!artist || !kind) continue;
+      out.push({ kind: "known_artist", proposal: "he " + (kind === "disliked" ? "did not like " : "already knows ") + artist, evidence: "[[KNOWN:" + artist + "|" + kind + "]]", confidence: "high", scope: "general", payload: { artist, kind } });
+    }
   }
   return out.length ? JSON.stringify(out) : "[]";
+}
+
+// ------------------------------------------------------------------ v5 nightly passes
+
+// The lines of a block: everything after the line that starts with `header` up to the next
+// line that looks like another block header (UPPER words then a colon) or the end. A header
+// line that carries its value on the same line ("THREADS: (none)") answers that value.
+function blockLines(text: string, header: string): string[] | null {
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => l.trim().startsWith(header));
+  if (at < 0) return null;
+  const out: string[] = [];
+  const same = (lines[at] ?? "").trim().slice(header.length).trim();
+  if (same) out.push(same);
+  for (let i = at + 1; i < lines.length; i++) {
+    const l = lines[i] ?? "";
+    if (/^[A-Z][A-Z ]+(?:[A-Z0-9_-]*)?:/.test(l.trim()) && !l.trim().startsWith("- ")) break;
+    if (l.trim()) out.push(l.trim());
+  }
+  return out;
+}
+
+// Section 1: the first THREADS title, one note at 13:00; [] when THREADS is "(none)".
+function herDayReply(user: string): string {
+  const lines = blockLines(user, "THREADS:") ?? [];
+  const first = lines[0] ?? "(none)";
+  if (!first.startsWith("- ")) return "[]";
+  const body = first.slice(2);
+  const cut = body.indexOf(" (");
+  const thread = (cut >= 0 ? body.slice(0, cut) : body).trim();
+  if (!thread) return "[]";
+  return JSON.stringify([{ thread, note: "stub day note", time: "13:00" }]);
+}
+
+// Section 2: the first variant id (when VARIANTS lists any) and the first OUTCOMES value.
+function arcReply(user: string): string {
+  const outcomesLine = user.split("\n").find((l) => l.trim().startsWith("OUTCOMES:")) ?? "";
+  const outcome = (outcomesLine.trim().slice("OUTCOMES:".length).split(",")[0] ?? "").trim();
+  const variants = blockLines(user, "VARIANTS:") ?? [];
+  const firstVariant = variants.find((l) => l.startsWith("- "));
+  const variantId = firstVariant ? (firstVariant.slice(2).split(":")[0] ?? "").trim() : "";
+  const out: Record<string, unknown> = {};
+  if (variantId) out.variant_id = variantId;
+  out.outcome = outcome;
+  out.note = "stub outcome";
+  out.his_part = "none";
+  out.his_note = "";
+  out.evidence = [];
+  return JSON.stringify(out);
+}
+
+// Section 3: one new read when any MESSAGES line carries [[VIEW]], its evidence those ids.
+function viewsReply(user: string): string {
+  const lines = blockLines(user, "MESSAGES:") ?? [];
+  const ids: string[] = [];
+  for (const l of lines) {
+    if (!l.includes("[[VIEW]]")) continue;
+    const m = /^- \[([^\]]+)\]/.exec(l);
+    if (m && m[1]) ids.push(m[1]);
+  }
+  if (!ids.length) return "[]";
+  return JSON.stringify([{ op: "new", subject: "stub read", view: "you answer fast when it matters", confidence: 0.8, evidence: ids }]);
+}
+
+// Section 7: every GROUP is the same fact, worded as its first line; every FACT was not said.
+function mergeReply(user: string): string {
+  const out: Array<Record<string, unknown>> = [];
+  const lines = user.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const g = /^GROUP\s+([^:\s]+):/.exec((lines[i] ?? "").trim());
+    if (!g || !g[1]) continue;
+    const first = (lines[i + 1] ?? "").trim();
+    const f = /^- \[[^\]]+\]\s*(.*)$/.exec(first);
+    if (!f || !f[1]) continue;
+    out.push({ group: g[1], same: true, text: f[1].trim() });
+  }
+  return JSON.stringify(out);
+}
+
+function inferredReply(user: string): string {
+  const out: Array<Record<string, unknown>> = [];
+  for (const l of user.split("\n")) {
+    const f = /^FACT\s+([^:\s]+):/.exec(l.trim());
+    if (f && f[1]) out.push({ fact: f[1], said: false });
+  }
+  return JSON.stringify(out);
 }
 
 // Two plain words from the user text, for the default echo line.
@@ -241,6 +420,13 @@ function storyReply(last: string, withImages: boolean, model: string, system = "
   if (last.includes("[[LOWER]]")) return { text: LOWER_REPLY, stopReason: "end" };
   if (last.includes("[[SAME]]")) return { text: SAME_REPLY, stopReason: "end" };
   if (last.includes("[[POLISH]]")) return { text: POLISH_REPLY, stopReason: "end" };
+  // v5 (SPEC_V5 sections 5, 6, 8, 9).
+  if (last.includes("[[DENY]]")) return { text: DENY_REPLY, stopReason: "end" };
+  if (last.includes("[[NAMEDRIFT]]")) return { text: NAMEDRIFT_REPLY, stopReason: "end" };
+  if (last.includes("[[ACTED]]")) return { text: ACTED_REPLY, stopReason: "end" };
+  if (last.includes("[[ACTED2]]")) return { text: ACTED2_REPLY, stopReason: "end" };
+  if (last.includes("[[ACTED3]]")) return { text: ACTED3_REPLY, stopReason: "end" };
+  if (last.includes("[[SONGNF]]")) return { text: SONGNF_REPLY, stopReason: "end" };
   // v3 (AA): an offered exemplar reused verbatim.
   const exemplar = EXEMPLAR_MARKER.exec(last);
   if (exemplar && exemplar[1] && exemplar[1].trim()) return { text: exemplar[1].trim() + ", basically. anyway", stopReason: "end" };
@@ -275,6 +461,17 @@ export const stubProvider: TextProvider = {
     } else if (req.system.startsWith(LISTENING_PREFIX)) {
       // v4: the phone panel's one small call a day (phone.ts listeningNow).
       text = LISTENING_REPLY;
+    } else if (req.system.startsWith(HER_DAY_PREFIX)) {
+      // v5: the nightly story pass (SPEC_V5 sections 1, 2, 3 and 7).
+      text = herDayReply(last);
+    } else if (req.system.startsWith(ARC_PREFIX)) {
+      text = arcReply(last);
+    } else if (req.system.startsWith(VIEWS_PREFIX)) {
+      text = viewsReply(last);
+    } else if (req.system.startsWith(MERGE_PREFIX)) {
+      text = mergeReply(last);
+    } else if (req.system.startsWith(INFERRED_PREFIX)) {
+      text = inferredReply(last);
     } else {
       const lastMessage = [...req.messages].reverse().find((m) => m.role === "user");
       // A retry's last user turn is chat.ts's operator note. The stub answers the previous
@@ -604,7 +801,9 @@ export function stubSpotifyFetch(options: StubSpotifyOptions = {}): StubSpotifyF
     }
     if (method === "GET" && u.pathname === "/v1/search") {
       const q = u.searchParams.get("q") ?? "";
-      if (q.includes("[[NOTFOUND]]")) return json({ tracks: { items: [] } });
+      // v5 (SPEC_V5 section 9): a query naming "notfound" (any case) finds nothing too, so
+      // the [[SONGNF]] reply's pick is a song that does not exist.
+      if (q.includes("[[NOTFOUND]]") || /notfound/i.test(q)) return json({ tracks: { items: [] } });
       const t = stubTrackFromQuery(q);
       return json({
         tracks: {

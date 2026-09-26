@@ -164,6 +164,9 @@ export function groundingSection(args: {
   weather: WeatherNow | null;
   outfit: Outfit | null;
   today: GroundingRow[];
+  // v5 (SPEC_V5 section 1): the held scene's own time words ("late night"); when set, the
+  // first line reads "It is {weekday}, {clockWords}." instead of the clock.
+  clockWords?: string | null;
 }): string {
   const tz = safeTimezone(args.tz);
   const now = args.now instanceof Date ? args.now : new Date();
@@ -175,7 +178,11 @@ export function groundingSection(args: {
   if (!weather && !outfit && !today.length) return "";
   const p = localParts(now, tz);
   const out: string[] = [GROUNDING_HEADER];
-  out.push(`It is ${WEEKDAYS[p.weekday] ?? ""} ${formatClock(p.hour * 60 + p.minute)}, ${timeOfDay(p.hour)}.` + (weather ? " " + weather : ""));
+  const words = typeof args.clockWords === "string" ? args.clockWords.replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "") : "";
+  const first = words
+    ? `It is ${WEEKDAYS[p.weekday] ?? ""}, ${words}.`
+    : `It is ${WEEKDAYS[p.weekday] ?? ""} ${formatClock(p.hour * 60 + p.minute)}, ${timeOfDay(p.hour)}.`;
+  out.push(first + (weather ? " " + weather : ""));
   if (outfit) {
     const when = clockOf(outfit.at, tz);
     const from = outfit.from === "photo" ? `your photo${when ? " at " + when : ""}` : `you noted it${when ? " at " + when : ""}`;

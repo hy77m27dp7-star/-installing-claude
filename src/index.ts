@@ -21,6 +21,13 @@
 // Playback SDK and its frames, the Spotify API and dealer, and the ElevenLabs API for the
 // browser client (the exact origins the SDK and the client need are what L4 and L10
 // record in docs/SPOTIFY.md and docs/ELEVENLABS.md; the integrator applies any further one).
+//
+// v5 (SPEC_V5 "Crons"): no new trigger and no change to the content security policy. The
+// 07:00 UTC handler runs the backup, then the maintenance, then the nightly story pass
+// (runNightlyStory), each in its own try, and the logged result carries the pass's step
+// statuses and spend. The 20-minute handler reads her clock once at the top and passes
+// frozen to the delayed-reply push (nothing is pushed while a together scene is held); her
+// first texts stop on a together scene or a held clock (the gate lives in herfirst.ts).
 import { requireOwner } from "./auth";
 import { handleApi, overlaySettings } from "./api";
 import { serveAudio, serveInbox, serveLibrary, serveMedia } from "./images";
@@ -33,6 +40,8 @@ import { localParts, safeTimezone } from "./life";
 import { runVoiceprint } from "./voiceprint";
 import { nightly as nightlyMaintenance } from "./maintenance";
 import { auditStmt, getSettings } from "./db";
+import { loadStoryClock } from "./clock";
+import { runNightlyStory } from "./nightly";
 import { safeErrorMessage } from "./providers/types";
 import { json } from "./errors";
 import type { Env } from "./types";
@@ -184,11 +193,52 @@ async function runMaintenance(env: Env, db: D1Database): Promise<Record<string, 
   }
 }
 
+// The nightly story pass (SPEC_V5 section 1): her day, her arcs, her read of him and the
+// memory hygiene, every step filed as proposals inside its own budget line. A failure is
+// logged by class and never reaches the backup's or the maintenance's result. The logged
+// shape is the step statuses and the spend, never a proposal's text.
+async function runStoryPass(env: Env, db: D1Database, at: Date): Promise<Record<string, unknown>> {
+  try {
+    const settings = overlaySettings(env, await getSettings(db));
+    const r = await runNightlyStory(env, db, settings, { now: at });
+    return {
+      day: r.day,
+      skipped: r.skipped,
+      frozen: r.frozen,
+      spentUsd: r.spentUsd,
+      steps: r.steps.map((s) => ({ step: s.step, status: s.status, reason: s.reason, filed: s.proposalIds.length })),
+      kept: r.kept,
+      duplicates: r.duplicates,
+    };
+  } catch (e) {
+    const cls = e instanceof Error ? e.name || "Error" : "error";
+    console.error("nightly story failed", cls, safeErrorMessage(e, 200));
+    return { error: cls };
+  }
+}
+
 async function runCron(cron: string, at: Date, env: Env, db: D1Database): Promise<Record<string, unknown> | null> {
   if (cron === CRON_BACKUP) {
-    const r = await runBackup(env, db);
+    // Each in its own try (v5): a failed backup is logged and audited, and the maintenance
+    // and the nightly story pass still run.
+    let backup: Record<string, unknown>;
+    try {
+      const r = await runBackup(env, db);
+      backup = { key: r.key, bytes: r.bytes, kept: r.kept };
+    } catch (e) {
+      const cls = e instanceof Error ? e.name || "Error" : "error";
+      const message = safeErrorMessage(e, 200);
+      console.error("backup failed", cls, message);
+      try {
+        await auditStmt(db, "cron", "cron.failed", "cron", cron, null, { at: at.toISOString(), step: "backup", error: cls, message }).run();
+      } catch {
+        /* the audit row is best effort */
+      }
+      backup = { error: cls };
+    }
     const maintenance = await runMaintenance(env, db);
-    return { key: r.key, bytes: r.bytes, kept: r.kept, maintenance };
+    const nightly = await runStoryPass(env, db, at);
+    return { ...backup, maintenance, nightly };
   }
   const settings = overlaySettings(env, await getSettings(db));
   if (cron === CRON_DRIFT) {
@@ -199,12 +249,17 @@ async function runCron(cron: string, at: Date, env: Env, db: D1Database): Promis
   if (cron === CRON_HER_FIRST) {
     // v4 (SPEC_V4 section 6): the delayed replies that came due since the last tick are
     // pushed first (one notification for the batch, the rows stamped whatever the push
-    // did), then the first-text decision runs as before. Both results in one object.
+    // did), then the first-text decision runs as before (v5: it stops on a together scene
+    // or a held clock, before the day's count). Both results in one object.
     // Never the whole tick: a failure here (a database behind 0008, a D1 error) is logged
     // by class and her first-text decision still runs. Quiet hours are her first texts' own.
+    // v5 (section 1): one clock read at the top (it never throws; a database behind 0009
+    // reads as a disabled clock). While a together scene is held no push is sent; the rows
+    // are stamped as under quiet hours.
+    const clock = await loadStoryClock(db, settings, at);
     const p = localParts(at, safeTimezone(settings.timezone));
     const quiet = inQuietHours(p.hour * 60 + p.minute, parseQuietHours(settings.herFirstQuietHours));
-    const delayed: unknown = await pushDueReplies(env, db, at, { quiet }).catch((e: unknown) => {
+    const delayed: unknown = await pushDueReplies(env, db, at, { quiet, frozen: clock.frozen }).catch((e: unknown) => {
       const cls = e instanceof Error ? e.name : "error";
       console.warn("scheduled: delayed replies skipped", cls);
       return { error: cls };
@@ -240,7 +295,9 @@ export default {
     const db = env.DB;
     try {
       const result = await runCron(cron, at, env, db);
-      if (result) console.log("scheduled ok", cron, JSON.stringify(result).slice(0, 300));
+      // v5: room for the nightly story pass's step statuses beside the backup and the
+      // maintenance (statuses, reasons and spend only; never a proposal's text or a key).
+      if (result) console.log("scheduled ok", cron, JSON.stringify(result).slice(0, 2000));
       else console.log("scheduled skipped", cron);
     } catch (e) {
       const cls = e instanceof Error ? e.name || "Error" : "error";

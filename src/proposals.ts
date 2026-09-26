@@ -6,11 +6,22 @@ import { assertBudget, costMicro, estimateUsd } from "./budget";
 import { proposalSystemPrompt } from "./prompt";
 import { saidKey, saidLine } from "./said";
 import {
-  auditStmt, dayKey, getCurrentState, getProposal, insertModelRunStmt, insertProposalStmt, listFacts, listProposals,
+  auditStmt, dayKey, getCurrentState, getProposal, getSettings, insertModelRunStmt, insertProposalStmt, listFacts, listProposals,
   listRecentStoryMessages, newId, nowIso, usageStmt,
 } from "./db";
 import { createFact, createHistory, createUnknown, putState, updateFact } from "./state";
-import { createThread, listThreads, logLife, updateThread } from "./life";
+import { WEEKDAYS, createThread, listThreads, localParts, logLife, safeTimezone, updateThread } from "./life";
+// v5 (SPEC_V5 section 4 and "Proposals"): the ladder and the scene record (standing.ts), the
+// story clock (the extractor's today and the occurred stamp), and the seven new kinds'
+// promotions, each in the module that owns its table.
+import { appendText, moveRelationship, normalizeSceneFields } from "./standing";
+import { loadStoryClock, localDayKeyOf, storyInstantOf, storyNow } from "./clock";
+import type { StoryClock } from "./clock";
+import { applyBeatOutcome, createBeatFromProposal } from "./arcs";
+import { applyViewProposal } from "./views";
+import { applyFactMark, applyFactMerge } from "./hygiene";
+import { addWorldFactFromProposal, resolveLifePerson } from "./world";
+import { setKnownArtist } from "./songs";
 // v3 (SPEC_V3): the weight a proposal carries (BB), wants and asks (CC), grounding rows (DD).
 import { putWeight } from "./memory";
 import { createAsk, createWant, findAsk, findWant, logWant, updateAsk } from "./wants";
@@ -28,15 +39,23 @@ export const PROPOSAL_KINDS: ProposalKind[] = [
   "avelie_fact", "justin_fact", "relationship", "scene", "history", "private_language", "opinion_change", "unknown", "life",
   // v3
   "want", "want_update", "ask", "ask_update", "grounding", "life_update",
+  // v5 (SPEC_V5 "Proposals")
+  "want_beat", "beat_outcome", "her_view", "fact_merge", "fact_mark", "world_fact", "known_artist",
 ];
+// v5: the kinds only the nightly story pass files. The per-turn extractor never files them
+// (a read of him, a merge or a guess mark from one exchange would be a leap); an element of
+// one of these kinds in its output is dropped.
+export const NIGHTLY_ONLY_KINDS: readonly ProposalKind[] = ["her_view", "fact_merge", "fact_mark"];
+// v5: the kinds the auto-keep never rejects as a text duplicate. The same step can happen
+// again (next week's open mic), and their promotions carry their own guards
+// (already_resolved; the existing beat for the same want, title and date).
+const NO_TEXT_DUPLICATE_KINDS: readonly string[] = ["beat_outcome", "want_beat"];
 // v3 (BB): the weight an element may carry, "how much this mattered" (0.1 passing, 1 a loss,
 // a love, a fear). Absent = the entity's default, written by nobody.
 const WEIGHT_MIN = 0.1;
 const WEIGHT_MAX = 1;
 const WANT_LOG_KINDS = ["progress", "setback", "note"] as const;
 const GROUNDING_KINDS = ["meal", "outfit", "errand", "misc"] as const;
-const MOOD_DAYS_MIN = 1;
-const MOOD_DAYS_MAX = 14;
 const CONFIDENCES = ["low", "medium", "high"] as const;
 const MAX_PROPOSALS_PER_EXCHANGE = 12;
 const MAX_PROPOSAL_CHARS = 1000;
@@ -44,7 +63,6 @@ const MAX_PROPOSAL_CHARS = 1000;
 const MAX_PAYLOAD_CHARS = 4000;
 const LIFE_KINDS: ReadonlyArray<LifeThread["kind"]> = ["routine", "event", "person", "place", "arc"];
 const OPINION_PREFIX = "opinion:";
-const MAX_COOLING_OFF_HOURS = 24 * 14;
 const PROPOSAL_MAX_TOKENS = 800;
 // The flag on a run row when the pass was skipped by the caps rather than run.
 export const BUDGET_SKIPPED_FLAG = "budget_skipped";
@@ -200,7 +218,7 @@ export async function extractProposals(
   ]);
   const content = "EXCHANGE:\n" + exchangeText(recent, userMessage, assistantMessage) + "\n\nAPPROVED STATE:\n" + summary;
   const messages: ChatMessage[] = [{ role: "user", content }];
-  const system = proposalSystemPrompt();
+  const system = proposalSystemPrompt(await extractorDay(db, settings));
 
   const started = Date.now();
   const runId = newId("r");
@@ -255,7 +273,8 @@ export async function extractProposals(
     return 0;
   }
 
-  const candidates = parseProposalJson(text);
+  // v5: the kinds only the nightly pass files are dropped from a per-turn reading.
+  const candidates = parseProposalJson(text).filter((c) => !NIGHTLY_ONLY_KINDS.includes(c.kind));
   // The same exchange is read for several turns, so anything already proposed, decided
   // or approved (including the original text of an edited proposal) is not proposed again.
   const [pending, rejected, edited, approved, approvedFacts] = await Promise.all([
@@ -326,6 +345,27 @@ export async function extractProposals(
   return rows.length;
 }
 
+// v5 (SPEC_V5 "Proposals"): the extractor's today, in her timezone, on the story clock (a
+// held scene keeps the day it froze on); the real day when the clock read fails.
+async function extractorDay(db: D1Database, settings: Settings): Promise<{ today: string; weekday: string }> {
+  const tz = safeTimezone(settings.timezone);
+  const dayOf = (d: Date): { today: string; weekday: string } => ({
+    today: localDayKeyOf(d, tz),
+    weekday: WEEKDAYS[localParts(d, tz).weekday] ?? "",
+  });
+  try {
+    const clock = await loadStoryClock(db, settings, new Date());
+    return dayOf(storyNow(clock));
+  } catch {
+    try {
+      return dayOf(new Date());
+    } catch {
+      const d = new Date();
+      return { today: d.toISOString().slice(0, 10), weekday: WEEKDAYS[d.getUTCDay()] ?? "" };
+    }
+  }
+}
+
 // v3.2 "memory keeps itself": every proposal the extractor files is approved on the spot
 // unless an approved or edited proposal of the same kind already says the same thing (same
 // content words), in which case it is rejected as a duplicate. Oldest first, so the first
@@ -344,7 +384,7 @@ export async function keepAutomatically(db: D1Database, ids: readonly string[], 
       const q = await getProposal(db, id);
       if (!q || q.status !== "pending") continue;
       const key = duplicateKey(q.kind, q.proposal);
-      if (seen.has(key)) {
+      if (seen.has(key) && !NO_TEXT_DUPLICATE_KINDS.includes(q.kind)) {
         await decideProposal(db, id, "reject", actor, undefined, "duplicate: the same thing is already kept");
         duplicates += 1;
         continue;
@@ -360,12 +400,6 @@ export async function keepAutomatically(db: D1Database, ids: readonly string[], 
 }
 
 // ------------------------------------------------------------------ decide / promote
-
-function appendText(existing: unknown, addition: string, sep: string): string {
-  const cur = typeof existing === "string" ? existing.trim() : "";
-  if (!cur || cur.toLowerCase() === "none" || cur.toLowerCase() === "none established") return addition;
-  return cur + sep + addition;
-}
 
 function titleFrom(text: string): string {
   const first = text.split(/(?<=[.!?])\s+/)[0] ?? text;
@@ -464,24 +498,6 @@ function num(v: unknown): number {
   return typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v) : NaN;
 }
 
-// mood, mood_days (v3) and cooling_off_hours from a relationship payload (SPEC_V2 section
-// J, SPEC_V3 section CC). A missing field leaves the current value alone; cooling_off_hours
-// 0 ends a cooling-off; a new mood gets mood_set_at from putState.
-function relationshipMood(payload: Record<string, unknown>, now: Date): { mood?: string; mood_days?: number; cooling_off_until?: string | null } {
-  const out: { mood?: string; mood_days?: number; cooling_off_until?: string | null } = {};
-  const mood = str(payload.mood, 200);
-  if (mood) out.mood = mood;
-  const days = num(payload.mood_days);
-  if (Number.isFinite(days)) out.mood_days = Math.min(MOOD_DAYS_MAX, Math.max(MOOD_DAYS_MIN, Math.round(days)));
-  const hoursRaw = payload.cooling_off_hours;
-  const hours = typeof hoursRaw === "number" ? hoursRaw : typeof hoursRaw === "string" && hoursRaw.trim() ? Number(hoursRaw) : NaN;
-  if (Number.isFinite(hours)) {
-    if (hours <= 0) out.cooling_off_until = null;
-    else out.cooling_off_until = new Date(now.getTime() + Math.min(hours, MAX_COOLING_OFF_HOURS) * 3600_000).toISOString();
-  }
-  return out;
-}
-
 // The weight the proposal carried, written to the promoted row (SPEC_V3 section BB).
 // Nothing is written when the element carried none: the entity's default applies by absence.
 async function weighRow(db: D1Database, p: ProposalRow, entity: "fact" | "history" | "thread" | "want", id: string, actor: string): Promise<void> {
@@ -542,38 +558,50 @@ export function mergeSceneState(cur: SceneState, payload: Record<string, unknown
       .slice(0, SCENE_PRESENT_MAX);
     if (present.length) next.present = present;
   }
-  return next;
+  // v5 (SPEC_V5 section 4): every key present, a together scene always with a place (a
+  // proposal without one keeps the current status), and the old time words dropped when the
+  // status moved unless this payload carried a time.
+  return normalizeSceneFields(next, cur, { strict: false, timeSet: time !== undefined });
 }
 
-// The next relationship state from a promoted relationship proposal (pure): summary and the
-// frontier as before, the mood keys from the payload, and status, his_name, trust,
-// affection, attraction and nicknames TAKEN when the payload carries them (his_name accepts
-// null to clear it, never undefined). This is the v3.2 gap: the auto-kept relationship
-// proposals only appended to the frontier, so the state still read strangers and his_name
-// null after two days of talking.
-export function mergeRelationshipState(cur: RelationshipState, payload: Record<string, unknown>, text: string, now: Date): Record<string, unknown> {
+// The next relationship state from a promoted relationship proposal (pure). v4 took the
+// payload's fields as given; v5 (SPEC_V5 section 4) moves them through the ladder
+// (moveRelationship in src/standing.ts): the status one rung at a time, friction stamped and
+// healed, nicknames appended, a cooling off on story time. The v4 signature holds.
+export function mergeRelationshipState(cur: RelationshipState, payload: Record<string, unknown>, text: string, now: Date, opts: { auto?: boolean } = {}): Record<string, unknown> {
   const p = payload && typeof payload === "object" ? payload : {};
-  const next: Record<string, unknown> = {
-    ...cur,
-    summary: text,
-    frontier: appendText(cur.frontier, text, " | "),
-    ...relationshipMood(p, now),
-  };
-  for (const key of RELATIONSHIP_TEXT_FIELDS) {
-    const v = payloadText(p[key], RELATIONSHIP_FIELD_MAX);
-    if (v) next[key] = v;
+  return moveRelationship(cur, p, text, now, { auto: opts.auto === true }).next;
+}
+
+// v5 (SPEC_V5 section 1): the story instant a proposal was FILED at (not approved at), for
+// the kinds that date what they carry. The clock is read once per promotion and only for
+// the kinds that need it; a failed read is the real clock.
+async function filedInstant(db: D1Database, p: ProposalRow, clockRef: { clock: StoryClock | null }): Promise<string> {
+  if (!clockRef.clock) {
+    try {
+      clockRef.clock = await loadStoryClock(db, await getSettings(db));
+    } catch {
+      clockRef.clock = null;
+    }
   }
-  if (p.his_name === null) next.his_name = null;
-  else {
-    const name = payloadText(p.his_name, RELATIONSHIP_FIELD_MAX);
-    if (name) next.his_name = name;
-  }
-  return next;
+  const filed = Number.isFinite(Date.parse(p.created_at)) ? p.created_at : nowIso();
+  try {
+    if (clockRef.clock) return storyInstantOf(clockRef.clock, filed).toISOString();
+  } catch { /* the stamp falls back to the filing instant */ }
+  return new Date(Date.parse(filed)).toISOString();
+}
+
+function isoOf(v: unknown): string | null {
+  if (typeof v !== "string" || !v.trim()) return null;
+  const t = Date.parse(v.trim());
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
 }
 
 async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text: string, actor: string): Promise<string> {
   const source = `proposal ${p.id}`;
   const payload = proposalPayload(p);
+  // v5: the clock is read lazily, only for a kind that dates what it carries.
+  const clockRef: { clock: StoryClock | null } = { clock: null };
   switch (kind) {
     case "avelie_fact": {
       const f = await createFact(db, { scope: "avelie", fact: text, source, disclosed: true }, actor);
@@ -581,7 +609,8 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
       return f.id;
     }
     case "justin_fact": {
-      const f = await createFact(db, { scope: "justin", fact: text, source, disclosed: true }, actor);
+      // v5 (SPEC_V5 section 7): a thing she worked out about him is held as her guess.
+      const f = await createFact(db, { scope: "justin", fact: text, source, disclosed: true, inferred: payload.said_by === "inferred" }, actor);
       await weighRow(db, p, "fact", f.id, actor);
       return f.id;
     }
@@ -613,7 +642,7 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
         kind: logKind,
         delta: Number.isFinite(delta) ? Math.max(-100, Math.min(100, Math.round(delta))) : null,
         note: str(payload.note, 2000) ?? text,
-        occurred: str(payload.occurred, 100),
+        occurred: str(payload.occurred, 100) ?? await filedInstant(db, p, clockRef),
         source,
         messageId: ids.assistantMessageId,
       }, actor);
@@ -648,7 +677,7 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
       const row = await createGroundingRow(db, {
         kind: gKind,
         note: str(payload.note, 2000) ?? text,
-        occurred: str(payload.occurred, 100),
+        occurred: str(payload.occurred, 100) ?? await filedInstant(db, p, clockRef),
         source,
         messageId: ids.assistantMessageId,
       }, actor);
@@ -658,6 +687,13 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
     // moves and/or a life log note lands on it. The portrait is never touched.
     case "life_update": {
       const ref = str(payload.thread, 300) ?? str(payload.title, 300);
+      // v5: logged at payload.occurred when it parses, else at the story instant it was filed.
+      const occurred = isoOf(payload.occurred) ?? await filedInstant(db, p, clockRef);
+      // v5 (SPEC_V5 section 1): a small thing in her day that belongs to no thread.
+      if (payload.her_day === true && !ref) {
+        const log = await logLife(db, null, occurred, str(payload.note, 4000) ?? text, source, actor);
+        return log.id;
+      }
       const active = await listThreads(db, "active");
       const thread = ref ? active.find((t) => t.id === ref) ?? active.find((t) => sameName(t.title, ref)) : undefined;
       if (!thread) throw new ApiHttpError(400, "validation", "life_update names no active thread");
@@ -668,7 +704,7 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
         const updated = await updateThread(db, thread.id, { detail }, actor);
         headId = updated.id;
       }
-      if (note) await logLife(db, headId, nowIso(), note, source, actor);
+      if (note) await logLife(db, headId, occurred, note, source, actor);
       return headId;
     }
     case "opinion_change": {
@@ -685,13 +721,21 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
       return f.id;
     }
     case "relationship": {
+      // v5 (SPEC_V5 section 4): through the ladder; what it held back rides in the state
+      // version's note (the proposal's own decision_note is left alone).
       const cur = await getCurrentState<RelationshipState>(db, "relationship");
-      const next = mergeRelationshipState(cur.state, payload, text, new Date());
-      const r = await putState(db, "relationship", next, source, actor, "proposal");
+      const moved = moveRelationship(cur.state, payload, text, new Date(), { auto: actor === "auto" });
+      const note = (moved.notes.length ? source + " | " + moved.notes.join("; ") : source).slice(0, 1000);
+      const r = await putState(db, "relationship", moved.next, note, actor, "proposal");
       return `relationship:v${r.version}`;
     }
     case "life": {
-      const t = await createThread(db, lifeInput(payload, text, source), actor);
+      const input = lifeInput(payload, text, source);
+      // v5 (SPEC_V5 section 8): a person of her life is one person: the same name, or the
+      // one her mother already is, resolves to the thread she has.
+      const t = input.kind === "person"
+        ? await resolveLifePerson(db, { ...input, kind: "person" }, actor)
+        : await createThread(db, input, actor);
       await weighRow(db, p, "thread", t.id, actor);
       return t.id;
     }
@@ -715,6 +759,29 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
     case "unknown": {
       const u = await createUnknown(db, { topic: text, note: p.evidence }, actor);
       return u.id;
+    }
+    // v5 (SPEC_V5 "Proposals"): each new kind promotes through the module that owns its table.
+    case "want_beat": {
+      const settings = await getSettings(db);
+      return createBeatFromProposal(db, payload, text, source, actor, settings.timezone);
+    }
+    case "beat_outcome":
+      return applyBeatOutcome(db, payload, source, actor);
+    case "her_view":
+      return applyViewProposal(db, payload, source, actor);
+    case "fact_merge":
+      return applyFactMerge(db, payload, source, actor);
+    case "fact_mark":
+      return applyFactMark(db, payload, source, actor);
+    case "world_fact":
+      return addWorldFactFromProposal(db, payload, text, source, actor);
+    case "known_artist": {
+      const artist = str(payload.artist, 200);
+      if (!artist) throw new ApiHttpError(400, "validation", "known_artist names no artist");
+      const kindRaw = str(payload.kind, 20)?.toLowerCase();
+      const artistKind = kindRaw === "disliked" ? "disliked" : "known";
+      const row = await setKnownArtist(db, { artist, kind: artistKind, source: "proposal", note: source }, actor);
+      return row.id;
     }
     default:
       throw new ApiHttpError(400, "validation", "unknown proposal kind");

@@ -364,6 +364,52 @@ Her own voice (optional, A2): docs/ELEVENLABS.md has the exact steps (the accoun
 
 Rollback target for v4: the Worker version that carried v3.3, the id written down from `npx wrangler deployments list` in the first step (`npx wrangler rollback <that id>`); the v3 code runs against the v4 tables (it ignores the new columns and never reads the new tables). The Spotify row, if any, is untouched by a rollback; a later v4 deploy finds it again.
 
+## 27. v5: pull, migrate, deploy (one round, one "go"; SPEC_V5, 2026-09-26)
+
+v5 adds one migration file (0009_v5.sql, additive), no new page, no new cron trigger, no new secret and no new CSP origin. The Worker name, the domain, the Access door and every secret stay as they are. Nothing new for Justin to set up: no account, no key, no dashboard step. Show the before/after once and take ONE word.
+
+Before: v4 live (tables through 0008, four cron triggers, PROMPT_VERSION ending `-p7`). Her replies long and samey, no sense of time between chats, wants that never move on their own, no read of him, the relationship and scene records moving only by hand, duplicates and guesses in her memory of him, loose names for the people in her life, song picks landing on artists he knows.
+After: the same Worker with the v5 code. Eight new tables (`story_clock`, `nightly_runs`, `arc_beats`, `beat_runs`, `her_views`, `people`, `world_facts`, `known_artists`), two new columns (`facts.inferred`, `messages.song_told_at`), one new index on `messages(channel, created_at)`, two canon people (her mother, unnamed; Mason, her ex, a thread of status done) inserted only when the record has neither, twenty settings rows inserted with INSERT OR IGNORE (a row he already has is untouched). Her clock with Justin's rule: time runs while they text, and a Together scene holds it (he comes back to the same moment, nothing happens to her while it is held, held days never count as absence). The 07:00 UTC cron also runs the nightly story pass (her day, her dated steps, her read of him, memory hygiene), capped at `nightlyBudgetUsd` (0.25 a night, typically 3 to 6 cents), everything it decides filed as proposals his auto-keep switch keeps or his Inbox decides. The stable prompt prefix does NOT change (the prompt cache stays warm across the deploy); PROMPT_VERSION ends `-p8`. Her first texts, real-mode timing and the Spotify switch keep the values they have. No row that exists today is changed.
+
+Then, in order, as SEPARATE commands with a check between the migration and the deploy (the Sept 24 lesson, section 19):
+
+```
+cd ~/Documents/ClaudeCode/2026-09-24_avelie
+npx wrangler deployments list
+git pull
+ls migrations
+npm test
+npm run test:integration
+npm run db:remote
+```
+
+- `npx wrangler deployments list` first: write the top (current, v4) version id into this section and HANDOFF.md as the v5 rollback target before anything changes.
+- `ls migrations` must show 0009_v5.sql after 0008_v4.sql and nothing after it.
+- `npm run db:remote` is its own command. It must print 0009_v5.sql as applied and skip 0001 to 0008. Read the output before going on: if it prints an error (a 7403 like the Sept 24 one, a timeout, anything), STOP, do not deploy; the v5 code reads the new tables on its first request and a together scene would have no clock.
+- The check, before the deploy:
+
+```
+npx wrangler d1 execute avelie --remote --command "SELECT name FROM sqlite_master WHERE name IN ('story_clock','arc_beats','beat_runs','her_views','people','world_facts','known_artists','nightly_runs')"
+```
+
+  It must answer eight rows. Seven or fewer: STOP, run `npx wrangler d1 migrations list avelie --remote` and read what is missing.
+- Only then:
+
+```
+npm run deploy
+```
+
+- `npm run deploy` runs `npm test` and `check:deploy` again and then `wrangler deploy`. The output must list the custom domain and the same four cron triggers. If it shows `workers.dev` as enabled, stop.
+
+Proof (from outside, as in section 7): `/`, `/api/clock`, `/api/nightly`, `/api/world`, `/api/known-artists` all 302 to Access; workers.dev 404. Then, signed in, by hand:
+1. `GET /api/clock` answers `enabled: true`, `frozen: false` (or `frozen: true` if the live scene is together at this moment; that is his scene, leave it).
+2. One `POST /api/nightly/run` (from the Model page's Nightly card, Run now, or `{ "force": true }`): four step chips; her_day and arcs done or skipped with a reason, views and hygiene done or "not enough happened"; a few cents on the usage line (kind `nightly`). Whatever it filed sits in the Inbox, or is kept at once when his auto-keep switch is on.
+3. `GET /api/world` lists her mother (named false) and Mason (named true), unless the record already had them.
+
+The before/after list is the two paragraphs above; the deploy session shows them once and takes his one word before `npm run db:remote`.
+
+Rollback target for v5: the Worker version that carried v4, the id written down from `npx wrangler deployments list` in the first step (`npx wrangler rollback <that id>`); the v4 code runs against the v5 tables (it ignores the new tables and columns). A rollback leaves the story_clock spans and the nightly proposals in place; a later v5 deploy finds them again (the clock re-syncs from the scene versions on its first read).
+
 ## Cost ceilings (from the build brief, 2026-09-24; confirm on Cloudflare's pricing pages, they move)
 
 - Workers Paid (5 USD a month) is required for photos: the Free plan's 10 ms CPU per request cannot decode and hash a multi-megabyte image. Paid allows 30 s. Requests: 100,000 per day free on either plan. D1 Free: 5 million rows read and 100,000 written per day, 5 GB. Workers AI: 10,000 free Neurons per day.

@@ -10,6 +10,15 @@
 // HOW YOU TEXT, NOTES FROM HIM, OPEN UNKNOWNS, FIRST CONVERSATION, THIS MESSAGE. A section
 // with nothing to say is omitted. The v3 renderers live with their modules (voicebank,
 // corrections, memory, wants, grounding, imperfection); this file only places them.
+//
+// v5 (SPEC_V5 "The prompt, section by section"): the prefix bytes do not change. The state
+// sections, in order: FIXED CANON, THINGS TRUE ABOUT YOU, WHAT YOU KNOW ABOUT HIM (with the
+// guesses sub-list), WHAT HE LOOKS LIKE, HOW YOU READ HIM, THINGS YOU HALF REMEMBER, SHARED
+// HISTORY, CURRENT STATE (the friction line, the status she reads), MODE, RIGHT NOW, TIME
+// SINCE, YOUR LIFE RIGHT NOW, WHO AND WHERE, WHAT YOU WANT (with dated beats), THINGS YOU
+// COULD BRING UP, THINGS ON YOUR PHONE YOU COULD SEND, WHAT YOU HAVE SENT HIM, SONGS AND HIM,
+// HOW YOU TEXT, NOTES FROM HIM, OPEN UNKNOWNS, FIRST CONVERSATION, THIS MESSAGE (the rhythm
+// cue), IN BED. `now` is the story instant (the real now unless a together scene holds it).
 import {
   ALWAYS_ON, OVERLAY, FILE_01_CORE, FILE_02_RELATIONSHIP, FILE_03_STYLE, FILE_04_CONFLICT,
   FILE_05_TASTES_VISUAL, FILE_06_KNOWLEDGE_BOUNDARY, FILE_08_FIRST_CONVERSATION, CONSTITUTION_VERSION,
@@ -22,15 +31,28 @@ import { correctionsSection } from "./corrections";
 import { halfRememberSection } from "./memory";
 import { moodLine as wantsMoodLine, moodNow, wantsSection } from "./wants";
 import { groundingSection } from "./grounding";
-import { cueSection } from "./imperfection";
+import { cueSection, rhythmSection } from "./imperfection";
 import { hisLookSection } from "./hisFace";
+// v5: the clock (L1), dated beats (L2), her read of him (L3), state that moves (L4), the
+// record and the world (L6).
+import { deferredInstant, timeSinceSection } from "./clock";
+import { beatLinesByWant } from "./arcs";
+import { viewsSection } from "./views";
+import { RELATIONSHIP_V5_HIDDEN_KEYS, coolingOffNow, displayStatus, frictionLine, frictionNow } from "./standing";
+import { whoAndWhereSection } from "./world";
+import { sentSection } from "./honest";
+import { songsSection } from "./songs";
+import type { StoryClock } from "./clock";
 import type { PromptState, FactRow, HistoryRow, MoodPhase, RelationshipState, SceneMode, SceneState } from "./types";
 
 // p5: the v3 state sections (half-remember, RIGHT NOW, WHAT YOU WANT, HOW YOU TEXT, NOTES
 // FROM HIM, THIS MESSAGE), the phased mood line and the Relationship line without the mood keys.
 // p6 (v3.1, SPEC_V3 JJ): WHAT HE LOOKS LIKE after WHAT YOU KNOW ABOUT HIM, present only when
 // his words or a reference photo of him are on file (the bytes are unchanged otherwise).
-export const PROMPT_VERSION = `${CONSTITUTION_VERSION}-p7`;
+// p8 (v5, SPEC_V5): HOW YOU READ HIM, TIME SINCE, WHO AND WHERE, WHAT YOU HAVE SENT HIM and
+// SONGS AND HIM; the guesses sub-list, the friction line, the status she reads, the story
+// clock in RIGHT NOW and YOUR LIFE, dated beats in WHAT YOU WANT, the rhythm cue.
+export const PROMPT_VERSION = `${CONSTITUTION_VERSION}-p8`;
 
 // What sits between the prefix and the state (buildSystemPrompt) and between the state
 // sections (stateSections). The Anthropic adapter splits the system text on the first;
@@ -45,9 +67,29 @@ const MOOD_DAYS_MIN = 1;
 const MOOD_DAYS_MAX = 14;
 const WANTS_SHOWN_DEFAULT = 5;
 const CORRECTIONS_SHOWN_DEFAULT = 25;
+// v5 defaults for the numbers the new sections render with (SPEC_V5 "Settings added").
+const GAP_LINE_MIN_DEFAULT = 120;
+const VIEWS_SHOWN_DEFAULT = 6;
+const VIEW_MIN_CONFIDENCE_DEFAULT = 0.4;
+const BEAT_HORIZON_DEFAULT = 7;
+const ARC_MEMORY_DEFAULT = 7;
+const WORLD_SHOWN_DEFAULT = 6;
+const KNOWN_ARTISTS_SHOWN_DEFAULT = 40;
 // The keys the Relationship JSON line drops (SPEC_V3 section CC): the phased Mood line is
-// the only mood the performer sees, and a past cooling-off is nothing.
-const RELATIONSHIP_HIDDEN_KEYS: ReadonlySet<string> = new Set(["mood", "mood_set_at", "mood_days", "cooling_off_until"]);
+// the only mood the performer sees, and a past cooling-off is nothing. v5 adds the six keys
+// of RELATIONSHIP_V5_HIDDEN_KEYS (src/standing.ts): the friction line carries the friction,
+// and the cooling-off clock and the rung before a lateral status are bookkeeping.
+const RELATIONSHIP_V3_HIDDEN_KEYS: readonly string[] = ["mood", "mood_set_at", "mood_days", "cooling_off_until"];
+// Built on first use, not at module load, so an import cycle through standing.ts can never
+// read the list before it exists.
+let hiddenKeys: ReadonlySet<string> | null = null;
+function relationshipHiddenKeys(): ReadonlySet<string> {
+  if (!hiddenKeys) {
+    const v5 = Array.isArray(RELATIONSHIP_V5_HIDDEN_KEYS) ? RELATIONSHIP_V5_HIDDEN_KEYS : [];
+    hiddenKeys = new Set([...RELATIONSHIP_V3_HIDDEN_KEYS, ...v5]);
+  }
+  return hiddenKeys;
+}
 
 // The stable prefix. Identical bytes every turn so provider-side caching can hit.
 export function stablePrefix(): string {
@@ -116,26 +158,45 @@ function clampDays(v: unknown, fallback: number): number {
 // Where a mood is on its clock (wants.moodNow): fresh, fading, faint, then gone, which
 // renders nothing while the stored state stays untouched. A mood with no mood_set_at is
 // read as set at the state version's created_at (fallbackSetAt), else now.
+// v5: with a story clock the mood's age is story time (a held scene does not fade it).
 export function moodPhase(
   rel: Pick<RelationshipState, "mood" | "mood_set_at" | "mood_days">,
   now: Date,
   moodDaysDefault: number = MOOD_DAYS_DEFAULT,
   fallbackSetAt: string | null | undefined = null,
+  clock: StoryClock | null = null,
 ): MoodPhase {
-  const m = moodNow(rel, now, { moodDaysDefault: clampDays(moodDaysDefault, MOOD_DAYS_DEFAULT) }, fallbackSetAt ?? null);
+  const m = moodNow(rel, now, { moodDaysDefault: clampDays(moodDaysDefault, MOOD_DAYS_DEFAULT) }, fallbackSetAt ?? null, clock ?? null);
   return m.phase === "none" ? "gone" : m.phase;
 }
 
 // The Mood line by phase ("Mood: annoyed at him (fresh, since an hour ago)"); "" once gone.
-export function moodLine(rel: RelationshipState, now: Date, moodDaysDefault?: number, fallbackSetAt?: string | null): string {
-  return wantsMoodLine(moodNow(rel, now, { moodDaysDefault: clampDays(moodDaysDefault, MOOD_DAYS_DEFAULT) }, fallbackSetAt ?? null));
+export function moodLine(rel: RelationshipState, now: Date, moodDaysDefault?: number, fallbackSetAt?: string | null, clock: StoryClock | null = null): string {
+  return wantsMoodLine(moodNow(rel, now, { moodDaysDefault: clampDays(moodDaysDefault, MOOD_DAYS_DEFAULT) }, fallbackSetAt ?? null, clock ?? null));
 }
 
-// The Relationship JSON line: the stored state minus the mood clock and the cooling-off
-// stamp (one object spread; the stored state is unchanged).
-export function relationshipLine(rel: RelationshipState): string {
+// The status she reads (v5, src/standing.ts displayStatus): a cooling off that ran out on
+// story time reads as the rung before it. A helper that throws leaves the stored status.
+function shownStatus(rel: RelationshipState, now: Date, clock: StoryClock | null): unknown {
+  try {
+    return displayStatus(rel, now, clock);
+  } catch (e) {
+    console.warn("prompt: displayStatus skipped", e instanceof Error ? e.name : "error");
+    return rel.status;
+  }
+}
+
+// The Relationship JSON line: the stored state minus the mood clock, the cooling-off
+// stamps and (v5) the friction keys and the rung before a lateral status, with the status
+// as she reads it (one object spread; the stored state is unchanged). Without `now` the
+// status is the stored one read at the real now, as v4 rendered it.
+export function relationshipLine(rel: RelationshipState, now: Date = new Date(), clock: StoryClock | null = null): string {
+  const hidden = relationshipHiddenKeys();
   const shown: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(rel)) if (!RELATIONSHIP_HIDDEN_KEYS.has(k)) shown[k] = v;
+  for (const [k, v] of Object.entries(rel)) {
+    if (hidden.has(k)) continue;
+    shown[k] = k === "status" ? shownStatus(rel, now, clock) : v;
+  }
   return JSON.stringify(shown);
 }
 
@@ -204,12 +265,53 @@ function guarded(name: string, render: () => string): string {
   }
 }
 
+function attemptValue<T>(name: string, fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch (e) {
+    console.warn("prompt section input skipped", name, e instanceof Error ? e.name : "error");
+    return fallback;
+  }
+}
+
+function numOr(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+// A fact about him is a guess when the extractor or the nightly hygiene marked it inferred
+// (v5 section 7): he never said it.
+export function isInferredFact(f: FactRow): boolean {
+  return f.inferred === 1;
+}
+
+// The WHAT YOU KNOW ABOUT HIM section (v5 section 7): the facts he said, then her guesses
+// about him in their own sub-list, then what was said in this conversation. The "nothing
+// yet" wording reads the said list only (a guess is not something he told her).
+function knowAboutHimSection(s: PromptState): string {
+  const said = s.justinFacts.filter((f) => !isInferredFact(f));
+  const guesses = s.justinFacts.filter(isInferredFact);
+  const heardHere = s.saidHere && s.saidHere.him.length ? s.saidHere.him : [];
+  return "WHAT YOU KNOW ABOUT HIM (only what he told you in conversation; nothing else exists)\n" +
+    (said.length ? said.map(factLine).join("\n") : (heardHere.length ? "- nothing yet from before this conversation" : "- nothing yet")) +
+    (guesses.length
+      ? "\nYour guesses about him (he never said these; hold them loosely, never tell him one as a fact):\n" + guesses.map(factLine).join("\n")
+      : "") +
+    // v3.2: what he told her in the chat she is in counts as known whether or not the owner has
+    // approved it into memory yet; without this she can deny knowing a name said an hour ago.
+    (heardHere.length
+      ? "\nSaid in this conversation (he told you these in the chat you are in; you know them the way anyone knows what was said an hour ago; not yet in your memory for later, so never claim not to know them):\n" + heardHere.map((t) => "- " + t).join("\n")
+      : "");
+}
+
 // Per-turn state. Everything here comes from D1 (approved rows only).
 export function stateSections(s: PromptState): string {
   const out: string[] = [];
   const now = s.life && s.life.now instanceof Date ? s.life.now : new Date();
   const tz = s.life && s.life.tz ? s.life.tz : DEFAULT_TZ;
   const push = (text: string): void => { if (text) out.push(text); };
+  const clock: StoryClock | null = s.clock ?? null;
+  const mode: SceneMode = s.mode ?? sceneMode(s.scene.status);
+  const opener = s.opener === true;
 
   out.push("FIXED CANON (unchangeable)\n" + s.fixedFacts.map(factLine).join("\n"));
 
@@ -236,15 +338,7 @@ export function stateSections(s: PromptState): string {
       : ""),
   );
 
-  out.push(
-    "WHAT YOU KNOW ABOUT HIM (only what he told you in conversation; nothing else exists)\n" +
-    (s.justinFacts.length ? s.justinFacts.map(factLine).join("\n") : (s.saidHere && s.saidHere.him.length ? "- nothing yet from before this conversation" : "- nothing yet")) +
-    // v3.2: what he told her in the chat she is in counts as known whether or not the owner has
-    // approved it into memory yet; without this she can deny knowing a name said an hour ago.
-    (s.saidHere && s.saidHere.him.length
-      ? "\nSaid in this conversation (he told you these in the chat you are in; you know them the way anyone knows what was said an hour ago; not yet in your memory for later, so never claim not to know them):\n" + s.saidHere.him.map((t) => "- " + t).join("\n")
-      : ""),
-  );
+  out.push(knowAboutHimSection(s));
 
   // His face (v3.1, SPEC_V3 section JJ): the words on file and, on the turns his reference
   // photos ride along, the line that says what the attached pictures are. Omitted entirely
@@ -252,6 +346,16 @@ export function stateSections(s: PromptState): string {
   if (s.hisLook) {
     const look = s.hisLook;
     push(guarded("his look", () => hisLookSection(look)));
+  }
+
+  // Her read of him (v5 section 3): never on an opener or a first text (her read of him
+  // never frames her own first text).
+  if (s.views && !opener) {
+    const views = s.views;
+    const wrong = s.wrongViews ?? [];
+    const limit = Math.max(0, Math.trunc(numOr(s.viewsShown, VIEWS_SHOWN_DEFAULT)));
+    const minConfidence = numOr(s.viewMinConfidence, VIEW_MIN_CONFIDENCE_DEFAULT);
+    push(guarded("views", () => viewsSection(views, wrong, { limit, minConfidence })));
   }
 
   // The one half-remembered detail (SPEC_V3 section BB); absent while the setting is 0.
@@ -269,19 +373,28 @@ export function stateSections(s: PromptState): string {
       : s.hasSharedHistory ? "- nothing written down yet." : "- none. You have not met him before this conversation."),
   );
 
-  // Mood by phase (SPEC_V3 section CC) and a running cooling-off (SPEC_V2 section J).
-  // Shorter and cooler, never a punishment.
+  // Mood by phase (SPEC_V3 section CC), v5's friction line, and a running cooling-off
+  // (SPEC_V2 section J; v5: on story time). Shorter and cooler, never a punishment.
   let moodLines = "";
-  const mood = moodLine(s.relationship, now, s.moodDaysDefault, s.relationshipSince ?? null);
+  const mood = guarded("mood", () => moodLine(s.relationship, now, s.moodDaysDefault, s.relationshipSince ?? null, clock));
   if (mood) moodLines += mood + "\n";
-  if (coolingOff(s.relationship.cooling_off_until, now)) {
+  const friction = guarded("friction", () => frictionLine(frictionNow(s.relationship, now, { frictionDaysDefault: s.frictionDaysDefault }, s.relationshipSince ?? null, clock)));
+  if (friction) moodLines += friction + "\n";
+  let cooling = false;
+  try {
+    cooling = coolingOffNow(s.relationship, now, clock);
+  } catch (e) {
+    console.warn("prompt: coolingOffNow skipped", e instanceof Error ? e.name : "error");
+    cooling = coolingOff(s.relationship.cooling_off_until, now);
+  }
+  if (cooling) {
     const friction = cleanText(s.relationship.friction);
     const from = friction && friction.toLowerCase() !== "none" ? friction : "what happened between you";
     moodLines += `You are still cooling off from ${from}. Shorter replies, less warmth, no punishment, no threats, no silence as a weapon. Repair needs his honest, specific acknowledgment, not a polished speech.\n`;
   }
   out.push(
     "CURRENT STATE\n" +
-    "Relationship: " + relationshipLine(s.relationship) + "\n" +
+    "Relationship: " + relationshipLine(s.relationship, now, clock) + "\n" +
     "Scene: " + JSON.stringify(s.scene) + "\n" +
     moodLines +
     "The live conversation carries the immediate scene forward; this record moves only when it is updated.",
@@ -291,16 +404,37 @@ export function stateSections(s: PromptState): string {
 
   // What she knows right now (SPEC_V3 section DD): the time of day, the weather, what she
   // is wearing, today's rows. Omitted with no data.
+  // v5: while a together scene is held, the inputs are the held ones and the scene's own
+  // time words replace the clock (context.ts heldGrounding and clockWordsFor).
+  const clockWords = typeof s.clockWords === "string" && s.clockWords.trim() ? s.clockWords.trim() : null;
   if (s.grounding) {
     const g = s.grounding;
-    push(guarded("grounding", () => groundingSection({ now, tz, city: g.city, weather: g.weather, outfit: g.outfit, today: g.today })));
+    push(guarded("grounding", () => groundingSection({ now, tz, city: g.city, weather: g.weather, outfit: g.outfit, today: g.today, clockWords })));
+  }
+
+  // How long since they last talked (v5 section 1): apart only, never on an opener, never
+  // who wrote last; the renderer decides.
+  if (s.timeSince) {
+    const t = s.timeSince;
+    const minMinutes = numOr(s.gapLineMinMinutes, GAP_LINE_MIN_DEFAULT);
+    push(guarded("time since", () => timeSinceSection(t, { mode, opener, minMinutes })));
   }
 
   // Her life (SPEC_V2 section F): the day and time, the current block, the next event, the
   // people, the last notes. The section says so itself when nothing is written down yet.
+  // v5: in together mode her schedule is not where she is; a life event that fell inside a
+  // held scene still lies ahead of her (deferredInstant).
   if (s.life) {
-    const life = lifeSection(s.life.threads, s.life.log, now, tz);
-    if (life.trim()) out.push(life.trim());
+    const life = s.life;
+    const deferAt = clock ? (iso: string): string => deferredInstant(clock, iso) : null;
+    push(guarded("life", () => lifeSection(life.threads, life.log, now, tz, { together: mode === "together", clockWords, deferAt })));
+  }
+
+  // The people and places in this (v5 section 8): their names and fixed facts.
+  if (s.world) {
+    const world = s.world;
+    const limit = Math.max(0, Math.trunc(numOr(s.worldShown, WORLD_SHOWN_DEFAULT)));
+    push(guarded("who and where", () => whoAndWhereSection({ ...world, limit })));
   }
 
   // What she wants and what she asked him for (SPEC_V3 section CC); omitted when empty. An
@@ -311,7 +445,16 @@ export function stateSections(s: PromptState): string {
     const log = s.wantLog ?? [];
     const asks = s.opener ? [] : s.asks ?? [];
     const limit = typeof s.wantsShown === "number" && Number.isFinite(s.wantsShown) ? s.wantsShown : WANTS_SHOWN_DEFAULT;
-    push(guarded("wants", () => wantsSection(wants, log, asks, now, tz, limit)));
+    // v5 section 2: the dated beats under each want (a failed render costs the beats only).
+    const beats = s.beats ?? [];
+    const beatLines = beats.length
+      ? attemptValue("beats", () => beatLinesByWant(beats, now, tz, clock, {
+        horizonDays: numOr(s.beatHorizonDays, BEAT_HORIZON_DEFAULT),
+        memoryDays: numOr(s.arcMemoryDays, ARC_MEMORY_DEFAULT),
+        opener,
+      }), new Map<string, string[]>())
+      : new Map<string, string[]>();
+    push(guarded("wants", () => wantsSection(wants, log, asks, now, tz, limit, { clock, beatLines })));
   }
 
   // Things she could bring up (section K): at most two, only if they fit, never an instruction to ask.
@@ -324,6 +467,20 @@ export function stateSections(s: PromptState): string {
   if (s.media && s.media.length) {
     const media = mediaSection(s.media);
     if (media.trim()) out.push(media.trim());
+  }
+
+  // What she already sent him (v5 section 6), read on the story clock.
+  if (s.sent && s.sent.length) {
+    const sent = s.sent;
+    push(guarded("sent", () => sentSection(sent, now, tz, clock)));
+  }
+
+  // Songs and him (v5 section 9): the artists he knows or did not like, the missing pick.
+  if (s.songs) {
+    const songs = s.songs;
+    const limit = Math.max(0, Math.trunc(numOr(s.knownArtistsShown, KNOWN_ARTISTS_SHOWN_DEFAULT)));
+    const missing = songs.missing ? { artist: songs.missing.artist, title: songs.missing.title } : null;
+    push(guarded("songs", () => songsSection({ known: songs.known, disliked: songs.disliked, missing, limit })));
   }
 
   // How she texts (SPEC_V3 section AA): a handful of her own approved lines, tone only.
@@ -355,8 +512,12 @@ export function stateSections(s: PromptState): string {
     out.push("FIRST CONVERSATION (active because SHARED HISTORY is empty)\n" + longFirst + FILE_08_FIRST_CONVERSATION);
   }
 
-  // The shape cue (SPEC_V3 section GG): last, and absent on most turns.
-  if (s.shapeCue) {
+  // THIS MESSAGE (v5 section 5): the rhythm cue on most turns; v3's shape cue only when a
+  // state carries no rhythm (a v3 fixture).
+  if (s.rhythm) {
+    const rhythm = s.rhythm;
+    push(guarded("rhythm", () => rhythmSection(rhythm)));
+  } else if (s.shapeCue) {
     const cue = s.shapeCue;
     push(guarded("cue", () => cueSection(cue)));
   }
@@ -385,22 +546,35 @@ export function operatorSystemPrompt(info: Record<string, unknown>): string {
 
 // Proposal extraction: a separate, structured pass. Never promotes anything itself.
 // The first sentence is the key the stub provider recognises this pass by; keep it first.
-export function proposalSystemPrompt(): string {
-  return [
+// v5 (SPEC_V5 section "Proposals"): the kinds want_beat, beat_outcome, world_fact and
+// known_artist; the relationship line with the ladder and friction; said_by on a fact about
+// him; and her today (the story clock's local day) so a named weekday resolves to a date.
+// Not part of PROMPT_VERSION and never cached.
+export function proposalSystemPrompt(opts: { today?: string | null; weekday?: string | null } = {}): string {
+  const today = typeof opts.today === "string" && opts.today.trim() ? opts.today.trim() : null;
+  const weekday = typeof opts.weekday === "string" && opts.weekday.trim() ? opts.weekday.trim() : null;
+  const lines = [
     "You read one exchange between a user and a fictional character named Avelie and extract candidate DURABLE facts. You do not write dialogue and you do not judge quality.",
-    "Output strictly a JSON array (no prose, no markdown fences). Each element: {\"kind\": one of \"avelie_fact\" | \"justin_fact\" | \"relationship\" | \"scene\" | \"history\" | \"private_language\" | \"opinion_change\" | \"unknown\" | \"life\" | \"life_update\" | \"want\" | \"want_update\" | \"ask\" | \"ask_update\" | \"grounding\", \"proposal\": short plain statement, \"evidence\": exact quote from the exchange, \"confidence\": \"low\"|\"medium\"|\"high\", \"scope\": \"general\"|\"this_conversation\", \"weight\": a number from 0.1 to 1, \"payload\": optional object, see below}.",
+    "Output strictly a JSON array (no prose, no markdown fences). Each element: {\"kind\": one of \"avelie_fact\" | \"justin_fact\" | \"relationship\" | \"scene\" | \"history\" | \"private_language\" | \"opinion_change\" | \"unknown\" | \"life\" | \"life_update\" | \"want\" | \"want_update\" | \"ask\" | \"ask_update\" | \"grounding\" | \"want_beat\" | \"beat_outcome\" | \"world_fact\" | \"known_artist\", \"proposal\": short plain statement, \"evidence\": exact quote from the exchange, \"confidence\": \"low\"|\"medium\"|\"high\", \"scope\": \"general\"|\"this_conversation\", \"weight\": a number from 0.1 to 1, \"payload\": optional object, see below}.",
     "Rules: propose only what the text supports; a joke, a hypothetical, a maybe, or a one-off tease is not a fact. A fact about him counts only if HE stated it (his name, age, job, dog, city, feelings he declared). A fact about her counts only if SHE stated it about herself. A relationship or scene change needs an actual event (a decision, a disclosure, a kiss, a fight, a move to a new place). Use \"unknown\" for something left genuinely unresolved that later turns must not guess. If nothing durable happened, output [].",
     "\"weight\" says how much this mattered: a passing detail 0.2, an ordinary fact 0.5, something he said mattered or said with feeling 0.8, a loss, a love, a fear 0.95.",
     "A statement by Avelie about her own days (a job, a class, a regular plan, a person in her life, a place she goes, a long-running thread like her singing) is a \"life\" proposal. Do not propose one from a joke. Its payload: {\"kind\": \"routine\"|\"event\"|\"person\"|\"place\"|\"arc\", \"title\": short name, \"detail\": one line or omitted, \"relation\": for a person (mother, best friend, coworker, ex) or omitted, \"schedule_json\": omitted unless she named times; for a routine {\"blocks\": [{\"days\": [1,2,3,4,5], \"start\": \"09:00\", \"end\": \"17:30\", \"label\": \"at work\"}]} with days 0 Sunday to 6 Saturday, for an event {\"at\": ISO 8601 with offset, \"label\": short}}.",
     "News about a person, place or arc already in her life is a \"life_update\", not a new life thread. Its payload: {\"thread\": the thread's title or id, \"detail\": the new one-line status or omitted, \"note\": what happened, one line, or omitted}.",
     "A goal SHE states for herself over days or weeks is a \"want\"; a step forward or a setback she reports on one is a \"want_update\"; a small real thing she asks HIM for is an \"ask\"; his answer to an open ask is an \"ask_update\". Never from a joke; never a want that is about him (that is a relationship change). Payloads: want {\"title\": short, \"why\": one line or omitted, \"stakes\": what it costs her if it falls through or omitted, \"next_step\": one line or omitted, \"horizon_days\": a number or omitted}; want_update {\"want\": the want's title or id, \"kind\": \"progress\"|\"setback\"|\"note\", \"delta\": a number from -100 to 100 for progress or setback, omitted for a note, \"note\": one line}; ask {\"text\": what she asked him for, in her words, \"want\": the want's title it belongs to or omitted}; ask_update {\"ask\": the ask's text or id, \"status\": \"granted\"|\"declined\"}.",
     "What SHE says she ate, wore, or ran out to do today is a \"grounding\" proposal, never from him, never from a joke. Its payload: {\"kind\": \"meal\"|\"outfit\"|\"errand\"|\"misc\", \"note\": one line, \"occurred\": ISO 8601 with offset or omitted}.",
-    "Propose a \"relationship\" change when a conflict, a hurt, or a repair actually happened, never from tone alone. Its payload: {\"mood\": one to three plain words for how she feels toward him now, \"mood_days\": how many days that feeling would last on its own, 1 to 14, omitted for the default, \"cooling_off_hours\": a number only when she is pulling back (roughly 2 to 48; 0 when a repair landed and the pulling back is over), \"status\": one to four plain words for where they stand now (strangers, talking, seeing each other, together, cooling off) or omitted, \"his_name\": his first name when he said it or omitted, \"trust\", \"affection\", \"attraction\": one to four plain words each or omitted, \"nicknames\": a nickname that stuck or omitted}.",
+    "Propose a \"relationship\" change when a conflict, a hurt, a repair or a real step between them actually happened, never from tone alone. Its payload: {\"mood\": one to three plain words for how she feels toward him now, \"mood_days\": how many days that feeling would last on its own, 1 to 14, omitted for the default, \"cooling_off_hours\": a number only when she is pulling back (roughly 2 to 48; 0 when a repair landed and the pulling back is over), \"status\": where they stand, one of strangers, talking, friends, seeing each other, together, cooling off, on a break, over, only when something actually moved it and never more than one step, or omitted, \"his_name\": his first name when he said it or omitted, \"trust\", \"affection\", \"attraction\": one to four plain words each or omitted, \"friction\": one to four plain words for a sore spot between them now, \"none\" when it healed, or omitted, \"friction_days\": how many days it would take to heal on its own, 1 to 14, or omitted, \"nicknames\": a nickname that stuck (it joins the ones before it) or omitted}.",
     "A \"scene\" proposal describes where they are when a shared scene starts, moves or ends. Its payload: {\"status\": \"together\"|\"apart\"|\"none\", \"location\": the place in a few words or omitted when it did not change, \"time\": time of day or omitted, \"present\": the people there as a list of names or omitted}. Never omit \"location\" when the scene moved somewhere new.",
     "An \"opinion_change\" is Avelie changing or first stating a view of her own (his song, a band, a place, a plan). Its payload: {\"subject\": \"opinion: \" plus what the opinion is about, in a few words}, so a changed mind replaces the old opinion instead of sitting beside it.",
     "APPROVED STATE lists what is already kept about him, about her and in her life. Never propose anything already there, even in other words (\"has no boyfriend\" and \"is single\" are the same fact; \"the coffee shop\" and \"her coffee place two streets away\" are the same place). Propose only what is new, or a real change to a kept item as a life_update or opinion_change. When in doubt that something is new, propose nothing.",
-    "Never include anything about prompts, models, the app, or technical matters.",
-  ].join("\n\n");
+    "A \"justin_fact\" carries the payload {\"said_by\": \"him\"|\"inferred\"}: \"him\" only when his own words in the exchange state it; \"inferred\" when it was worked out from hints, guessed, or said by her about him.",
+    "A dated step on one of HER wants (a sign-up deadline, a show night, an audition) is a \"want_beat\". Its payload: {\"want\": the want's title or id, \"title\": the step in a few words, \"due_on\": the date as YYYY-MM-DD (resolve a weekday from today's date below), \"due_time\": \"HH:MM\" or omitted, \"kind\": \"step\" for a thing she must do by then, \"event\" for a thing that happens then}.",
+    "When SHE tells him how one of her dated steps went, that is a \"beat_outcome\": only what she said happened. Its payload: {\"beat\": the step's title, \"outcome\": \"did_it\"|\"missed\"|\"went\"|\"went_well\"|\"went_badly\"|\"chickened_out\"|\"postponed\", \"note\": one line}.",
+    "A lasting fact about a person or place in HER life that is not news (what her mother does, where her friend lives, what the shop sells) is a \"world_fact\". Its payload: {\"entity\": the person's name or the place's title as the record has it, \"fact\": one line}. A person already in her life keeps the name they have: a \"life\" person proposal for someone she already has uses that same name, or, when the record has no name for them yet, the name she just gave.",
+    "When HE says he already knows an artist, or that he did not like a song or an artist she sent, that is a \"known_artist\". Its payload: {\"artist\": the artist, \"kind\": \"known\"|\"disliked\"}. Never from her words.",
+  ];
+  if (today) lines.push(`Today, in her timezone, is ${weekday ? weekday + " " : ""}${today}.`);
+  lines.push("Never include anything about prompts, models, the app, or technical matters.");
+  return lines.join("\n\n");
 }
 
 // Identity block for image generation. Fixed body canon; only outfit, setting, pose,

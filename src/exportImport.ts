@@ -10,6 +10,14 @@
 // the grounding log, calls, tastings, marks) with the same one-of rules the schema
 // states; a table absent from the payload keeps its rows, one present replaces them.
 // visual_assets rows with roles portrait and video merge like the rest.
+//
+// v5 (SPEC_V5 "Export, import"): the export and the import carry her clock's held spans,
+// the nightly pass's day ledger, dated beats and their runs, her reads of him, the people of
+// her life, the fixed facts of her people and places, and the artists he knows; facts carry
+// their guess flag and messages the missing-song stamp. One exception to "absent keeps its
+// rows": story_clock is derived from the scene versions, so an import that replaces the
+// scene's versions with no storyClock key in the payload clears it in the same batch, and the
+// next clock read derives the spans of the restored record afresh.
 import { CONSTITUTION_VERSION } from "./generated/constitution";
 import { PROMPT_VERSION } from "./prompt";
 import { DEFAULT_SETTINGS, auditStmt, getSettings, listMessages, newId, nowIso, putSettings } from "./db";
@@ -67,6 +75,16 @@ const EXTRA_TABLES: ReadonlyArray<{ key: string; sql: string }> = [
   // under its key). NEVER spotify_auth (the tokens live in D1 only and leave through
   // nothing), never panel_cache (a cache).
   { key: "places", sql: "SELECT * FROM places ORDER BY created_at, id" },
+  // v5 (SPEC_V5 0009): her clock's held spans, the nightly day ledger, beats and their runs,
+  // her reads of him, her people, the fixed facts of her world, the artists he knows.
+  { key: "storyClock", sql: "SELECT * FROM story_clock ORDER BY opened_version" },
+  { key: "nightlyRuns", sql: "SELECT * FROM nightly_runs ORDER BY day, step" },
+  { key: "arcBeats", sql: "SELECT * FROM arc_beats ORDER BY created_at, id" },
+  { key: "beatRuns", sql: "SELECT * FROM beat_runs ORDER BY created_at, id" },
+  { key: "herViews", sql: "SELECT * FROM her_views ORDER BY created_at, id" },
+  { key: "people", sql: "SELECT * FROM people ORDER BY created_at, id" },
+  { key: "worldFacts", sql: "SELECT * FROM world_facts ORDER BY created_at, id" },
+  { key: "knownArtists", sql: "SELECT * FROM known_artists ORDER BY created_at, id" },
 ];
 
 async function collectRows(db: D1Database): Promise<Record<string, unknown>> {
@@ -142,6 +160,13 @@ interface TableSpec {
   table: string;
   key: string;
   cols: Col[];
+  // How many leading columns make the row key (default 1): memory_weights and nightly_runs
+  // are keyed on a pair.
+  keyCols?: number;
+  // Column sets the schema holds UNIQUE (NULLs never collide), checked before the batch so
+  // a payload that would break one is refused with a 400 instead of failing the batch. A
+  // `where` narrows the set to rows with that column value (a partial unique index).
+  unique?: ReadonlyArray<{ cols: readonly string[]; where?: { col: string; value: string } }>;
 }
 
 // The same ceilings the API enforces (api.ts, state.ts, chat.ts, proposals.ts).
@@ -200,6 +225,9 @@ const MESSAGES: TableSpec = {
     // stays never pushed instead of being stamped with the import time.
     { name: "spotify_status", type: "text", max: 20 },
     { name: "pushed_at", type: "text", max: TIME_MAX },
+    // v5 (0009_v5.sql): the one-time missing-song notice rode on this turn (nullable, never
+    // stamped with the import time).
+    { name: "song_told_at", type: "text", max: TIME_MAX },
   ],
 };
 
@@ -219,6 +247,8 @@ const FACTS: TableSpec = {
     { name: "supersedes_id", type: "text", max: ID_MAX },
     { name: "created_at", type: "time", max: TIME_MAX },
     { name: "updated_at", type: "time", max: TIME_MAX },
+    // v5 (0009_v5.sql, section 7): 1 = a guess about him, never his own words.
+    { name: "inferred", type: "int", default: 0 },
   ],
 };
 
@@ -594,11 +624,179 @@ const PLACES: TableSpec = {
   ],
 };
 
+// ------------------------------------------------------------------ v5 tables (SPEC_V5 migration 0009)
+
+// The caps follow the modules that write them (clock.ts, nightly.ts, arcs.ts, views.ts,
+// world.ts, songs.ts); a row the runtime wrote always restores.
+const SCENE_TIME_MAX = 100;
+const PLACE_TITLE_MAX = 300;
+// The held snapshot (weather, outfit, up to 30 of the day's rows) as JSON text.
+const CLOCK_JSON_MAX = 60_000;
+const NIGHTLY_RESULT_MAX = 4000;
+const EVIDENCE_JSON_MAX = 8000;
+const DAY_MAX = 10;
+const HHMM_MAX = 5;
+
+const STORY_CLOCK: TableSpec = {
+  table: "story_clock",
+  key: "storyClock",
+  cols: [
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "opened_version", type: "int", required: true },
+    // The instant the scene froze is the record's, never the import's: required, not stamped.
+    { name: "frozen_at", type: "text", required: true, max: TIME_MAX },
+    { name: "closed_version", type: "int" },
+    { name: "resumed_at", type: "text", max: TIME_MAX },
+    { name: "location", type: "text", max: PLACE_TITLE_MAX },
+    { name: "weather_json", type: "text", max: CLOCK_JSON_MAX },
+    { name: "outfit_json", type: "text", max: CLOCK_JSON_MAX },
+    { name: "today_json", type: "text", max: CLOCK_JSON_MAX },
+    { name: "prior_time", type: "text", max: SCENE_TIME_MAX },
+    { name: "beats_shifted_at", type: "text", max: TIME_MAX },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
+  ],
+  unique: [{ cols: ["opened_version"] }],
+};
+
+const NIGHTLY_RUNS: TableSpec = {
+  table: "nightly_runs",
+  key: "nightlyRuns",
+  keyCols: 2,
+  cols: [
+    { name: "day", type: "text", required: true, max: DAY_MAX },
+    { name: "step", type: "text", required: true, oneOf: ["her_day", "arcs", "views", "hygiene"] },
+    { name: "ran_at", type: "time", max: TIME_MAX },
+    { name: "status", type: "text", required: true, oneOf: ["done", "skipped", "failed"] },
+    { name: "result_json", type: "text", max: NIGHTLY_RESULT_MAX },
+  ],
+};
+
+const ARC_BEATS: TableSpec = {
+  table: "arc_beats",
+  key: "arcBeats",
+  cols: [
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "want_id", type: "text", required: true, max: ID_MAX },
+    { name: "title", type: "text", required: true, max: 200 },
+    { name: "kind", type: "text", required: true, oneOf: ["step", "event"] },
+    { name: "due_on", type: "text", required: true, max: DAY_MAX },
+    { name: "due_time", type: "text", max: HHMM_MAX },
+    // A story instant, not a stamp: required, never the import time.
+    { name: "due_at", type: "text", required: true, max: TIME_MAX },
+    { name: "variants_json", type: "text", max: 4000 },
+    { name: "status", type: "text", default: "active", oneOf: ["active", "cancelled"] },
+    { name: "source", type: "text", max: 500 },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
+  ],
+};
+
+const BEAT_RUNS: TableSpec = {
+  table: "beat_runs",
+  key: "beatRuns",
+  cols: [
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "beat_id", type: "text", required: true, max: ID_MAX },
+    { name: "reader", type: "text", default: "owner", max: 40 },
+    { name: "status", type: "text", default: "pending", oneOf: ["pending", "proposed", "resolved", "skipped"] },
+    { name: "due_at", type: "text", required: true, max: TIME_MAX },
+    { name: "outcome", type: "text", oneOf: ["did_it", "missed", "went", "went_well", "went_badly", "chickened_out", "postponed"] },
+    { name: "variant_id", type: "text", max: 20 },
+    { name: "outcome_note", type: "text", max: 1000 },
+    { name: "his_part", type: "text", oneOf: ["encouraged", "asked", "came", "forgot", "none"] },
+    { name: "his_note", type: "text", max: 1000 },
+    { name: "evidence_json", type: "text", max: EVIDENCE_JSON_MAX },
+    { name: "proposal_id", type: "text", max: ID_MAX },
+    { name: "attempts", type: "int", default: 0 },
+    { name: "shifted_ms", type: "int", default: 0 },
+    { name: "resolved_at", type: "text", max: TIME_MAX },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
+  ],
+  unique: [{ cols: ["beat_id", "reader"] }],
+};
+
+const HER_VIEWS: TableSpec = {
+  table: "her_views",
+  key: "herViews",
+  cols: [
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "subject", type: "text", required: true, max: 200 },
+    { name: "subject_norm", type: "text", required: true, max: 200 },
+    { name: "view", type: "text", required: true, max: 1000 },
+    { name: "confidence", type: "num", required: true },
+    { name: "evidence_json", type: "text", default: "[]", max: EVIDENCE_JSON_MAX },
+    { name: "status", type: "text", default: "active", oneOf: ["active", "superseded", "proven_wrong", "retired"] },
+    { name: "version", type: "int", default: 1 },
+    { name: "supersedes_id", type: "text", max: ID_MAX },
+    { name: "source", type: "text", max: 500 },
+    { name: "wrong_note", type: "text", max: 1000 },
+    { name: "wrong_evidence_json", type: "text", max: EVIDENCE_JSON_MAX },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
+  ],
+};
+
+const PEOPLE: TableSpec = {
+  table: "people",
+  key: "people",
+  cols: [
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "thread_id", type: "text", max: ID_MAX },
+    { name: "name", type: "text", required: true, max: 300 },
+    { name: "name_norm", type: "text", required: true, max: 300 },
+    { name: "relation", type: "text", max: 200 },
+    { name: "relation_norm", type: "text", max: 200 },
+    { name: "named", type: "int", default: 1 },
+    { name: "locked_at", type: "text", max: TIME_MAX },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
+  ],
+  unique: [{ cols: ["thread_id"] }, { cols: ["name_norm"] }],
+};
+
+const WORLD_FACTS: TableSpec = {
+  table: "world_facts",
+  key: "worldFacts",
+  cols: [
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "entity_kind", type: "text", required: true, oneOf: ["person", "place"] },
+    { name: "entity_id", type: "text", required: true, max: ID_MAX },
+    { name: "fact", type: "text", required: true, max: 300 },
+    { name: "fact_norm", type: "text", required: true, max: 300 },
+    { name: "source", type: "text", max: 500 },
+    { name: "status", type: "text", default: "approved", oneOf: ["approved", "retired"] },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
+  ],
+  unique: [{ cols: ["entity_kind", "entity_id", "fact_norm"], where: { col: "status", value: "approved" } }],
+};
+
+const KNOWN_ARTISTS: TableSpec = {
+  table: "known_artists",
+  key: "knownArtists",
+  cols: [
+    { name: "id", type: "text", required: true, max: ID_MAX },
+    { name: "artist", type: "text", required: true, max: 200 },
+    { name: "artist_norm", type: "text", required: true, max: 200 },
+    { name: "kind", type: "text", required: true, oneOf: ["known", "disliked"] },
+    { name: "source", type: "text", required: true, oneOf: ["button", "proposal", "owner"] },
+    { name: "message_id", type: "text", max: ID_MAX },
+    { name: "note", type: "text", max: 500 },
+    { name: "created_at", type: "time", max: TIME_MAX },
+    { name: "updated_at", type: "time", max: TIME_MAX },
+  ],
+  unique: [{ cols: ["artist_norm"] }],
+};
+
 const V3_TABLES: readonly TableSpec[] = [
   VOICE_LINES, VOICE_LINE_USES, CORRECTIONS, MEMORY_WEIGHTS, MEMORY_RECALLS, WANTS, WANT_LOG, ASKS, GROUNDING_LOG, CALLS, TASTINGS,
   TASTING_CANDIDATES, MESSAGE_MARKS,
   // v4
   PLACES,
+  // v5
+  STORY_CLOCK, NIGHTLY_RUNS, ARC_BEATS, BEAT_RUNS, HER_VIEWS, PEOPLE, WORLD_FACTS, KNOWN_ARTISTS,
 ];
 
 type Cell = string | number | null;
@@ -673,16 +871,29 @@ function prepareRows(spec: TableSpec, raw: unknown, at: string): PreparedRow[] {
   if (!Array.isArray(raw)) throw bad(spec.key, "must be an array");
   const out: PreparedRow[] = [];
   const seen = new Set<string>();
+  const uniques = (spec.unique ?? []).map(() => new Set<string>());
+  const keyCols = spec.table === "memory_weights" ? 2 : Math.max(1, spec.keyCols ?? 1);
   raw.forEach((item, i) => {
     const where = `${spec.key}[${i}]`;
     if (typeof item !== "object" || item === null || Array.isArray(item)) throw bad(where, "must be an object");
     const obj = item as Record<string, unknown>;
     const values = spec.cols.map((c) => coerce(obj[c.name], c, where, at));
     // The row key: the first column, or the first two for a table keyed on a pair.
-    const id = spec.table === "memory_weights" ? String(values[0]) + "#" + String(values[1]) : String(values[0]);
+    const id = values.slice(0, keyCols).map((v) => String(v)).join("#");
     if (seen.has(id)) throw bad(where, "duplicate id " + id);
     seen.add(id);
-    out.push({ values, get: (name) => values[spec.cols.findIndex((c) => c.name === name)] ?? null });
+    const get = (name: string): Cell => values[spec.cols.findIndex((c) => c.name === name)] ?? null;
+    (spec.unique ?? []).forEach((u, k) => {
+      if (u.where && get(u.where.col) !== u.where.value) return;
+      const parts = u.cols.map((name) => get(name));
+      if (parts.some((v) => v === null)) return;
+      const key = parts.map((v) => String(v)).join("#");
+      const set = uniques[k];
+      if (!set) return;
+      if (set.has(key)) throw bad(where, `duplicate ${u.cols.join(", ")} ${key}`);
+      set.add(key);
+    });
+    out.push({ values, get });
   });
   return out;
 }
@@ -809,6 +1020,11 @@ export async function importAll(
         const w = Number(r.get("weight"));
         if (!(w >= 0 && w <= 1)) throw bad(spec.key, "weight must be 0 to 1");
       }
+      // v5: the schema's CHECK on a read's confidence.
+      if (spec.table === "her_views") {
+        const conf = Number(r.get("confidence"));
+        if (!(conf >= 0 && conf <= 1)) throw bad(spec.key, "confidence must be 0 to 1");
+      }
     }
   }
 
@@ -849,6 +1065,15 @@ export async function importAll(
     db.prepare("DELETE FROM facts WHERE scope != 'fixed'"),
   ];
   for (const entity of entities) stmts.push(db.prepare("DELETE FROM state_versions WHERE entity = ?1").bind(entity));
+  // v5 (skeptic 3): her clock's spans are derived from the scene versions. A payload that
+  // replaces them and carries no storyClock (every pre-v5 export and snapshot) clears the
+  // spans in this batch, so the next clock read derives them from the restored record; one
+  // that carries storyClock replaces the table below like every v3 table.
+  const storyClockCarried = payload.storyClock !== undefined && payload.storyClock !== null;
+  if (entities.has("scene") && !storyClockCarried) {
+    stmts.push(db.prepare("DELETE FROM story_clock"));
+    counts.storyClockCleared = 1;
+  }
 
   for (const r of conversations) stmts.push(insertStmt(db, CONVERSATIONS, r));
   for (const r of messages) stmts.push(insertStmt(db, MESSAGES, r));

@@ -32,7 +32,7 @@ To run one of the cron jobs by hand on your machine: start the app with `npx wra
 ## Tests
 
 - `npm test` builds the canon and the voice-bank seed, checks typography, checks the master image hashes, typechecks, and runs the unit tests. No keys, no network. The v2 units cover where she is on a fixed clock, the life section, the callback picker, the song marker, the opinion supersede, the delivery delay, the bubble splitter, the first-text decision table, the push token shape, the voiceprint stats, the timeline order and the character export. The v3 units (`*_v3`) cover the voice bank rules and picker, the notes section, the new checks, the memory score and ranking, wants and the fading mood, the grounding lines, the call merge and meter, the clip gate, the shape cue, the tastings ledger, the training export and the Mac script, the v3 prompt order, the two-block cache split, the settings table and the 0005 migration.
-- `npm run test:integration` starts `wrangler dev` on port 8790 with the stub providers and drives the API end to end: a turn, a replayed turn, a failed model call, a photo, a rejected photo, export and import, the budget cap, and in v2 the life threads, a real-mode turn that hides her reply until its time, a song card, her opening a conversation, a life proposal becoming a thread, the context of a message, a drift run, the backup cron, a voice note, a photo sent to her, the media library, a first text, the timeline, the voiceprint and the character export; and in v3 the voice bank from seed to exemplars in the prompt, a correction and its bank line, memory fading and reminding, wants and asks through proposals, the fading mood, the stub weather and grounding log, a stub call from start to transcript, a stub clip with Range serving, the shape cue and its flags, a blind tasting from turn to pick, marks and the training export, and the nightly maintenance.
+- `npm run test:integration` starts `wrangler dev` on port 8790 with the stub providers and drives the API end to end: a turn, a replayed turn, a failed model call, a photo, a rejected photo, export and import, the budget cap, and in v2 the life threads, a real-mode turn that hides her reply until its time, a song card, her opening a conversation, a life proposal becoming a thread, the context of a message, a drift run, the backup cron, a voice note, a photo sent to her, the media library, a first text, the timeline, the voiceprint and the character export; and in v3 the voice bank from seed to exemplars in the prompt, a correction and its bank line, memory fading and reminding, wants and asks through proposals, the fading mood, the stub weather and grounding log, a stub call from start to transcript, a stub clip with Range serving, the shape cue and its flags, a blind tasting from turn to pick, marks and the training export, and the nightly maintenance; in v4 (on its own fresh state) the phone, places, the call face, Spotify on the stub, the album, deliveries and the memory map; and in v5 (on its own fresh state again) her clock held and resumed, the nightly story pass, dated beats and their outcomes, her read of him, the relationship ladder and friction, the rhythm cue, a denied send retried, the exact and near duplicate merges, the canon people and the name lock, and the song loop. The v5 units (`*_v5`) cover the clock's arithmetic and its sync, the nightly steps, the beats, her reads, the ladder, the rhythm tables, the new checks, the record, the song list, the world, hygiene, the prompt order, the settings, the 0009 migration, the export round trip and the stub.
 - `npm run finetune:run <file.jsonl>` is the Mac-side fine-tune script (v3): validate the export, estimate the cost, ask for the word `train`, upload, start and poll. It reads the key from the clipboard and clears it; it never writes or prints it.
 - `npm run behavior` runs the scenario suite against a running app and writes `reports/behavior_<stamp>.md`. Read docs/BEHAVIOR.md before running it against a real model, because it spends money. `--compare anthropic:claude-opus-5,openai:gpt-5` runs every scenario once per performer and writes them side by side (the vessel test).
 
@@ -48,6 +48,10 @@ To run one of the cron jobs by hand on your machine: start the app with `npx wra
 - Memory (memory.html): what she remembers about you, read-only: every fact with its weight and phase (vivid, firm, fading, faded), what came back, the history timeline, the things she has not told you yet shown sealed (the subject only), and what was kept automatically today.
 - Images, v4: the Avatar picker on the Photos tab and the Call face card on the Clips tab (a source master, Make her call face, the three slots idle / listening / talking with Approve and Reject, a `ready` chip).
 - Model, v4: the Spotify card (Connect, Disconnect, the playlist name and id, the player), "Get her texts on this phone" in Her first texts, the call face provider in Calls, the place price and the listening switch in Images, the his-face-in-photos switch in His face, the clip switch, the ElevenLabs model and price.
+- v5, the chat: a `held` chip with the held clock in the scene bar while a Together scene holds her time; two buttons on every song card, "know it" and "not for me"; a `place needed` chip when Together is pressed with no place.
+- State, v5: beats under each want on the Wants tab (Add beat with a kind, a date, a time and up to four variants; Edit, Cancel, Resolve with the outcome and his part); friction, its days and its phase chip on the Now tab, and the status she left while a lateral state holds; on the Life tab each person with a `locked` chip (or `name` for a placeholder), fixed facts with Add and Remove, and Rename with a second press; each place with its fixed facts; the Inbox labels of the seven new proposal kinds.
+- Memory, v5: Her read (each read with its confidence meter, status chip, evidence count and a "not true" button), His ears (the artists he knows and the ones not for him, each with Remove), and a `guess` chip on a fact she worked out rather than heard.
+- Model, v5: the Story card (the clock switch, the gap line minutes, the clock status) and the Nightly card (the switches, the models, the nightly budget, the per-step numbers, Run now with a chip per step, and the last runs by day and step).
 - Timeline (timeline.html): one read-only scroll, newest at the bottom, of history entries, approved photos, media she sent, life log notes, relationship and scene versions and her first texts, each with a date chip and a link.
 
 ## What v2 adds, one line each
@@ -107,15 +111,28 @@ To run one of the cron jobs by hand on your machine: start the app with `npx wra
 - Still not in v4: a day engine, a retention hook of any kind, a change to who she is (the prefix moved once, for the CLIPS rule; PROMPT_VERSION stays `-p7`).
  Nothing makes her unavailable, late on purpose or silent. She always answers.
 
+## What v5 adds, one line each (SPEC_V5, 2026-09-26; his words: "i need this to be real")
+
+- 1. Her clock, with Justin's rule: time moves for her while you text, and a Together scene holds it (you come back to the same moment and place, nothing happens to her while it is held, held days never count as absence); a TIME SINCE line after a real gap, never a complaint, never who wrote last; the nightly story pass writes one or two small ordinary things from her day, filed as proposals.
+- 2. Arcs that go somewhere: dated steps on her wants ("Coming up: the open mic, Thursday at 8pm"); when one passes she says how it went, or the nightly pass decides it from who she is (never a coin), and the outcome moves the want; you can write beats yourself with variants.
+- 3. Her view of him: a few reads of you from what you have actually done, each with its evidence and how sure she is, colouring how she takes you, never recited; every read on the Memory page with "not true".
+- 4. State that moves: the relationship moves one step at a time (strangers, talking, friends, seeing each other, together; cooling off, on a break, over beside them), a sore spot heals over days of her time, a cooling off runs out, nicknames add up, and a Together scene always has a place.
+- 5. Reply rhythm: a shape on most turns (one word, one line, two or three bubbles, now and then longer; in a scene one action or none), steered away from her last three replies; nothing ever cuts what she wrote.
+- 6. Honest to the record: she sees what she already sent you and never says she did not; a denial is retried.
+- 7. Memory hygiene: one fact said three ways becomes one (44 and forty-four are the same), a guess is held as her guess, nothing is deleted.
+- 8. A stable world: the people and places of her life are named things with fixed facts; a name never changes except by your Rename; her mother and Mason are seeded from her canon.
+- 9. The song loop: "know it" and "not for me" on every song card; she stops sending you artists you already know, and a pick that cannot be found is told once, in character.
+- Still not in v5: a day engine, a retention hook, a change to who she is (the stable prefix is byte-identical to v4). She always answers.
+
 ## The cron jobs
 
 Four jobs run inside the Worker on Cloudflare's clock (UTC). They deploy with the Worker; nothing to set up.
 
 | When (UTC) | Eastern | Job |
 |---|---|---|
-| every day 07:00 | 3am EDT / 2am EST | backup: the full export to R2 `backups/avelie-<YYYY-MM-DD>.json`, the last 30 kept; then the v3 maintenance pass (stale weather cache, asks let go after `askLetGoDays`, tastings expired after 30 minutes, dead calls) |
+| every day 07:00 | 3am EDT / 2am EST | backup: the full export to R2 `backups/avelie-<YYYY-MM-DD>.json`, the last 30 kept; then the v3 maintenance pass (stale weather cache, asks let go after `askLetGoDays` of her time, tastings expired after 30 minutes, dead calls); then, v5, the nightly story pass (her day, her dated steps, her read of you, memory hygiene), capped at `nightlyBudgetUsd`, everything filed as proposals |
 | Monday 13:00 | 9am EDT / 8am EST | drift check: five scenarios on the current performer, only when the Weekly drift check switch is on |
-| every 20 minutes | | v4: the delayed replies that landed since the last tick (one notification for the batch, only for a reply held two minutes or more); then her first texts: one decision per tick (off at 0 per day) |
+| every 20 minutes | | v4: the delayed replies that landed since the last tick (one notification for the batch, only for a reply held two minutes or more); then her first texts: one decision per tick (off at 0 per day). v5: nothing is pushed while a Together scene holds her clock, and her first texts stop while you are together |
 | Monday 14:00 | 10am EDT / 9am EST | voiceprint: the week's numbers |
 
 ## Where the backups are
@@ -132,6 +149,7 @@ src/                the Worker (index.ts entry with fetch and scheduled, auth, a
                     v3: voicebank, corrections, imperfection, memory, wants, grounding, weather,
                     portraits, maintenance, calls, video, tastings, finetune, providers/runway
                     v4: phone, places, callface, spotify, album, deliveries, providers/elevenlabs
+                    v5: clock, storycall, nightly, arcs, views, hygiene, standing, honest, songs, world
 src/generated/      constitution.ts, built from canon/ by npm run build:canon; never hand-edit
 public/             the pages (index, phone, album, memory, state, model, images, timeline), css/, js/
                     (v4: nav with the avatar, phone, map, callface, player, album, memory,
@@ -140,7 +158,7 @@ migrations/         0001_init.sql (schema), 0002_seed.sql (generated from canon/
                     0003_messages_seq_unique.sql, 0004_life.sql, 0004b_push.sql, 0004c_voiceprint.sql,
                     0004d_media.sql, 0005_v3.sql (hand-written), 0005b_voicebank_seed.sql (generated
                     from canon/seed/voicebank.json by scripts/build_voicebank.mjs),
-                    0006_tasting_context.sql, 0007_his_face.sql, 0008_v4.sql (hand-written, additive)
+                    0006_tasting_context.sql, 0007_his_face.sql, 0008_v4.sql, 0009_v5.sql (hand-written, additive)
 canon/              the frozen constitution, the seed JSON, the asset manifest, the reference docs
 scripts/            build_constitution, build_seed, build_voicebank, check_typography, verify_assets,
                     check_deploy, gen_vapid, finetune_run (Mac-side)

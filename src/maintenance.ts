@@ -2,13 +2,14 @@
 // this beside the backup. Four steps, each in its own try: weather_cache rows older than
 // a day go; open asks older than askLetGoDays are let go (wants.letGoStaleStmts, audited
 // per ask); pending tastings older than 30 minutes expire; calls still starting or live
-// with no tick for 2 minutes expire. Every change is audited. A failed step is logged by
+// with no tick for 2 minutes expire (v5: the asks on story time, SPEC_V5 section 1). Every change is audited. A failed step is logged by
 // class and swallowed, so the backup still runs and one broken table never stops the rest.
+import { loadStoryClock } from "./clock";
 import { auditStmt } from "./db";
 import { purgeCacheStmt } from "./weather";
 import { letGoStaleStmts, wantsSettings } from "./wants";
 import type { WantsSettings } from "./wants";
-import type { Env } from "./types";
+import type { Env, Settings } from "./types";
 import { TASTING_EXPIRY_MS, expireStaleStmts as expireStaleTastingsStmts } from "./tastings";
 import { LIVE_STALE_MS, expireStaleCallsStmt } from "./calls";
 
@@ -53,8 +54,11 @@ async function step(result: NightlyResult, name: string, fn: () => Promise<void>
   }
 }
 
-export async function nightly(_env: Env, db: D1Database, settings: WantsSettings | null | undefined, now: Date = new Date()): Promise<NightlyResult> {
+export async function nightly(_env: Env, db: D1Database, settings: (Partial<Settings> & WantsSettings) | null | undefined, now: Date = new Date()): Promise<NightlyResult> {
   const result: NightlyResult = { at: now.toISOString(), weatherCacheDeleted: 0, asksLetGo: [], tastingsExpired: 0, callsExpired: 0, errors: [] };
+  // v5 (SPEC_V5 section 1): one story clock for the pass, so an ask lets go after askLetGoDays
+  // of story time (the days of a held scene never count). loadStoryClock never throws.
+  const clock = await loadStoryClock(db, settings, now);
 
   await step(result, "weather_cache", async () => {
     const r = await purgeCacheStmt(db, new Date(now.getTime() - WEATHER_CACHE_MAX_AGE_MS)).run();
@@ -66,7 +70,7 @@ export async function nightly(_env: Env, db: D1Database, settings: WantsSettings
 
   await step(result, "asks", async () => {
     const days = wantsSettings(settings).askLetGoDays;
-    const { askIds, stmts } = await letGoStaleStmts(db, now, days, ACTOR);
+    const { askIds, stmts } = await letGoStaleStmts(db, now, days, ACTOR, clock);
     if (stmts.length) await db.batch(stmts);
     result.asksLetGo = askIds;
   });

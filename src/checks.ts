@@ -3,7 +3,7 @@
 // mechanical only (dash characters, emoji code points, markdown markers).
 //
 // The source stays pure ASCII: every non-ASCII character it hunts is built from a code point.
-import type { CheckContext, CheckResult, Flag, FlagSeverity } from "./types";
+import type { CheckContext, CheckResult, Flag, FlagSeverity, RhythmAction, RhythmSize, SentKind } from "./types";
 
 // v3 (SPEC_V3 sections AA, CC, GG): the context fields the v3 checks read. All optional, so
 // a v1/v2 CheckContext still satisfies runChecks; when types.ts carries the same fields the
@@ -76,6 +76,12 @@ export const DEPENDENCY_PHRASES: string[] = [
   "missing you",
   "waited for you",
   "waiting for you",
+  // v5 (SPEC_V5 section 1): a gap turned into a complaint is a hook. Never the bare
+  // "never answered": "the landlord never answered" is her life, not a hook.
+  "you never answered",
+  "left me on read",
+  "you never texted back",
+  "you never wrote back",
 ];
 
 export const MENU_PHRASES: string[] = ["do you want me to", "i can either", "would you like me to", "option 1"];
@@ -202,10 +208,79 @@ export function bubbleBand(text: string): 1 | 2 | 3 {
   return parts.length >= 3 ? 3 : parts.length === 2 ? 2 : 1;
 }
 
+// v5 (SPEC_V5 section 5): the shape is what she SAID. Lines that are only an asterisk
+// action are set aside first, so "*leans in*\n\nno\n\n*shrugs*" reads as "no". A text with
+// no action-only line is read exactly as v3 read it (same bytes, same signature); an empty
+// remainder (only actions) answers "0|short|lower|s".
 export function signature(text: string): string {
-  const t = String(text ?? "").replace(/\r\n?/g, "\n").trim();
+  const raw = String(text ?? "").replace(/\r\n?/g, "\n").trim();
+  const t = hasActionLine(raw) ? stripActionLines(raw) : raw;
+  if (!t) return "0|short|lower|s";
   const caseWord = /\p{Lu}/u.test(t) ? "mixed" : "lower";
   return `${bubbleBand(t)}|${lengthBand(t)}|${caseWord}|${endsWithQuestion(t) ? "q" : "s"}`;
+}
+
+// ------------------------------------------------------------------ v5 reply rhythm (SPEC_V5 section 5)
+
+// A line that is only an asterisk action (trailing punctuation allowed): "*shrugs*", "*sits back*."
+export const ACTION_LINE_RE = /^\s*\*[^*\n]+\*[\s.,!?]*$/;
+// Every asterisk span in a text, action lines and actions inside speech alike.
+const ACTION_SPAN_RE = /\*[^*\n]+\*/g;
+
+// The distance rhythm_missed measures is the distance in this order.
+export const RHYTHM_SIZES: readonly RhythmSize[] = ["one_word", "one_line", "two_lines", "three_lines", "longer"];
+
+export interface ObservedRhythm {
+  size: RhythmSize;
+  action: RhythmAction;
+  bookended: boolean;
+  bubbles: number;
+}
+
+function hasActionLine(text: string): boolean {
+  return text.split("\n").some((line) => ACTION_LINE_RE.test(line));
+}
+
+// The lines that are only an action removed; a line mixing an action and speech stays;
+// runs of blank lines collapsed to one; trimmed.
+export function stripActionLines(text: string): string {
+  const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (ACTION_LINE_RE.test(line)) continue;
+    const blank = line.trim() === "";
+    if (blank) {
+      if (kept.length && kept[kept.length - 1] !== "") kept.push("");
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n").trim();
+}
+
+function bubbleParts(text: string): string[] {
+  return text.replace(/\r\n?/g, "\n").trim().split(/\n[ \t]*\n+/).map((p) => p.trim()).filter(Boolean);
+}
+
+// The shape she wrote: its size on the texting scale, whether it carries an action, and
+// whether it is the bookend habit (an action line first and last around three or more lines).
+export function observedRhythm(text: string): ObservedRhythm {
+  const whole = String(text ?? "").replace(/\r\n?/g, "\n");
+  const actions = (whole.match(ACTION_SPAN_RE) ?? []).length;
+  const nonEmpty = whole.split("\n").filter((l) => l.trim() !== "");
+  const first = nonEmpty[0];
+  const last = nonEmpty[nonEmpty.length - 1];
+  const bookended = nonEmpty.length >= 3 && first !== undefined && last !== undefined && ACTION_LINE_RE.test(first) && ACTION_LINE_RE.test(last);
+  const parts = bubbleParts(stripActionLines(whole));
+  if (!parts.length) return { size: "one_word", action: actions ? "only" : "none", bookended, bubbles: 0 };
+  const joined = parts.join("\n");
+  const chars = joined.length;
+  const words = joined.split(/\s+/).filter(Boolean).length;
+  let size: RhythmSize;
+  if (parts.length === 1) size = words <= 3 ? "one_word" : chars <= 140 ? "one_line" : "longer";
+  else if (parts.length === 2) size = chars <= 320 ? "two_lines" : "longer";
+  else size = chars <= 480 ? "three_lines" : "longer";
+  return { size, action: actions ? "one" : "none", bookended, bubbles: parts.length };
 }
 
 function topicWords(topic: string): string[] {
@@ -393,6 +468,9 @@ export function runChecks(text: string, ctx: CheckContext): CheckResult {
   // v3 (SPEC_V3 sections AA, CC, GG)
   runV3Checks(text, norm, sentences, ctx as CheckContextV3, flags);
 
+  // v5 (SPEC_V5 sections 5, 6, 8)
+  runV5Checks(text, sentences, ctx, flags);
+
   // action
   const needsRetry = flags.some((f) => f.severity === "retry");
   const needsRepair = flags.some((f) => REPAIR_CODES.has(f.code));
@@ -488,5 +566,164 @@ function runV3Checks(text: string, norm: string, sentences: string[], ctx: Check
     if (flags.some((f) => f.code === "caption_tail")) signals.push("caption close");
     if (flags.some((f) => f.code === "written_joke")) signals.push("punchline");
     if (signals.length) flags.push(flag("over_polish", "flag", `polished paragraph (${signals.join(", ")})`));
+  }
+}
+
+// ------------------------------------------------------------------ v5 checks (SPEC_V5)
+
+// denied_send (section 6). The tense is the test: "never" takes only a past form and
+// "didn't" only the base form, so the habitual "i never send selfies" is no denial.
+export const DENIAL_RE = /\b(?:i\s+(?:never\s+(?:ever\s+)?(?:sent|played|shown|showed|gave|shared)|(?:haven'?t|have\s+not)\s+(?:ever\s+)?(?:sent|played|shown|given|shared)|(?:didn'?t|did\s+not)\s+(?:ever\s+)?(?:send|play|show|give|share))\b|(?:never|not)\s+(?:sent|played|shown|showed)\s+you\b)/i;
+
+// A word of each kind of thing she sends.
+const SENT_KIND_RE: Record<SentKind, RegExp> = {
+  song: /\b(?:songs?|tracks?|music)\b/i,
+  photo: /\b(?:photos?|pics?|pictures?|selfies?)\b/i,
+  clip: /\b(?:clips?|videos?)\b/i,
+  voice: /\bvoice\s+(?:notes?|memos?|messages?)\b/i,
+  media: /\b(?:videos?|clips?|pictures?)\b/i,
+};
+// "anything" or "something" names a kind only through a verb that names it: play for a
+// song, a clip or a voice note; show for a photo, a clip or a media item. A bare send, give
+// or share with "anything" is too loose to call a denial ("i havent sent you anything").
+const VAGUE_OBJECT_RE = /\b(?:anything|something)\b/i;
+const PLAY_KINDS: ReadonlySet<SentKind> = new Set<SentKind>(["song", "clip", "voice"]);
+const SHOW_KINDS: ReadonlySet<SentKind> = new Set<SentKind>(["photo", "clip", "media"]);
+// A sentence that names today counts only today's sends; "yet" never narrows.
+const TODAY_RE = /\b(?:today|tonight|this (?:morning|afternoon|evening))\b/i;
+// A sentence that names yesterday cannot be about a send of today.
+const YESTERDAY_RE = /\byesterday\b/i;
+
+type DenialVerb = "play" | "show" | "bare";
+
+function denialVerb(matched: string): DenialVerb {
+  if (/\bplay(?:ed)?\b/i.test(matched)) return "play";
+  if (/\bsh(?:ow|own|owed)\b/i.test(matched)) return "show";
+  return "bare";
+}
+
+const wordReCache = new Map<string, RegExp | null>();
+
+// One of an item's words as a whole word or phrase (regex-escaped, \b on both ends).
+function itemWordRe(word: string): RegExp | null {
+  const key = word.trim().toLowerCase();
+  if (!key) return null;
+  if (wordReCache.has(key)) return wordReCache.get(key) ?? null;
+  const re = new RegExp("\\b" + escapeRe(key).replace(/\s+/g, "\\s+") + "\\b", "i");
+  wordReCache.set(key, re);
+  return re;
+}
+
+type SentForCheck = { kind: SentKind; words: string[]; today: boolean };
+
+function deniedSend(sentences: string[], sent: SentForCheck[]): Flag | null {
+  for (const s of sentences) {
+    const sn = normalize(s);
+    const m = DENIAL_RE.exec(sn);
+    if (!m) continue;
+    const verb = denialVerb(m[0]);
+    const vague = VAGUE_OBJECT_RE.test(sn);
+    const todayOnly = TODAY_RE.test(sn);
+    const notToday = !todayOnly && YESTERDAY_RE.test(sn);
+    for (const item of sent) {
+      if (!item || typeof item.kind !== "string" || !(item.kind in SENT_KIND_RE)) continue;
+      if (todayOnly && item.today !== true) continue;
+      if (notToday && item.today === true) continue;
+      let hit = SENT_KIND_RE[item.kind].test(sn);
+      if (!hit && vague) hit = (verb === "play" && PLAY_KINDS.has(item.kind)) || (verb === "show" && SHOW_KINDS.has(item.kind));
+      if (!hit && Array.isArray(item.words)) {
+        for (const w of item.words) {
+          if (typeof w !== "string") continue;
+          const re = itemWordRe(w);
+          if (re && re.test(sn)) { hit = true; break; }
+        }
+      }
+      if (hit) return flag("denied_send", "retry", `denies a recorded ${item.kind}`);
+    }
+  }
+  return null;
+}
+
+// name_drift (section 8): "my mom Linda" when her mother already has another name. The name
+// is read case-sensitively (a capitalised name); the words before it in either case, so a
+// sentence that opens "My mom Linda" is read too.
+const NAME_DRIFT_RE = /\b(?:[Mm]y|[Oo]ur)\s+([Mm]om|[Mm]other|[Mm]um|[Mm]ama|[Dd]ad|[Ff]ather|[Pp]apa|[Ss]tepmom|[Ss]tepmother|[Ss]tepdad|[Ss]tepfather)\s*,?\s+([A-Z][a-z]{2,20})\b/g;
+const DRIFT_RELATIONS: Record<string, string> = {
+  mom: "mother", mother: "mother", mum: "mother", mama: "mother",
+  dad: "father", father: "father", papa: "father",
+  stepmom: "stepmother", stepmother: "stepmother",
+  stepdad: "stepfather", stepfather: "stepfather",
+};
+// Capitalised words that follow "my mom" without being a name ("my mom, She said").
+const NOT_A_NAME: ReadonlySet<string> = new Set([
+  "she", "he", "they", "and", "but", "the", "this", "that", "was", "just", "who", "what", "when",
+  "said", "says", "called", "calls", "texted", "still", "always", "never", "too", "yes", "yeah",
+  "also", "again", "today", "tonight", "tomorrow", "yesterday", "literally", "honestly", "actually",
+]);
+
+function driftRelation(r: unknown): string | null {
+  if (typeof r !== "string") return null;
+  const t = r.trim().toLowerCase().replace(/^(?:her|my)\s+/, "");
+  if (!t) return null;
+  return DRIFT_RELATIONS[t] ?? t;
+}
+
+function nameTokens(name: string): string[] {
+  const n = name.trim().toLowerCase();
+  if (!n) return [];
+  return [n, ...n.split(/\s+/)];
+}
+
+type PersonForCheck = { name: string; relation: string | null; named: boolean };
+
+function nameDrift(text: string, people: PersonForCheck[]): Flag | null {
+  const known = new Set<string>();
+  for (const p of people) if (p && typeof p.name === "string") for (const t of nameTokens(p.name)) known.add(t);
+  NAME_DRIFT_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = NAME_DRIFT_RE.exec(text)) !== null) {
+    const rel = DRIFT_RELATIONS[(m[1] ?? "").toLowerCase()];
+    const captured = m[2] ?? "";
+    if (!rel || !captured || NOT_A_NAME.has(captured.toLowerCase())) continue;
+    const holder = people.find((p) => p && p.named === true && typeof p.name === "string" && p.name.trim() !== "" && driftRelation(p.relation) === rel);
+    if (!holder) continue;
+    if (known.has(captured.toLowerCase())) continue;
+    NAME_DRIFT_RE.lastIndex = 0;
+    return flag("name_drift", "retry", `calls her ${rel} ${captured}, who is ${holder.name.trim()}`);
+  }
+  NAME_DRIFT_RE.lastIndex = 0;
+  return null;
+}
+
+// rhythm_missed (section 5, flag only): the shape she wrote is two or more places from the
+// one the cue asked for, or the cue asked for no action and the reply carries one.
+function rhythmMissed(text: string, cue: { size: RhythmSize; action: RhythmAction | null }): Flag | null {
+  const want = RHYTHM_SIZES.indexOf(cue.size);
+  if (want < 0) return null;
+  const obs = observedRhythm(text);
+  const got = RHYTHM_SIZES.indexOf(obs.size);
+  const far = Math.abs(got - want) >= 2;
+  const actionMiss = cue.action === "none" && obs.action !== "none";
+  if (!far && !actionMiss) return null;
+  const detail = `asked ${cue.size}, wrote ${obs.size}` + (!far ? " (an action where none was asked)" : "");
+  return flag("rhythm_missed", "flag", detail);
+}
+
+function runV5Checks(text: string, sentences: string[], ctx: CheckContext, flags: Flag[]): void {
+  const sent = Array.isArray(ctx.sent) ? ctx.sent : [];
+  if (sent.length) {
+    const f = deniedSend(sentences, sent);
+    if (f) flags.push(f);
+  }
+
+  const people = Array.isArray(ctx.people) ? ctx.people : [];
+  if (people.length) {
+    const f = nameDrift(text, people);
+    if (f) flags.push(f);
+  }
+
+  if (ctx.rhythm && typeof ctx.rhythm === "object") {
+    const f = rhythmMissed(text, ctx.rhythm);
+    if (f) flags.push(f);
   }
 }

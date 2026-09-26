@@ -5,9 +5,16 @@
 //
 // Wants are not versioned (a want is a live thing; every edit is audited and want_log is
 // its history). The pure half (moodNow, wantsSection) never touches the database.
+//
+// v5 (SPEC_V5 sections 1 and 2): every age here can be read on her story clock (a held
+// Together scene never counts), and WHAT YOU WANT carries the dated beats of each want.
+// This module never imports src/arcs.ts (arcs.ts imports this one): the caller renders the
+// beat lines with arcs.beatLinesByWant and passes them in.
 import { auditStmt, newId, nowIso } from "./db";
 import { ApiHttpError } from "./errors";
 import { agoLabel } from "./life";
+import { storyElapsedMs } from "./clock";
+import type { StoryClock } from "./clock";
 
 export type WantStatus = "active" | "paused" | "done" | "dropped";
 export type WantLogKind = "progress" | "setback" | "note";
@@ -142,9 +149,12 @@ function parseMs(s: string | null | undefined): number {
   return Date.parse(s);
 }
 
-function daysBetween(fromIso: string | null | undefined, now: Date): number {
+function daysBetween(fromIso: string | null | undefined, now: Date, clock: StoryClock | null = null): number {
   const t = parseMs(fromIso);
   if (!Number.isFinite(t)) return 0;
+  // v5: with a clock, story time (real elapsed time minus every held span) up to the real
+  // instant the clock was read at.
+  if (clock) return Math.max(0, Math.floor(storyElapsedMs(clock, new Date(t).toISOString(), clock.real) / DAY_MS));
   return Math.max(0, Math.floor((now.getTime() - t) / DAY_MS));
 }
 
@@ -170,11 +180,15 @@ export interface MoodNow {
 // faint under two, then gone (the stored state is untouched; only the rendering drops it).
 // A mood with no mood_set_at is read as set at `fallbackSetAt` (the state version's
 // created_at) or, failing that, now.
+// v5: with a clock the age is story time (storyElapsedMs from the set time to the real
+// instant the clock was read at), so a mood does not fade inside a held Together scene and
+// the held days never count afterwards.
 export function moodNow(
   rel: { mood?: unknown; mood_set_at?: unknown; mood_days?: unknown } | null | undefined,
   now: Date,
   settings: WantsSettings | null | undefined,
   fallbackSetAt: string | null = null,
+  clock: StoryClock | null = null,
 ): MoodNow {
   const s = wantsSettings(settings);
   const mood = rel && typeof rel.mood === "string" ? rel.mood.trim() : "";
@@ -183,7 +197,9 @@ export function moodNow(
   let set = rel && typeof rel.mood_set_at === "string" ? parseMs(rel.mood_set_at) : NaN;
   if (!Number.isFinite(set)) set = parseMs(fallbackSetAt);
   if (!Number.isFinite(set)) set = now.getTime();
-  const ageDays = Math.max(0, (now.getTime() - set) / DAY_MS);
+  const ageDays = clock
+    ? Math.max(0, storyElapsedMs(clock, new Date(set).toISOString(), clock.real) / DAY_MS)
+    : Math.max(0, (now.getTime() - set) / DAY_MS);
   const t = ageDays / days;
   const phase: MoodPhase = t < 0.5 ? "fresh" : t < 1 ? "fading" : t < 2 ? "faint" : "gone";
   return { mood, phase, setAt: new Date(set).toISOString(), days, ageDays };
@@ -237,11 +253,11 @@ export function lastLogByWant(log: WantLogRow[]): Map<string, WantLogRow> {
   return out;
 }
 
-function wantLine(w: WantRow, last: WantLogRow | undefined, now: Date): string {
+function wantLine(w: WantRow, last: WantLogRow | undefined, now: Date, clock: StoryClock | null): string {
   let s = `- ${clip(w.title, 160)}: ${Math.max(0, Math.min(100, Math.round(w.progress)))}%.`;
   const movedAt = w.last_moved ?? last?.occurred ?? null;
   if (movedAt && Number.isFinite(parseMs(movedAt))) {
-    s += ` Last moved ${agoLabel(daysBetween(movedAt, now))}` + (last && last.note ? `: ${clip(last.note, 200)}.` : ".");
+    s += ` Last moved ${agoLabel(daysBetween(movedAt, now, clock))}` + (last && last.note ? `: ${clip(last.note, 200)}.` : ".");
   } else if (last && last.note) {
     s += ` Last: ${clip(last.note, 200)}.`;
   }
@@ -250,8 +266,8 @@ function wantLine(w: WantRow, last: WantLogRow | undefined, now: Date): string {
   return s;
 }
 
-function askLine(a: AskRow, now: Date): string {
-  const ago = agoLabel(daysBetween(a.asked_at, now));
+function askLine(a: AskRow, now: Date, clock: StoryClock | null): string {
+  const ago = agoLabel(daysBetween(a.asked_at, now, clock));
   const tail = a.brought_up === 0
     ? "you have not brought it up again; once more at most, then let it go"
     : "you brought it up once already; leave it";
@@ -261,23 +277,39 @@ function askLine(a: AskRow, now: Date): string {
 // Active wants (up to `limit`, most recently moved first), paused and done ones for 14
 // days after the change, then the open asks and the rules. Empty: "" (the rules text
 // lives here only, so it is absent when there is nothing to want).
-export function wantsSection(wants: WantRow[], log: WantLogRow[], asks: AskRow[], now: Date, _tz: string, limit: number): string {
+// v5: `opts.beatLines` (want id -> lines, from arcs.beatLinesByWant) rides under each active
+// want; with `opts.clock` every age is story time.
+export function wantsSection(
+  wants: WantRow[],
+  log: WantLogRow[],
+  asks: AskRow[],
+  now: Date,
+  _tz: string,
+  limit: number,
+  opts: { clock?: StoryClock | null; beatLines?: ReadonlyMap<string, string[]> } = {},
+): string {
+  const clock = opts && opts.clock ? opts.clock : null;
+  const beatLines = opts && opts.beatLines instanceof Map ? opts.beatLines : null;
   const list = Array.isArray(wants) ? wants.filter((w) => w && typeof w.title === "string" && w.title.trim()) : [];
   const cap = Number.isFinite(limit) ? Math.max(0, Math.round(limit)) : WANTS_DEFAULTS.wantsShown;
   const last = lastLogByWant(log);
   const active = list.filter((w) => w.status === "active")
     .sort((a, b) => (parseMs(b.last_moved) || parseMs(b.created_at) || 0) - (parseMs(a.last_moved) || parseMs(a.created_at) || 0) || a.created_at.localeCompare(b.created_at))
     .slice(0, cap);
-  const recent = list.filter((w) => (w.status === "paused" || w.status === "done") && daysBetween(w.updated_at, now) <= RECENT_CHANGE_DAYS);
+  const recent = list.filter((w) => (w.status === "paused" || w.status === "done") && daysBetween(w.updated_at, now, clock) <= RECENT_CHANGE_DAYS);
   const open = (Array.isArray(asks) ? asks : []).filter((a) => a && a.status === "open" && typeof a.text === "string" && a.text.trim())
     .sort((a, b) => a.asked_at.localeCompare(b.asked_at));
   if (!active.length && !recent.length && !open.length) return "";
   const out: string[] = [WANTS_HEADER];
-  for (const w of active) out.push(wantLine(w, last.get(w.id), now));
-  for (const w of recent) {
-    out.push(w.status === "paused" ? `- paused: ${clip(w.title, 160)}` : `- done: ${clip(w.title, 160)}, ${agoLabel(daysBetween(w.updated_at, now))}`);
+  for (const w of active) {
+    out.push(wantLine(w, last.get(w.id), now, clock));
+    const lines = beatLines ? beatLines.get(w.id) : undefined;
+    if (Array.isArray(lines)) for (const l of lines) if (typeof l === "string" && l.trim()) out.push(l);
   }
-  for (const a of open) out.push(askLine(a, now));
+  for (const w of recent) {
+    out.push(w.status === "paused" ? `- paused: ${clip(w.title, 160)}` : `- done: ${clip(w.title, 160)}, ${agoLabel(daysBetween(w.updated_at, now, clock))}`);
+  }
+  for (const a of open) out.push(askLine(a, now, clock));
   out.push(WANTS_RULES);
   return out.join("\n");
 }
@@ -535,11 +567,13 @@ export function broughtUpStmts(db: D1Database, askIds: string[], now: Date | str
 // Open asks older than `days` become let_go, one guarded UPDATE and one audit row each
 // (the nightly maintenance runs this). The selection is done here so the caller can
 // report the ids; the statements are returned for one batch.
+// v5: with a clock an ask's age is story time from asked_at to `now` (held spans excluded).
 export async function letGoStaleStmts(
   db: D1Database,
   now: Date,
   days: number,
   actor = "maintenance",
+  clock: StoryClock | null = null,
 ): Promise<{ askIds: string[]; stmts: D1PreparedStatement[] }> {
   const n = Number.isFinite(days) ? Math.max(1, Math.min(90, Math.round(days))) : WANTS_DEFAULTS.askLetGoDays;
   const cutoff = now.getTime() - n * DAY_MS;
@@ -550,7 +584,10 @@ export async function letGoStaleStmts(
   for (const a of r.results) {
     if (!a || a.status !== "open") continue;
     const asked = parseMs(a.asked_at);
-    if (!Number.isFinite(asked) || asked > cutoff) continue;
+    if (!Number.isFinite(asked)) continue;
+    if (clock) {
+      if (storyElapsedMs(clock, new Date(asked).toISOString(), at) < n * DAY_MS) continue;
+    } else if (asked > cutoff) continue;
     askIds.push(a.id);
     stmts.push(db.prepare("UPDATE asks SET status = 'let_go', resolved_at = ?2, resolution_note = COALESCE(resolution_note, ?3) WHERE id = ?1 AND status = 'open'").bind(a.id, at, "let go after " + n + " days"));
     stmts.push(auditStmt(db, actor, "ask.let_go", "ask", a.id, { status: "open", asked_at: a.asked_at }, { status: "let_go", resolved_at: at, days: n }));

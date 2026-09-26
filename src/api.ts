@@ -17,6 +17,13 @@
 // a picture on GET /api/assets (3), Spotify and a song's status (4, A1), the album (5), the
 // widened push/latest (6), the memory map (7), the scene PUT's place (8), the v4 settings
 // rows and the place price rule. The v4 modules are imported by the names SPEC_V4 fixes.
+//
+// v5 (SPEC_V5 "Routes added"): her clock and the nightly story pass (1), dated beats on her
+// wants (2), her read of him (3), the scene PUT's place rule and its clock (4), what she
+// sent him (6), the people and places' fixed facts and the Rename (8), the artists he knows
+// (9); the twenty v5 settings and their price rules; PROPOSAL_KINDS is proposals.ts's own
+// list, so every kind the machinery promotes can be edited in. The v5 modules are imported
+// by the names SPEC_V5 fixes.
 import { ApiHttpError, errorResponse, json } from "./errors";
 import {
   DEFAULT_SETTINGS, auditStmt, createConversation, getConversation, getMessage, getSettings, listAssets, listConversations,
@@ -31,7 +38,7 @@ import { listSnapshots, restoreSnapshot, runSnapshot } from "./backup";
 import { decideImage, generateCandidate, regenerateImage, serveHim, verifyMasters } from "./images";
 import { HIM_PREFIX, HIM_ROLE, HIS_FACE_APART_EVERY_LIMIT, HIS_FACE_MAX_LIMIT, LOOK_MAX_CHARS, cleanLookText, countHimPhotos, describeHim, hisFaceSettings, listHimPhotos } from "./hisFace";
 import type { InboxImage } from "./images";
-import { decideProposal } from "./proposals";
+import { PROPOSAL_KINDS, decideProposal } from "./proposals";
 import { exportAll, exportTranscript, importAll } from "./exportImport";
 import {
   createFact, createHistory, createUnknown, deleteFact, deleteHistory, factVersions, getStateBundle, historyVersions, putState,
@@ -78,6 +85,16 @@ import { ADAPTATIONS, ALWAYS_ON, CONSTITUTION_VERSION, OVERLAY } from "./generat
 import { PROMPT_VERSION, sceneMode } from "./prompt";
 import { getCurrentState } from "./db";
 import { ProviderError } from "./types";
+// v5 modules (SPEC_V5 Build lanes L1, L2, L3, L6), by the export names the spec fixes.
+import { clockView, loadStoryClock, storyAgeDays } from "./clock";
+import { NIGHTLY_STEPS, listNightlyRuns, runNightlyStory } from "./nightly";
+import type { NightlyStep } from "./nightly";
+import { EVENT_OUTCOMES, HIS_PARTS, STEP_OUTCOMES, createBeat, listBeatViews, resolveBeat, updateBeat } from "./arcs";
+import type { BeatOutcome, HisPart } from "./arcs";
+import { listViews, retireView } from "./views";
+import { addWorldFact, renamePerson, retireWorldFact, worldView } from "./world";
+import { listSent } from "./honest";
+import { listKnownArtists, removeKnownArtist, setKnownArtist, songFeedback } from "./songs";
 import type {
   Channel, Env, FactScope, ImageProviderName, MessageRow, ProposalKind, ProposalRow, ProviderName, Settings, TurnResponse, VisualAssetRow, SceneState } from "./types";
 
@@ -451,6 +468,18 @@ const V4_EXTRA_KEYS: readonly string[] = [
   "spotifyEnabled", "spotifyPlaylistId", "spotifyPlaylistName", "placeCostUsd", "listeningLineEnabled",
   "spotifyPlayer", "elevenLabsModel", "elevenLabsTtsPricePer1kChars", "videoMarkerEnabled",
 ];
+// v5 (SPEC_V5 "Settings added"): the twenty rows 0009 inserts. Validated whether or not the
+// stored table carries them (a table seeded before 0009 reads the defaults until he saves).
+const V5_EXTRA_KEYS: readonly string[] = [
+  "storyClockEnabled", "gapLineMinMinutes", "nightlyStoryEnabled", "nightlyProvider", "nightlyModel", "hygieneModel",
+  "nightlyBudgetUsd", "herDayItemsMax", "nightlyBeatsMax", "beatHorizonDays", "arcMemoryDays", "viewsShown",
+  "viewMinConfidence", "viewsPerNight", "frictionDaysDefault", "sentShown", "sentWindowDays", "hygieneEnabled",
+  "worldShown", "knownArtistsShown",
+];
+// The v5 defaults the price rule falls back to when a stored table predates them (the same
+// values DEFAULT_SETTINGS and 0009 carry).
+const V5_DEFAULT_NIGHTLY_MODEL = "claude-sonnet-5";
+const V5_DEFAULT_HYGIENE_MODEL = "claude-haiku-4-5";
 
 function validatePrices(v: unknown): Settings["prices"] {
   if (typeof v !== "object" || v === null || Array.isArray(v)) throw invalid("prices must be an object");
@@ -489,6 +518,8 @@ export function overlaySettings(env: Env, settings: Settings): Settings {
   if ((PROVIDERS as readonly string[]).includes(p)) {
     out.provider = p as ProviderName;
     out.proposalProvider = p as ProviderName;
+    // v5: the nightly story pass runs on the same local performer (the runner's stub).
+    (out as unknown as Record<string, unknown>).nightlyProvider = p as ProviderName;
   }
   const ip = (env.DEFAULT_IMAGE_PROVIDER ?? "").trim();
   if ((IMAGE_PROVIDERS as readonly string[]).includes(ip)) out.imageProvider = ip as ImageProviderName;
@@ -540,7 +571,7 @@ function validateTexterPrevious(v: unknown): { provider: ProviderName; model: st
 
 export function validateSettingsPatch(body: Body): Partial<Settings> {
   for (const key of Object.keys(body)) {
-    if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key) && !V2_EXTRA_KEYS.includes(key) && !V3_EXTRA_KEYS.includes(key) && !V31_EXTRA_KEYS.includes(key) && !V4_EXTRA_KEYS.includes(key)) throw invalid("unknown setting: " + key);
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key) && !V2_EXTRA_KEYS.includes(key) && !V3_EXTRA_KEYS.includes(key) && !V31_EXTRA_KEYS.includes(key) && !V4_EXTRA_KEYS.includes(key) && !V5_EXTRA_KEYS.includes(key)) throw invalid("unknown setting: " + key);
   }
   const p: Record<string, unknown> = {};
   const v = body;
@@ -686,6 +717,28 @@ export function validateSettingsPatch(body: Body): Partial<Settings> {
   if (v.elevenLabsModel !== undefined) p.elevenLabsModel = reqString(v, "elevenLabsModel", MAX_ELEVENLABS_MODEL).trim();
   if (v.elevenLabsTtsPricePer1kChars !== undefined) p.elevenLabsTtsPricePer1kChars = num(v.elevenLabsTtsPricePer1kChars, "elevenLabsTtsPricePer1kChars", 0, 100);
   if (v.videoMarkerEnabled !== undefined) boolSetting(v, "videoMarkerEnabled", p);
+  // v5 (SPEC_V5 "Settings added"): her clock, the nightly story pass and its models and
+  // budget, beats, her read of him, friction, what she sent, hygiene, the world, the songs.
+  if (v.storyClockEnabled !== undefined) boolSetting(v, "storyClockEnabled", p);
+  if (v.gapLineMinMinutes !== undefined) p.gapLineMinMinutes = int(v.gapLineMinMinutes, "gapLineMinMinutes", 15, 10080);
+  if (v.nightlyStoryEnabled !== undefined) boolSetting(v, "nightlyStoryEnabled", p);
+  if (v.nightlyProvider !== undefined) p.nightlyProvider = oneOf(v.nightlyProvider, PROVIDERS, "nightlyProvider");
+  if (v.nightlyModel !== undefined) p.nightlyModel = reqString(v, "nightlyModel", 200).trim();
+  if (v.hygieneModel !== undefined) p.hygieneModel = reqString(v, "hygieneModel", 200).trim();
+  if (v.nightlyBudgetUsd !== undefined) p.nightlyBudgetUsd = num(v.nightlyBudgetUsd, "nightlyBudgetUsd", 0, 5);
+  if (v.herDayItemsMax !== undefined) p.herDayItemsMax = int(v.herDayItemsMax, "herDayItemsMax", 0, 3);
+  if (v.nightlyBeatsMax !== undefined) p.nightlyBeatsMax = int(v.nightlyBeatsMax, "nightlyBeatsMax", 0, 10);
+  if (v.beatHorizonDays !== undefined) p.beatHorizonDays = int(v.beatHorizonDays, "beatHorizonDays", 1, 30);
+  if (v.arcMemoryDays !== undefined) p.arcMemoryDays = int(v.arcMemoryDays, "arcMemoryDays", 1, 30);
+  if (v.viewsShown !== undefined) p.viewsShown = int(v.viewsShown, "viewsShown", 0, 12);
+  if (v.viewMinConfidence !== undefined) p.viewMinConfidence = num(v.viewMinConfidence, "viewMinConfidence", 0, 1);
+  if (v.viewsPerNight !== undefined) p.viewsPerNight = int(v.viewsPerNight, "viewsPerNight", 0, 6);
+  if (v.frictionDaysDefault !== undefined) p.frictionDaysDefault = int(v.frictionDaysDefault, "frictionDaysDefault", 1, 14);
+  if (v.sentShown !== undefined) p.sentShown = int(v.sentShown, "sentShown", 0, 30);
+  if (v.sentWindowDays !== undefined) p.sentWindowDays = int(v.sentWindowDays, "sentWindowDays", 1, 60);
+  if (v.hygieneEnabled !== undefined) boolSetting(v, "hygieneEnabled", p);
+  if (v.worldShown !== undefined) p.worldShown = int(v.worldShown, "worldShown", 0, 20);
+  if (v.knownArtistsShown !== undefined) p.knownArtistsShown = int(v.knownArtistsShown, "knownArtistsShown", 0, 200);
   return p as Partial<Settings>;
 }
 
@@ -754,6 +807,28 @@ export function assertSettingsConsistent(current: Settings, patch: Partial<Setti
     const p = prices[model];
     if (!p || typeof p.inputPerMTok !== "number" || typeof p.outputPerMTok !== "number") {
       throw invalid(`tastingModel "${model}" has no entry in prices; add its price (USD per million tokens) in the Prices section of the Model page before enabling tastings`);
+    }
+  }
+  // v5 (SPEC_V5 "Settings added"): the nightly story pass and the hygiene step each run on a
+  // model that must be priced while they are on, so the nightly budget line and the caps can
+  // meter them (paidJsonCall refuses an unpriced model; this refuses it at the switch). A
+  // stored table without the v5 keys reads them as their defaults: on, and the default models.
+  const nx = next as unknown as Record<string, unknown>;
+  const touchedKey = (key: string): boolean => (patch as Record<string, unknown>)[key] !== undefined;
+  const priced = (model: string): boolean => {
+    const p = prices[model];
+    return !!p && typeof p.inputPerMTok === "number" && typeof p.outputPerMTok === "number";
+  };
+  for (const rule of [
+    { model: "nightlyModel", on: "nightlyStoryEnabled", fallback: V5_DEFAULT_NIGHTLY_MODEL, what: "the nightly story pass" },
+    { model: "hygieneModel", on: "hygieneEnabled", fallback: V5_DEFAULT_HYGIENE_MODEL, what: "memory hygiene" },
+  ] as const) {
+    if (!touchedKey(rule.model) && !touchedKey("prices") && !touchedKey(rule.on)) continue;
+    if (nx[rule.on] === false) continue;
+    const raw = nx[rule.model];
+    const model = (typeof raw === "string" && raw.trim() ? raw : rule.fallback).trim();
+    if (!priced(model)) {
+      throw invalid(`${rule.model} "${model}" has no entry in prices; add its price (USD per million tokens) in the Prices section of the Model page before turning on ${rule.what}`);
     }
   }
 }
@@ -1078,12 +1153,18 @@ async function putStateRoute(c: RouteCtx, entity: "relationship" | "scene"): Pro
   const state = body.state;
   if (typeof state !== "object" || state === null || Array.isArray(state)) throw invalid("state must be a JSON object");
   const note = optString(body, "note", 1000);
+  // v5 (section 4): putState validates the relationship's six new keys, and refuses a
+  // together scene with no place (400 validation "a together scene needs a place").
   const r = await putState(c.db, entity, state as Record<string, unknown>, note ?? null, c.actor);
   if (entity !== "scene") return json(r);
   // v4 (SPEC_V4 section 8): a Together scene at a known place touches the place's
   // last_used_at (best effort) and the response says which place, and whether it has a
   // picture, so the chat can paint it behind the thread.
-  return json({ ...r, place: await scenePlace(c.db, r.state) });
+  const place = await scenePlace(c.db, r.state);
+  // v5 (section 1): the clock is read right after the switch, so a held span opens (with
+  // its snapshot taken now) or closes at this moment; loadStoryClock never throws.
+  const clock = await loadStoryClock(c.db, await loadSettings(c), new Date());
+  return json({ ...r, place, clock: clockView(clock) });
 }
 
 async function scenePlace(db: D1Database, state: Record<string, unknown>): Promise<{ id: string; picture: boolean } | null> {
@@ -1306,9 +1387,8 @@ route("POST", "/api/life/log", async (c) => {
 // ------------------------------------------------------------------ proposals
 
 const PROPOSAL_STATUSES = ["pending", "approved", "rejected", "edited", "all"] as const;
-const PROPOSAL_KINDS = [
-  "avelie_fact", "justin_fact", "relationship", "scene", "history", "private_language", "opinion_change", "unknown", "life",
-] as const;
+// v5 (skeptic 19): the kinds an edit may name are proposals.ts's PROPOSAL_KINDS (imported
+// above), never a local copy that falls behind the machinery.
 
 route("GET", "/api/proposals", async (c) => {
   const raw = c.url.searchParams.get("status");
@@ -2510,9 +2590,21 @@ route("GET", "/api/album", async (c) => {
 // ------------------------------------------------------------------ the memory map (section 7)
 
 // Three segments: never meets PUT /api/memory/:entity/:id (four); matchRoute counts first.
+// v5 (sections 1, 3, 7, 9): the ages read story time from ONE clock (nothing fades inside a
+// held scene), the facts carry their guess flag (memory.ts), and the map gains her reads of
+// him (every status) and the artists he knows. A read of a table behind 0009 answers empty.
 route("GET", "/api/memory/map", async (c) => {
   const settings = await loadSettings(c);
-  return json(await memoryMap(c.db, settings, new Date()));
+  const now = new Date();
+  const clock = await loadStoryClock(c.db, settings, now);
+  const memorySettingsWithClock = { ...settings, ageDaysOf: (iso: string): number => storyAgeDays(clock, iso) };
+  const [map, views, known, disliked] = await Promise.all([
+    memoryMap(c.db, memorySettingsWithClock, now),
+    listViews(c.db, "all", 100).catch(() => []),
+    listKnownArtists(c.db, "known").catch(() => []),
+    listKnownArtists(c.db, "disliked").catch(() => []),
+  ]);
+  return json({ ...map, views, knownArtists: { known, disliked } });
 });
 
 // ------------------------------------------------------------------ Spotify (section 4, amendment A1)
@@ -2593,4 +2685,235 @@ route("POST", "/api/messages/:id/spotify", async (c) => {
   const settings = await loadSettings(c);
   const status = await addSongForMessage(c.env, c.db, settings, id);
   return json({ status });
+});
+
+// ------------------------------------------------------------------ v5 (SPEC_V5 "Routes added")
+
+// A v5 setting as a number within its range, or the spec's default when a stored table
+// predates 0009 (getSettings lays the stored keys over DEFAULT_SETTINGS).
+function v5Int(settings: Settings, key: string, fallback: number, min: number, max: number): number {
+  const v = (settings as unknown as Record<string, unknown>)[key];
+  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(v)));
+}
+
+// Her timezone for every local date a beat carries (section 2: the tz the routes pass is
+// settings.timezone).
+function herTz(settings: Settings): string {
+  return typeof settings.timezone === "string" && settings.timezone.trim() ? settings.timezone.trim() : "America/New_York";
+}
+
+const MAX_BEAT_TITLE = 200;
+const MAX_BEAT_NOTE = 1000;
+const MAX_DAY_CHARS = 10;
+const MAX_HHMM_CHARS = 5;
+const BEAT_KINDS = ["step", "event"] as const;
+const BEAT_STATUSES = ["active", "cancelled"] as const;
+const BEAT_LIST_STATUSES = ["active", "cancelled", "all"] as const;
+const VIEW_LIST_STATUSES = ["active", "proven_wrong", "all"] as const;
+const WORLD_ENTITY_KINDS = ["person", "place"] as const;
+const KNOWN_KINDS = ["known", "disliked"] as const;
+const MAX_WORLD_FACT = 1000;
+const MAX_PERSON_NAME = 300;
+const MAX_ARTIST = 200;
+// Every outcome either kind of beat can end in; resolveBeat refuses one that does not fit
+// the beat's own kind (400).
+const BEAT_OUTCOMES: readonly BeatOutcome[] = Array.from(new Set<BeatOutcome>([...STEP_OUTCOMES, ...EVENT_OUTCOMES]));
+
+// 1. Her clock, with Justin's rule. The view is read after the sync, so what the page shows
+// is where the record stands now.
+route("GET", "/api/clock", async (c) => {
+  const settings = await loadSettings(c);
+  return json(clockView(await loadStoryClock(c.db, settings, new Date())));
+});
+
+// The nightly story pass by hand: the same pass the 07:00 UTC cron runs, held open until it
+// ends (every step inside the nightly budget and the caps). The settings carry the local
+// overlay, so wrangler dev runs it on the stub.
+route("POST", "/api/nightly/run", async (c) => {
+  const body = await readBody(c.request);
+  const force = optBool(body, "force");
+  let steps: NightlyStep[] | undefined;
+  if (body.steps !== undefined && body.steps !== null) {
+    if (!Array.isArray(body.steps)) throw invalid("steps must be an array");
+    if (body.steps.length > NIGHTLY_STEPS.length * 2) throw invalid("steps has too many entries");
+    const picked = new Set<NightlyStep>();
+    for (const s of body.steps as unknown[]) picked.add(oneOf(s, NIGHTLY_STEPS, "steps[]"));
+    // The fixed order, whatever order the body named them in.
+    steps = NIGHTLY_STEPS.filter((s) => picked.has(s));
+  }
+  const settings = await loadSettings(c);
+  const opts: { now: Date; force?: boolean; steps?: NightlyStep[] } = { now: new Date() };
+  if (force !== undefined) opts.force = force;
+  if (steps !== undefined) opts.steps = steps;
+  return json(await runNightlyStory(c.env, c.db, settings, opts));
+});
+
+route("GET", "/api/nightly", async (c) => json({ runs: await listNightlyRuns(c.db, intQuery(c.url, "limit", 28, 1, 200)) }));
+
+// 2. Arcs that go somewhere: dated beats on her wants.
+async function wantRow(db: D1Database, id: string): Promise<{ id: string; status: string } | null> {
+  return db.prepare("SELECT id, status FROM wants WHERE id = ?1").bind(id).first<{ id: string; status: string }>();
+}
+
+function beatListStatus(url: URL): "active" | "cancelled" | "all" {
+  const raw = (url.searchParams.get("status") ?? "").trim();
+  return raw ? oneOf(raw, BEAT_LIST_STATUSES, "status") : "active";
+}
+
+route("GET", "/api/beats", async (c) => {
+  const status = beatListStatus(c.url);
+  const limit = intQuery(c.url, "limit", 200, 1, 500);
+  return json({ beats: await listBeatViews(c.db, { status, limit }) });
+});
+
+// Four segments: never meets GET /api/wants/:id/log's literal; matchRoute counts first.
+route("GET", "/api/wants/:id/beats", async (c) => {
+  const id = idParam(c, "id");
+  if (!(await wantRow(c.db, id))) throw new ApiHttpError(404, "not_found", "want not found");
+  const status = beatListStatus(c.url);
+  const limit = intQuery(c.url, "limit", 200, 1, 500);
+  return json({ beats: await listBeatViews(c.db, { wantId: id, status, limit }) });
+});
+
+route("POST", "/api/wants/:id/beats", async (c) => {
+  const id = idParam(c, "id");
+  const body = await readBody(c.request);
+  const title = reqString(body, "title", MAX_BEAT_TITLE).trim();
+  const kind = oneOf(body.kind, BEAT_KINDS, "kind");
+  const dueOn = reqString(body, "dueOn", MAX_DAY_CHARS).trim();
+  const dueTimeRaw = optString(body, "dueTime", MAX_HHMM_CHARS);
+  const dueTime = typeof dueTimeRaw === "string" && dueTimeRaw.trim() ? dueTimeRaw.trim() : null;
+  const settings = await loadSettings(c);
+  const view = await createBeat(c.db, {
+    wantId: id,
+    title,
+    kind,
+    dueOn,
+    dueTime,
+    variants: body.variants ?? null,
+    source: "owner",
+  }, c.actor, herTz(settings));
+  return json(view, 201);
+});
+
+route("PUT", "/api/beats/:id", async (c) => {
+  const id = idParam(c, "id");
+  const body = await readBody(c.request);
+  const patch: Parameters<typeof updateBeat>[2] = {};
+  const title = optString(body, "title", MAX_BEAT_TITLE);
+  if (title !== undefined) {
+    if (title === null || !title.trim()) throw invalid("title cannot be empty");
+    patch.title = title.trim();
+  }
+  const dueOn = optString(body, "dueOn", MAX_DAY_CHARS);
+  if (dueOn !== undefined) {
+    if (dueOn === null || !dueOn.trim()) throw invalid("dueOn cannot be empty");
+    patch.dueOn = dueOn.trim();
+  }
+  const dueTime = optString(body, "dueTime", MAX_HHMM_CHARS);
+  if (dueTime !== undefined) patch.dueTime = dueTime && dueTime.trim() ? dueTime.trim() : null;
+  if (body.variants !== undefined) patch.variants = body.variants;
+  if (body.status !== undefined && body.status !== null) patch.status = oneOf(body.status, BEAT_STATUSES, "status");
+  if (!Object.keys(patch).length) throw invalid("nothing to change");
+  const settings = await loadSettings(c);
+  return json(await updateBeat(c.db, id, patch, c.actor, herTz(settings)));
+});
+
+// The owner's Resolve: his canon. 409 already_resolved from resolveBeat for a run already
+// resolved; an outcome that does not fit the beat's kind is 400 there.
+route("POST", "/api/beats/:id/resolve", async (c) => {
+  const id = idParam(c, "id");
+  const body = await readBody(c.request);
+  const outcome = oneOf(body.outcome, BEAT_OUTCOMES, "outcome");
+  const note = optString(body, "note", MAX_BEAT_NOTE);
+  const variantId = optString(body, "variantId", 20);
+  const hisPart: HisPart | null = body.hisPart === undefined || body.hisPart === null ? null : oneOf(body.hisPart, HIS_PARTS, "hisPart");
+  const hisNote = optString(body, "hisNote", MAX_BEAT_NOTE);
+  const view = await resolveBeat(c.db, id, {
+    outcome,
+    note: note && note.trim() ? note.trim() : null,
+    variantId: variantId && variantId.trim() ? variantId.trim() : null,
+    hisPart,
+    hisNote: hisNote && hisNote.trim() ? hisNote.trim() : null,
+    source: "owner",
+  }, c.actor);
+  return json(view);
+});
+
+// 3. Her view of him.
+route("GET", "/api/views", async (c) => {
+  const raw = (c.url.searchParams.get("status") ?? "").trim();
+  const status = raw ? oneOf(raw, VIEW_LIST_STATUSES, "status") : "active";
+  const limit = intQuery(c.url, "limit", 50, 1, 500);
+  return json({ views: await listViews(c.db, status, limit) });
+});
+
+// "not true": his word takes a read out of her head and off the page.
+route("POST", "/api/views/:id/retire", async (c) => {
+  const id = idParam(c, "id");
+  const body = await readBody(c.request);
+  const note = optString(body, "note", 1000);
+  return json(await retireView(c.db, id, note && note.trim() ? note.trim() : null, c.actor));
+});
+
+// 6. Honest to the record: what she sent him, every conversation, at the settings' window
+// and limit (the same read the turn makes).
+route("GET", "/api/sent", async (c) => {
+  const settings = await loadSettings(c);
+  const items = await listSent(c.db, {
+    now: new Date(),
+    windowDays: v5Int(settings, "sentWindowDays", 7, 1, 60),
+    limit: v5Int(settings, "sentShown", 12, 0, 30),
+  });
+  return json({ items });
+});
+
+// 8. A stable world: the people and places of her life and their fixed facts.
+route("GET", "/api/world", async (c) => json(await worldView(c.db)));
+
+route("POST", "/api/world/facts", async (c) => {
+  const body = await readBody(c.request);
+  const entityKind = oneOf(body.entityKind, WORLD_ENTITY_KINDS, "entityKind");
+  const entityId = reqString(body, "entityId", MAX_ID_CHARS).trim();
+  const fact = reqString(body, "fact", MAX_WORLD_FACT).trim();
+  const row = await addWorldFact(c.db, { entityKind, entityId, fact, source: "owner" }, c.actor);
+  return json(row, 201);
+});
+
+route("DELETE", "/api/world/facts/:id", async (c) => json(await retireWorldFact(c.db, idParam(c, "id"), c.actor)));
+
+// A name never changes except by his own Rename, asked twice: the body must say so.
+route("POST", "/api/people/:id/rename", async (c) => {
+  const id = idParam(c, "id");
+  const body = await readBody(c.request);
+  if (body.confirm !== "rename") throw invalid('confirm must be "rename"');
+  const name = reqString(body, "name", MAX_PERSON_NAME).trim();
+  return json(await renamePerson(c.db, id, name, c.actor));
+});
+
+// 9. The song loop: his two buttons on a song card, and his own list.
+// Four segments beside /spotify, /mark and /context: the literal segment differs.
+route("POST", "/api/messages/:id/song-feedback", async (c) => {
+  const id = idParam(c, "id");
+  const body = await readBody(c.request);
+  const kind = oneOf(body.kind, KNOWN_KINDS, "kind");
+  return json(await songFeedback(c.db, id, kind, c.actor));
+});
+
+route("GET", "/api/known-artists", async (c) => {
+  const [known, disliked] = await Promise.all([listKnownArtists(c.db, "known"), listKnownArtists(c.db, "disliked")]);
+  return json({ known, disliked });
+});
+
+route("POST", "/api/known-artists", async (c) => {
+  const body = await readBody(c.request);
+  const artist = reqString(body, "artist", MAX_ARTIST).trim();
+  const kind = oneOf(body.kind, KNOWN_KINDS, "kind");
+  return json(await setKnownArtist(c.db, { artist, kind, source: "owner" }, c.actor), 201);
+});
+
+route("DELETE", "/api/known-artists/:id", async (c) => {
+  await removeKnownArtist(c.db, idParam(c, "id"), c.actor);
+  return json({ ok: true });
 });

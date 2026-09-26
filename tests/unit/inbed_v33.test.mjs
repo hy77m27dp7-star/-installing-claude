@@ -17,8 +17,8 @@ const couch = () => sceneState({
   last_beat: "kissing on the couch, her on his lap",
 });
 
-test("prompt version is -p7", () => {
-  assert.ok(prompt.PROMPT_VERSION.endsWith("-p7"), prompt.PROMPT_VERSION);
+test("prompt version is -p8 (v5)", () => {
+  assert.ok(prompt.PROMPT_VERSION.endsWith("-p8"), prompt.PROMPT_VERSION);
 });
 
 test("intimateScene: a together scene that reads as one", () => {

@@ -25,7 +25,7 @@ t("mergeSceneState: a payload with a location moves the scene; status and presen
   assert.equal(next.status, "together");
   assert.equal(next.location, "the harbour bench");
   assert.deepEqual(next.present, ["Avelie", "him"]);
-  assert.equal(next.time, "morning", "a field the payload does not carry is kept");
+  assert.equal(next.time, null, "v5 (section 4): a new scene never inherits the old scene's time words; location and present above are kept, and time is kept in the status-unchanged case below");
   assert.equal(next.summary, "they sat on the bench");
   assert.equal(next.last_beat, "they sat on the bench");
   const moved = proposals.mergeSceneState(sceneState({ status: "together", location: "the harbour bench" }), { status: "together", location: "the pier" }, "they walked to the pier");
@@ -84,12 +84,13 @@ test("promote passes auto for an auto-kept proposal (keepAutomatically's actor) 
 t("mergeRelationshipState: takes status, his_name, trust, affection, attraction, nicknames when present; the mood keys still stamp; the frontier appends", () => {
   const cur = relationshipState();
   const next = proposals.mergeRelationshipState(cur, { status: "seeing each other", his_name: "Justin", trust: "starting", affection: "warm", attraction: "mutual and open", nicknames: "Starbrite", mood: "warm", mood_days: 2 }, "they are seeing each other", NOW);
-  assert.equal(next.status, "seeing each other");
+  assert.equal(next.status, "talking", "v5 (section 4): a proposal moves the ladder one rung from strangers");
   assert.equal(next.his_name, "Justin");
   assert.equal(next.trust, "starting");
   assert.equal(next.affection, "warm");
   assert.equal(next.attraction, "mutual and open");
   assert.equal(next.nicknames, "Starbrite");
+  assert.equal(proposals.mergeRelationshipState(next, { nicknames: "trouble" }, "x", NOW).nicknames, "Starbrite; trouble", "v5: a payload nickname is appended to the current ones");
   assert.equal(next.summary, "they are seeing each other");
   assert.equal(next.frontier, "before the first conversation | they are seeing each other");
   assert.equal(next.mood, "warm");
@@ -154,7 +155,7 @@ test("the stub: [[SCENE:x]] proposes a scene with status together and the locati
 });
 
 tp("proposalSystemPrompt: the relationship payload names status, his_name, trust, affection, attraction and nicknames; the scene line names status, location, time and present", () => {
-  assert.ok(/"status": one to four plain words for where they stand now/.test(promptText), "the relationship status line");
+  assert.ok(/"status": (?:one to four plain words for where they stand now|where they stand, one of strangers, talking, friends, seeing each other, together)/.test(promptText), "the relationship status line (v5 replaced it with the ladder words)");
   for (const k of ['"his_name"', '"trust"', '"affection"', '"attraction"', '"nicknames"']) assert.ok(promptText.includes(k), k);
   assert.ok(/A "scene" proposal describes where they are when a shared scene starts, moves or ends/.test(promptText));
   assert.ok(/"status": "together"\|"apart"\|"none"/.test(promptText));

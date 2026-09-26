@@ -392,6 +392,37 @@
       </label>
     </div>
 
+    <h2 class="section-title">Her story</h2>
+    <div class="grid-form">
+      <label class="field">Beats ahead (days)
+        <input type="number" name="beatHorizonDays" min="1" max="30" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Beats remembered (days)
+        <input type="number" name="arcMemoryDays" min="1" max="30" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Reads shown (0 = off)
+        <input type="number" name="viewsShown" min="0" max="12" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Read confidence at least
+        <input type="number" name="viewMinConfidence" min="0" max="1" step="0.05" inputmode="decimal">
+      </label>
+      <label class="field">Friction days default
+        <input type="number" name="frictionDaysDefault" min="1" max="14" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Sent shown (0 = off)
+        <input type="number" name="sentShown" min="0" max="30" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Sent window (days)
+        <input type="number" name="sentWindowDays" min="1" max="60" step="1" inputmode="numeric">
+      </label>
+      <label class="field">People and places shown (0 = off)
+        <input type="number" name="worldShown" min="0" max="20" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Artists listed (0 = off)
+        <input type="number" name="knownArtistsShown" min="0" max="200" step="1" inputmode="numeric">
+      </label>
+    </div>
+
     <h2 class="section-title">Caps</h2>
     <div class="grid-form">
       <label class="field">Daily cap USD
@@ -438,6 +469,64 @@
     <div class="row">
       <button type="submit" class="btn primary" form="settingsForm">Save</button>
     </div>
+  </section>
+
+  <section class="card stack" id="storyCard" aria-label="Story">
+    <div class="row between">
+      <h2 class="section-title">Story</h2>
+      <span class="chips" id="clockStatus"></span>
+    </div>
+    <div class="grid-form">
+      <label class="check"><input type="checkbox" name="storyClockEnabled" form="settingsForm"> Her clock (held while together)</label>
+      <label class="field">Time-since line after (minutes)
+        <input type="number" name="gapLineMinMinutes" form="settingsForm" min="15" max="10080" step="1" inputmode="numeric">
+      </label>
+    </div>
+    <div class="row">
+      <button type="submit" class="btn primary" form="settingsForm">Save</button>
+    </div>
+  </section>
+
+  <section class="card stack" id="nightlyCard" aria-label="Nightly">
+    <div class="row between">
+      <h2 class="section-title">Nightly</h2>
+      <span class="chips" id="nightlyResult"></span>
+    </div>
+    <div class="grid-form">
+      <label class="check"><input type="checkbox" name="nightlyStoryEnabled" form="settingsForm"> Nightly story pass</label>
+      <label class="field">Provider
+        <select name="nightlyProvider" form="settingsForm">
+          <option value="anthropic">anthropic</option>
+          <option value="openai">openai</option>
+          <option value="workersai">workersai</option>
+          <option value="stub">stub</option>
+        </select>
+      </label>
+      <label class="field">Model
+        <input type="text" name="nightlyModel" form="settingsForm" placeholder="claude-sonnet-5" maxlength="200">
+      </label>
+      <label class="field">Hygiene model
+        <input type="text" name="hygieneModel" form="settingsForm" placeholder="claude-haiku-4-5" maxlength="200">
+      </label>
+      <label class="field">Budget USD a night
+        <input type="number" name="nightlyBudgetUsd" form="settingsForm" min="0" max="5" step="any" inputmode="decimal">
+      </label>
+      <label class="field">Her day items (0 = off)
+        <input type="number" name="herDayItemsMax" form="settingsForm" min="0" max="3" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Beats decided (0 = off)
+        <input type="number" name="nightlyBeatsMax" form="settingsForm" min="0" max="10" step="1" inputmode="numeric">
+      </label>
+      <label class="field">Reads a night (0 = off)
+        <input type="number" name="viewsPerNight" form="settingsForm" min="0" max="6" step="1" inputmode="numeric">
+      </label>
+      <label class="check"><input type="checkbox" name="hygieneEnabled" form="settingsForm"> Memory hygiene</label>
+    </div>
+    <div class="row">
+      <button type="submit" class="btn primary" form="settingsForm">Save</button>
+      <button type="button" class="btn" id="nightlyRun">Run now</button>
+    </div>
+    <div id="nightlyRuns"></div>
   </section>
 
   <section class="card stack" id="texterBox">

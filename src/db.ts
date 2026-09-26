@@ -146,6 +146,29 @@ export const DEFAULT_SETTINGS: Settings = {
   elevenLabsModel: "eleven_multilingual_v2",
   elevenLabsTtsPricePer1kChars: 0.3,
   videoMarkerEnabled: true,
+  // v5 (SPEC_V5 "Settings added"): her clock (section 1), the nightly story pass and its
+  // steps (sections 1, 2, 3 and 7), dated beats (2), her read of him (3), friction (4),
+  // what she sent (6), the world (8) and the song loop (9). Both nightly models are priced above.
+  storyClockEnabled: true,
+  gapLineMinMinutes: 120,
+  nightlyStoryEnabled: true,
+  nightlyProvider: "anthropic",
+  nightlyModel: "claude-sonnet-5",
+  hygieneModel: "claude-haiku-4-5",
+  nightlyBudgetUsd: 0.25,
+  herDayItemsMax: 2,
+  nightlyBeatsMax: 3,
+  beatHorizonDays: 7,
+  arcMemoryDays: 7,
+  viewsShown: 6,
+  viewMinConfidence: 0.4,
+  viewsPerNight: 3,
+  frictionDaysDefault: 4,
+  sentShown: 12,
+  sentWindowDays: 7,
+  hygieneEnabled: true,
+  worldShown: 6,
+  knownArtistsShown: 40,
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {

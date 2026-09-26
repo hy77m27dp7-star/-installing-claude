@@ -558,3 +558,107 @@ The Spotify tokens live in `spotify_auth` only: never in a response body, an aud
 ## Cron (v4)
 
 No new trigger. The `*/20 * * * *` handler runs `pushDueReplies` (one notification for the delayed replies that landed since the last tick and were held two minutes or more; every seen row stamped) and then `maybeTextFirst`, and returns both results. The other three are unchanged.
+
+## v5 (SPEC_V5, 2026-09-26): her clock, the nightly story pass, arcs, her read of him, state that moves, reply rhythm, honest to the record, memory hygiene, a stable world, the song loop
+
+Every route below is owner-only behind the same door; the cross-site gate covers every POST, PUT and DELETE. Errors keep the v1 shape. `PROMPT_VERSION` ends `-p8`: the stable prefix is byte-identical to v4 (`CONSTITUTION_VERSION` unchanged), and `-p8` marks the per-turn sections v5 adds or changes (HOW YOU READ HIM, TIME SINCE, WHO AND WHERE, WHAT YOU HAVE SENT HIM, SONGS AND HIM; the guesses sub-list, the friction line, the held clock, the dated beats, THIS MESSAGE as the rhythm cue). No new secret, no new cron trigger, no new CSP origin.
+
+Justin's rule binds every route: story time runs only while the scene is apart. A together scene holds her clock (the span opens at the `created_at` of its first together version and closes at the first later version that is not together); nothing happens to her while one is held, and the held time never counts as absence.
+
+### Her clock (section 1)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/clock | | `ClockView` after the sync: `{ enabled, frozen, real, storyNow, open: { id, frozenAt, location } \| null, recent: [{ id, frozenAt, resumedAt, location, minutes }] }` (the last ten spans, newest first) |
+| PUT | /api/state/scene | (unchanged body) | `{ version, state, place, clock: ClockView }`; 400 `validation` "a together scene needs a place" for a together scene with no location and none on the current version. The clock is read right after the write, so the span opens (with its snapshot of the weather, outfit and today's rows) or closes at the switch |
+
+### The nightly story pass (sections 1, 2, 3 and 7)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | /api/nightly/run | `{ force?: boolean, steps?: ("her_day" \| "arcs" \| "views" \| "hygiene")[] }` | `NightlyStoryResult`: `{ at, day, skipped, frozen, spentUsd, steps: [{ step, status: "done" \| "skipped" \| "failed", reason, proposalIds, detail? }], kept, duplicates }` (held open; the steps run in the fixed order whatever order the body names them; a step done for the day is skipped "already done" unless `force`; her_day and arcs skip "frozen: a together scene is held" while a span is open; a paid step stopped by the nightly line reads "nightly budget", by the caps "caps"; 400 `validation` on an unknown step) |
+| GET | /api/nightly | `?limit=` (1 to 200, default 28) | `{ runs: [{ day, step, ran_at, status, result_json }] }` newest first |
+
+`day` is her last day that has ENDED (the calendar day before today, her time). Everything a step decides is a proposal with a source (`nightly <step> <day> <runId>`), kept by his auto-keep switch or his Inbox; nothing a model says is written to a story table directly. Every paid call is a `model_runs` row of kind `nightly` (the step in `flags_json` as `nightly:<tag>`) under `assertBudget` and a second line, `nightlyBudgetUsd`.
+
+### Arcs that go somewhere (section 2)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/beats | `?status=active\|cancelled\|all&limit=` | `{ beats: BeatView[] }` (`{ beat, run, want: { id, title, status }, variants }`, by due instant) |
+| GET | /api/wants/:id/beats | | `{ beats: BeatView[] }` (404 unknown want) |
+| POST | /api/wants/:id/beats | `{ title, kind: "step" \| "event", dueOn: "YYYY-MM-DD", dueTime?: "HH:MM", variants?: [{ outcome, note }] }` | 201 `BeatView` (400 `validation`: a bad date or time, an outcome outside the kind, more than four variants; 404; 409 `not_active` on a dropped want). Variant ids are assigned `v1`, `v2`, ... |
+| PUT | /api/beats/:id | `{ title?, dueOn?, dueTime?, variants?, status?: "active" \| "cancelled" }` | `BeatView` (a changed date resets a pending or proposed owner run to the new instant; 400, 404) |
+| POST | /api/beats/:id/resolve | `{ outcome, note?, variantId?, hisPart?: "encouraged" \| "asked" \| "came" \| "forgot" \| "none", hisNote? }` | `BeatView` (the outcome must fit the kind, 400; 404; 409 `already_resolved`); the want gets a progress, setback or note row from the outcome |
+
+A run due inside a held span moves, when the span closes, to the same distance after it (to the millisecond), with a note on its want; a run due after the span keeps its day.
+
+### Her view of him (section 3)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/views | `?status=active\|proven_wrong\|all&limit=` | `{ views: HerViewRow[] }` (`id, subject, subject_norm, view, confidence, evidence_json, status, version, supersedes_id, source, wrong_note, wrong_evidence_json, created_at, updated_at`) |
+| POST | /api/views/:id/retire | `{ note? }` | `HerViewRow` with status `retired` (404; 409 `not_current` on a superseded version) |
+
+### The stable world (section 8)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/world | | `{ people: [PersonRow & { active, threadDetail, portraitAssetId, facts }], places: [{ id, title, detail, active, facts }] }` (after the people and places syncs) |
+| POST | /api/world/facts | `{ entityKind: "person" \| "place", entityId, fact }` | 201 `WorldFactRow` (400; 404 unknown person or place; 409 `duplicate` for a live fact with the same words) |
+| DELETE | /api/world/facts/:id | | `WorldFactRow` with status `retired` (404) |
+| POST | /api/people/:id/rename | `{ name, confirm: "rename" }` | `PersonRow` (400 without `confirm`; 404; 409 `duplicate` when another person has that name) |
+
+A person's name is locked once it is a real name: `PUT /api/life/threads/:id` answers 409 `name_locked` for a title change on a named person thread (a placeholder such as "her mother" may be named once; the owner's Rename is the only other way). 0009 seeds her mother (unnamed, active) and Mason (her ex, a thread of status `done`: her past, never her present day) when the record has neither.
+
+### Honest to the record (section 6)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /api/sent | | `{ items: [{ messageId, conversationId, kind: "song" \| "photo" \| "clip" \| "voice" \| "media", at, label, words }] }` (every conversation, newest first, `sentWindowDays` and `sentShown`) |
+
+### The song loop (section 9)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | /api/messages/:id/song-feedback | `{ kind: "known" \| "disliked" }` | `KnownArtistRow` (`id, artist, artist_norm, kind, source, message_id, note, created_at, updated_at`; the artist of that message's song, one row per artist, the newest press wins; 400 "no song on this message"; 404) |
+| GET | /api/known-artists | | `{ known: KnownArtistRow[], disliked: KnownArtistRow[] }` newest first |
+| POST | /api/known-artists | `{ artist, kind }` | 201 `KnownArtistRow` with source `owner` |
+| DELETE | /api/known-artists/:id | | `{ ok: true }` (the row deleted and audited; 404) |
+
+### Changed routes (v5)
+
+`PUT /api/state/relationship` validates the six new keys (`friction`, `friction_set_at`, `friction_days` 1 to 14, `cooling_off_set_at`, `cooling_off_hours` 0 to 336, `status_before`) and stamps a new or changed friction; `PUT /api/state/scene` refuses a together scene with no place and carries `clock`; `PUT /api/life/threads/:id` answers 409 `name_locked`; `POST /api/proposals/:id/decide` accepts the seven new kinds (`want_beat`, `beat_outcome`, `her_view`, `fact_merge`, `fact_mark`, `world_fact`, `known_artist`) and `edited.kind` validates against `PROPOSAL_KINDS` from src/proposals.ts; a promoted `relationship` proposal moves the status one rung at a time (strangers, talking, friends, seeing each other, together; lateral: cooling off, on a break, over) and the state version's note says what the ladder held back; `GET /api/memory/map` answers `{ ...map, views, knownArtists: { known, disliked } }` with `facts[].inferred`, its ages on the story clock; `GET /api/messages/:id/context` carries `clock`, `timeSince`, `rhythm`, `viewIds`, `beatRunIds`, `world`, `sentIds`, `songs` and `inferredFactIds`; `GET /api/conversations/:id/messages` rows carry `song_told_at`; `GET /api/system` counts gain `clockFrozen` (0 or 1), `clockSpans`, `beatsPending`, `beatsResolved`, `viewsActive`, `factsInferred`, `peopleNamed`, `worldFacts`, `knownArtists` and `lastNightlyDay`; `GET /api/export` carries `storyClock`, `nightlyRuns`, `arcBeats`, `beatRuns`, `herViews`, `people`, `worldFacts`, `knownArtists` and the columns `facts.inferred` and `messages.song_told_at`, and the import accepts them (an import that replaces the scene versions without a `storyClock` key clears the spans in the same batch, so the next clock read derives them from the restored record); the character package gains `arcBeats` (her outcome and note, never his part) and `world`, and never carries her reads of him, the artists he knows or the nightly runs.
+
+The checks: `denied_send` (retry; a sentence that denies a recorded send), `name_drift` (retry; "my mom Linda" when her mother is Diane), `rhythm_missed` (flag), `song_known_artist` (flag); `dependency_hook` gains "you never answered", "left me on read", "you never texted back" and "you never wrote back".
+
+## Settings added in v5 (SPEC_V5 "Settings added")
+
+| Key | Default | Accepted |
+|---|---|---|
+| storyClockEnabled | `true` | boolean (false restores v4's real time everywhere except the together rules that need no clock) |
+| gapLineMinMinutes | 120 | 15 to 10080 (TIME SINCE is built only past this gap) |
+| nightlyStoryEnabled | `true` | boolean |
+| nightlyProvider | `"anthropic"` | a provider name (the local overlay sets it to the runner's stub) |
+| nightlyModel | `"claude-sonnet-5"` | 1 to 200 characters; priced while the nightly pass is on |
+| hygieneModel | `"claude-haiku-4-5"` | 1 to 200 characters; priced while hygiene is on |
+| nightlyBudgetUsd | 0.25 | 0 to 5 (the nightly line, inside the caps) |
+| herDayItemsMax | 2 | 0 to 3 (0 = the her-day step is off) |
+| nightlyBeatsMax | 3 | 0 to 10 (0 = the arc step is off) |
+| beatHorizonDays | 7 | 1 to 30 |
+| arcMemoryDays | 7 | 1 to 30 |
+| viewsShown | 6 | 0 to 12 (0 = the section is never built; the reads stay on the Memory page) |
+| viewMinConfidence | 0.4 | 0 to 1 |
+| viewsPerNight | 3 | 0 to 6 (0 = the views step is off) |
+| frictionDaysDefault | 4 | 1 to 14 |
+| sentShown | 12 | 0 to 30 (0 = no section and no check) |
+| sentWindowDays | 7 | 1 to 60 |
+| hygieneEnabled | `true` | boolean |
+| worldShown | 6 | 0 to 20 (0 = no section) |
+| knownArtistsShown | 40 | 0 to 200 (0 = no section and no flag) |
+
+Migration `0009_v5.sql` (additive, applied remotely BEFORE the deploy, as its own command): the tables `story_clock`, `nightly_runs`, `arc_beats`, `beat_runs`, `her_views`, `people`, `world_facts`, `known_artists` with their indexes, `idx_messages_channel_created`, the columns `facts.inferred` (NOT NULL DEFAULT 0) and `messages.song_told_at`, the two guarded canon people, and `INSERT OR IGNORE` rows for the twenty keys.
+
+## Cron (v5)
+
+No new trigger. `0 7 * * *` runs the backup, then the maintenance (asks let go on story time), then the nightly story pass (`runNightlyStory`), each in its own try; the logged result gains `nightly` (the step statuses and the spend) and the pass writes one `nightly.story` audit row. `*/20 * * * *` reads the clock once at the top: while a scene is held no delayed-reply push is sent (the rows are stamped as under quiet hours), and her first texts stop on a together scene or a held clock before the day's count. Nothing schedules a message to him.

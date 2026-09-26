@@ -10,6 +10,30 @@ import type { GroundingRow } from "./grounding";
 import type { VoiceLine } from "./voicebank";
 import type { Correction } from "./corrections";
 import type { ShapeCue } from "./imperfection";
+// v5 (SPEC_V5): type-only imports of the row shapes the v5 modules own.
+import type { StoryClock } from "./clock";
+import type { BeatView } from "./arcs";
+import type { HerViewRow } from "./views";
+import type { PersonRow, WorldFactRow } from "./world";
+import type { PlaceRow } from "./places";
+import type { SentItem } from "./honest";
+
+// v5 small unions shared across lanes (checks.ts, imperfection.ts and honest.ts import them from here).
+export type RhythmSize = "one_word" | "one_line" | "two_lines" | "three_lines" | "longer";
+export type RhythmAction = "none" | "one" | "only";
+export type RhythmExtra = "lowercase" | "typo_fix" | "voice";
+export interface Rhythm { size: RhythmSize; action: RhythmAction | null; extra: RhythmExtra | null }
+export type SentKind = "song" | "photo" | "clip" | "voice" | "media";
+export interface TimeSince { hisAgoMs: number | null; lastAgoMs: number | null; newDay: boolean }
+export interface PromptWorld {
+  people: PersonRow[];
+  places: PlaceRow[];
+  threads: LifeThread[];
+  facts: WorldFactRow[];
+  portraits: Record<string, string>;
+  picked: { personIds: string[]; placeIds: string[] };
+}
+export interface PromptSongs { known: string[]; disliked: string[]; missing: { messageId: string; artist: string; title: string } | null }
 
 export interface Env {
   DB: D1Database;
@@ -203,6 +227,27 @@ export interface Settings {
   // v4 amendment A3: whether her [clip: ...] line starts a clip (false: the line is
   // stripped and the message carries the flag clip_unavailable).
   videoMarkerEnabled: boolean;
+  // v5 (SPEC_V5 "Settings added")
+  storyClockEnabled: boolean;
+  gapLineMinMinutes: number;
+  nightlyStoryEnabled: boolean;
+  nightlyProvider: ProviderName;
+  nightlyModel: string;
+  hygieneModel: string;
+  nightlyBudgetUsd: number;
+  herDayItemsMax: number;
+  nightlyBeatsMax: number;
+  beatHorizonDays: number;
+  arcMemoryDays: number;
+  viewsShown: number;
+  viewMinConfidence: number;
+  viewsPerNight: number;
+  frictionDaysDefault: number;
+  sentShown: number;
+  sentWindowDays: number;
+  hygieneEnabled: boolean;
+  worldShown: number;
+  knownArtistsShown: number;
 }
 
 export interface ConversationRow {
@@ -249,6 +294,9 @@ export interface MessageRow {
   // reply's notification was sent (null otherwise).
   spotify_status?: string | null;
   pushed_at?: string | null;
+  // v5 (migration 0009, SPEC_V5 section 9): when the one-time "could not find it again"
+  // notice for this message's missing song rode into her prompt (null = not yet).
+  song_told_at?: string | null;
 }
 
 export interface ModelRunRow {
@@ -260,7 +308,9 @@ export interface ModelRunRow {
     // v3.1 (JJ): the owner's "Describe from photo" call on his reference photos.
     | "describe"
     // v4 (SPEC_V4 sections 8 and 1): a place picture and the daily "listening to" line.
-    | "place" | "listening";
+    | "place" | "listening"
+    // v5 (SPEC_V5 section 1): the nightly story pass (the step rides in flags_json).
+    | "nightly";
   provider: string;
   model: string;
   prompt_version: string | null;
@@ -289,6 +339,9 @@ export interface FactRow {
   supersedes_id: string | null;
   created_at: string;
   updated_at: string;
+  // v5 (migration 0009, SPEC_V5 section 7): 1 = a guess about him; 0 or absent = said by
+  // him or not about him.
+  inferred?: number;
 }
 
 export interface HistoryRow {
@@ -337,6 +390,13 @@ export interface RelationshipState {
   // The prompt renders the mood by its phase (fresh, fading, faint) and nothing once it is gone.
   mood_set_at?: string;
   mood_days?: number;
+  // v5 (SPEC_V5 section 4): the friction clock, the cooling off on story time, and the rung
+  // a lateral status (cooling off, on a break) stepped away from.
+  friction_set_at?: string;
+  friction_days?: number;
+  cooling_off_set_at?: string | null;
+  cooling_off_hours?: number | null;
+  status_before?: string | null;
   [k: string]: unknown;
 }
 
@@ -378,7 +438,17 @@ export type ProposalKind =
   | "ask"
   | "ask_update"
   | "grounding"
-  | "life_update";
+  | "life_update"
+  // v5 (SPEC_V5 section "Proposals"): a dated step on a want and how it went (section 2),
+  // her read of him (3), a merge and a guess mark (7; the last three nightly only), a fixed
+  // fact about a person or place (8), an artist he knows or did not like (9).
+  | "want_beat"
+  | "beat_outcome"
+  | "her_view"
+  | "fact_merge"
+  | "fact_mark"
+  | "world_fact"
+  | "known_artist";
 
 export interface ProposalRow {
   id: string;
@@ -550,6 +620,12 @@ export interface CheckContext {
   // ask), and his pending text (an ask he raised himself this turn is answered, never nagged).
   opener?: boolean;
   hisText?: string;
+  // v5: what she already sent (denied_send, section 6), the named people (name_drift, section 8),
+  // this turn's rhythm cue (rhythm_missed, section 5), the listed artists (song_known_artist, section 9).
+  sent?: Array<{ kind: SentKind; words: string[]; today: boolean }>;
+  people?: Array<{ name: string; relation: string | null; named: boolean }>;
+  rhythm?: { size: RhythmSize; action: RhythmAction | null } | null;
+  knownArtists?: string[];
 }
 
 export interface CheckResult {
@@ -668,6 +744,25 @@ export interface PromptState {
   // rows the conversation holds. Absent or empty renders nothing extra.
   saidHere?: SaidHere | null;
   storyRows?: number;
+  // v5
+  clock?: StoryClock | null;
+  timeSince?: TimeSince | null;
+  clockWords?: string | null;
+  gapLineMinMinutes?: number;
+  views?: HerViewRow[];
+  wrongViews?: HerViewRow[];
+  viewsShown?: number;
+  viewMinConfidence?: number;
+  beats?: BeatView[];
+  beatHorizonDays?: number;
+  arcMemoryDays?: number;
+  world?: PromptWorld | null;
+  worldShown?: number;
+  sent?: SentItem[];
+  songs?: PromptSongs | null;
+  knownArtistsShown?: number;
+  rhythm?: Rhythm | null;
+  frictionDaysDefault?: number;
 }
 
 // v3.2: the lines said in the open conversation, his and hers, deduplicated, not yet in memory.
@@ -691,6 +786,10 @@ export interface AssembledContext {
   // v3.1 (JJ): how many of his reference photos were prepended to the final user turn for
   // the provider call (0 = none rode along this turn).
   hisFaceShown: number;
+  // v5 (SPEC_V5 section 1): the story clock read for this turn and the story instant it
+  // stands at (the real now unless a together scene holds the moment).
+  clock: StoryClock;
+  storyNow: string;
 }
 
 // ------------------------------------------------------------------ API shapes

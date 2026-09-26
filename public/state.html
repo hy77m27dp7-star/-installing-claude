@@ -60,6 +60,28 @@
         <span class="chips" id="moodStatus"></span>
       </div>
     </div>
+    <div class="card stack" id="frictionCard">
+      <div class="row between">
+        <h2 class="section-title">Friction</h2>
+        <span class="chips" id="frictionChips"></span>
+      </div>
+      <div class="grid-form">
+        <label class="field">Friction
+          <input type="text" id="frictionInput" placeholder="none" maxlength="200">
+        </label>
+        <label class="field">Friction days
+          <input type="number" id="frictionDays" min="1" max="14" step="1" inputmode="numeric" placeholder="4">
+        </label>
+        <label class="field hidden" id="statusBeforeField">Before
+          <input type="text" id="statusBefore" readonly>
+        </label>
+      </div>
+      <div class="row">
+        <button type="button" class="btn primary" id="frictionSave">Save</button>
+        <button type="button" class="btn ghost" id="frictionClear">Clear friction</button>
+        <span class="chips" id="frictionStatus"></span>
+      </div>
+    </div>
     <div class="cols-2">
       <div class="card stack">
         <div class="row between">

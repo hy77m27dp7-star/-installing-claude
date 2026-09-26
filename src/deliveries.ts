@@ -96,12 +96,15 @@ export interface PushDueResult {
   result: PushSendResult | null;
   // Present (true) when the tick fell inside quiet hours: nothing was sent, the rows stamped.
   quiet?: true;
+  // v5 (SPEC_V5 section 1): present (true) when a together scene is held: nothing was sent,
+  // every row stamped exactly as under quiet hours.
+  frozen?: true;
 }
 
 // The cron's half. Reads the due rows, splits them, sends ONE push when any qualifies and
 // the tick is outside quiet hours, and stamps every row it saw (push and skip together)
 // whatever the push result.
-export async function pushDueReplies(env: Env, db: D1Database, now: Date = new Date(), opts: { quiet?: boolean } = {}): Promise<PushDueResult> {
+export async function pushDueReplies(env: Env, db: D1Database, now: Date = new Date(), opts: { quiet?: boolean; frozen?: boolean } = {}): Promise<PushDueResult> {
   const nowIso = now.toISOString();
   const floorIso = new Date(now.getTime() - DUE_WINDOW_MS).toISOString();
   const r = await db
@@ -111,7 +114,8 @@ export async function pushDueReplies(env: Env, db: D1Database, now: Date = new D
   const split = dueReplies(r.results ?? [], now);
   let result: PushSendResult | null = null;
   const quiet = opts.quiet === true;
-  if (split.push.length && !quiet) {
+  const frozen = opts.frozen === true;
+  if (split.push.length && !quiet && !frozen) {
     // One notification for the batch, never one per message; sendPush never throws.
     result = await sendPush(env, db, PUSH_REASON_DELAYED, now);
   }
@@ -124,7 +128,8 @@ export async function pushDueReplies(env: Env, db: D1Database, now: Date = new D
       console.error("deliveries: pushed_at not stamped", e instanceof Error ? e.name : "error", stamped.length);
     }
   }
-  if (split.push.length) console.log("deliveries", "due", split.push.length, "skipped", split.skip.length, "push", quiet ? "quiet hours" : result ? (result.skipped ?? "sent " + result.sent) : "-");
+  if (split.push.length) console.log("deliveries", "due", split.push.length, "skipped", split.skip.length, "push", frozen ? "held scene" : quiet ? "quiet hours" : result ? (result.skipped ?? "sent " + result.sent) : "-");
+  if (frozen) return { due: split.push.length, pushed: false, result: null, frozen: true };
   if (quiet && split.push.length) return { due: split.push.length, pushed: false, result: null, quiet: true };
   return { due: split.push.length, pushed: split.push.length > 0, result };
 }

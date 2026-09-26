@@ -96,7 +96,7 @@ t("memoryMap on the stand-in: the faded, the vivid, the returned, the sealed sub
   assert.equal(byId.f_back.returned, true, "created 40 days ago, touched two days ago");
   assert.equal(byId.f_vivid.returned, false, "three days old: simply new");
   assert.equal(map.facts[0].id, "f_vivid", "sorted by score");
-  for (const f of map.facts) assert.deepEqual(Object.keys(f).sort(), ["createdAt", "halfLifeDays", "id", "lastTouched", "phase", "recency", "returned", "score", "subject", "text", "touches", "weight"]);
+  for (const f of map.facts) assert.deepEqual(Object.keys(f).sort(), ["createdAt", "halfLifeDays", "id", "inferred", "lastTouched", "phase", "recency", "returned", "score", "subject", "text", "touches", "weight"]);
   assert.deepEqual(map.history.map((h) => h.seq), [1, 2]);
   assert.ok(map.history.every((h) => typeof h.phase === "string" && h.title));
   assert.deepEqual(map.sealed.map((s) => s.subject), ["the singing"]);
