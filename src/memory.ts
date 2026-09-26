@@ -13,6 +13,7 @@ import { auditStmt, listProposals, newId, nowIso } from "./db";
 import { ApiHttpError } from "./errors";
 import type { FactRow, HistoryRow, ProposalRow } from "./types";
 import type { LifeThread } from "./life";
+import { saidKey } from "./said";
 
 export type MemoryEntity = "fact" | "history" | "thread" | "log" | "want";
 
@@ -786,14 +787,58 @@ export function keptOnDay(rows: ProposalRow[], dayKey: string, tz: string | null
   }));
 }
 
+interface ChainRow { id: string; supersedes_id: string | null; status: string }
+
+// Every id in a version chain whose newest row is dead by `isDead` (a fact whose newest version
+// is not approved, a thread whose newest version is dropped). Pure.
+export function deadChainIds(rows: readonly ChainRow[], isDead: (status: string) => boolean): string[] {
+  const next = new Map<string, string>();
+  for (const r of rows) if (r && typeof r.supersedes_id === "string" && r.supersedes_id) next.set(r.supersedes_id, r.id);
+  const byId = new Map(rows.filter((r) => r && typeof r.id === "string").map((r) => [r.id, r] as const));
+  const out: string[] = [];
+  for (const r of byId.values()) {
+    let head = r;
+    const seen = new Set<string>([r.id]);
+    for (let n = next.get(head.id); n && !seen.has(n); n = next.get(head.id)) {
+      const row = byId.get(n);
+      if (!row) break;
+      seen.add(n);
+      head = row;
+    }
+    if (isDead(String(head.status))) out.push(r.id);
+  }
+  return out;
+}
+
+// Near-identical kept lines (content-word sets overlapping 60% or more) show once, the newest. Pure.
+export function collapseKept(items: MemoryMapKept[]): MemoryMapKept[] {
+  const out: MemoryMapKept[] = [];
+  const sets: Array<Set<string>> = [];
+  for (const k of items) {
+    const words = new Set(saidKey(k.proposal).split(" ").filter(Boolean));
+    const dup = sets.some((s2) => {
+      if (!words.size || !s2.size) return false;
+      let inter = 0;
+      for (const w of words) if (s2.has(w)) inter++;
+      return inter / (words.size + s2.size - inter) >= 0.6;
+    });
+    if (dup) continue;
+    sets.push(words);
+    out.push(k);
+  }
+  return out;
+}
+
 export async function memoryMap(db: D1Database, settings: MemorySettings | null | undefined, now: Date = new Date()): Promise<MemoryMap> {
   const s = memorySettings(settings);
   const tz = settings && typeof settings.timezone === "string" ? settings.timezone : "UTC";
-  const [factRows, historyRows, weights, proposals] = await Promise.all([
+  const [factRows, historyRows, weights, proposals, factChain, threadChain] = await Promise.all([
     db.prepare("SELECT * FROM facts WHERE status = ?1 AND scope IN ('justin', 'shared', 'avelie')").bind("approved").all<FactRow>(),
     db.prepare("SELECT * FROM history WHERE status = ?1").bind("approved").all<HistoryRow>(),
     loadWeights(db),
     listProposals(db, "approved", KEPT_SCAN_LIMIT),
+    db.prepare("SELECT id, supersedes_id, status FROM facts").all<ChainRow>().then((r) => r.results).catch(() => [] as ChainRow[]),
+    db.prepare("SELECT id, supersedes_id, status FROM life_threads").all<ChainRow>().then((r) => r.results).catch(() => [] as ChainRow[]),
   ]);
 
   // Facts about him (scope justin and shared), scored as a turn with no conversation would.
@@ -847,7 +892,12 @@ export async function memoryMap(db: D1Database, settings: MemorySettings | null 
     .sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id))
     .map((f) => ({ id: f.id, subject: typeof f.subject === "string" && f.subject.trim() ? f.subject.trim() : SEALED_UNTITLED, createdAt: f.created_at }));
 
-  const keptToday = keptOnDay(proposals, localDayKey(now, tz), tz);
+  // 2026-09-26: the list read the raw proposal log, so every kept rewording showed (the coffee
+  // place six times) even after the row behind it was merged away. Only what is still live in
+  // her memory shows, and near-identical lines collapse into the newest one.
+  const dead = new Set([...deadChainIds(factChain, (st) => st !== "approved"), ...deadChainIds(threadChain, (st) => st === "dropped")]);
+  const live = proposals.filter((p) => !(typeof p.promoted_id === "string" && dead.has(p.promoted_id)));
+  const keptToday = collapseKept(keptOnDay(live, localDayKey(now, tz), tz));
 
   const counts: MemoryMapCounts = {
     facts: facts.length,
