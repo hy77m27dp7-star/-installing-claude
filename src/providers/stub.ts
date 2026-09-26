@@ -525,8 +525,9 @@ export function stubRunwayFetch(options: StubRunwayOptions = {}): StubRunway {
 // a FetchLike that also carries `requests` (every request, with its parsed body) and a
 // `fetch` property pointing at itself, so both readings of "the stub fetch" work.
 export interface StubSpotifyOptions {
-  // What GET /v1/me reports as `product` (Amendment A1: the Premium check). Default premium.
-  premium?: boolean;
+  // What GET /v1/me reports as `product` (Amendment A1: the Premium check). Default premium;
+  // null leaves `product` out, the shape Spotify answers a Development Mode app since February 2026.
+  premium?: boolean | null;
 }
 
 export interface StubSpotifyRequest {
@@ -538,7 +539,7 @@ export interface StubSpotifyRequest {
 export type StubSpotifyFetch = ((url: string, init?: RequestInit) => Promise<Response>) & {
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   requests: StubSpotifyRequest[];
-  premium: boolean;
+  premium: boolean | null;
 };
 
 // A copy of src/spotify.ts SPOTIFY_SCOPES (spotify.ts imports this file; the other way
@@ -575,7 +576,7 @@ function stubTrackFromQuery(q: string): { title: string; artist: string } {
 
 export function stubSpotifyFetch(options: StubSpotifyOptions = {}): StubSpotifyFetch {
   const requests: StubSpotifyRequest[] = [];
-  const premium = options.premium !== false;
+  const premium: boolean | null = options.premium === null ? null : options.premium !== false;
   const json = (data: unknown, status = 200): Response =>
     new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 
@@ -595,9 +596,9 @@ export function stubSpotifyFetch(options: StubSpotifyOptions = {}): StubSpotifyF
     if (u.origin !== "https://api.spotify.com") return json({ error: { status: 404, message: "Not found" } }, 404);
 
     if (method === "GET" && u.pathname === "/v1/me") {
-      return json({ id: STUB_SPOTIFY_USER, display_name: "Stub Listener", product: premium ? "premium" : "free" });
+      return json(premium === null ? { id: STUB_SPOTIFY_USER, display_name: "Stub Listener" } : { id: STUB_SPOTIFY_USER, display_name: "Stub Listener", product: premium ? "premium" : "free" });
     }
-    if (method === "POST" && u.pathname === "/v1/users/" + STUB_SPOTIFY_USER + "/playlists") {
+    if (method === "POST" && u.pathname === "/v1/me/playlists") {
       const b = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
       return json({ id: STUB_SPOTIFY_PLAYLIST, name: typeof b.name === "string" ? b.name : "songs from avelie" }, 201);
     }
@@ -614,7 +615,7 @@ export function stubSpotifyFetch(options: StubSpotifyOptions = {}): StubSpotifyF
         },
       });
     }
-    const add = /^\/v1\/playlists\/([^/]+)\/tracks$/.exec(u.pathname);
+    const add = /^\/v1\/playlists\/([^/]+)\/items$/.exec(u.pathname);
     if (method === "POST" && add) {
       if (add[1] !== STUB_SPOTIFY_PLAYLIST) return json({ error: { status: 404, message: "Not found." } }, 404);
       return json({ snapshot_id: "stub" }, 201);

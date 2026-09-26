@@ -101,6 +101,17 @@ The WebRTC media itself (UDP, or TURN over `turn:` / `turns:`) is not governed b
 `connect-src`. `script-src` stays `'self'` (the client and its worklets are same-origin
 files; nothing loads from a CDN). `media-src 'self' blob:` already covers playback.
 
+One gap, on the WebSocket fallback only (the signed-URL transport, used when the token
+endpoint is unavailable): a browser that cannot set the mic sample rate (Firefox, some
+Safari) makes the client load a resampler worklet, `libsamplerate.worklet.js` from
+`@alexanderolsen/libsamplerate-js` 2.1.2, whose default address is jsdelivr. The page now
+passes the same-origin path `/js/vendor/worklets/libsamplerate.worklet.js`
+(`LIBSAMPLERATE_PATH` in `public/js/call_elevenlabs.js`), so no CDN is ever contacted, but
+the file itself is not vendored yet (it is not in `node_modules`; adding it means one npm
+install of that package and a copy into `public/js/vendor/worklets/`). Until then that one
+path fails with `connect_failed`, exactly as it did when the CSP refused the CDN. WebRTC,
+the normal transport, never loads it.
+
 NOT YET CONFIRMED IN A REAL BROWSER: this lane ran without one (Justin's word for this
 build: no Chrome until he names the project). The list above comes from the client's
 source and the docs. On the first real call the integrator or Justin reads the browser

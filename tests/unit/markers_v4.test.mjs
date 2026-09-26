@@ -79,3 +79,18 @@ test("stripMarkers keeps its v1 shape (clean, photo, song); stripAllMarkers gain
   assert.equal(plain.clip, null);
   assert.equal(plain.clean, "just words");
 });
+
+test("photoIncludesHim (review): his clothes on her yield to alone or just me; he, him and his name someone else in her second-person line; a curly apostrophe reads", () => {
+  for (const d of [
+    "me and mason at the lake, his arm around my shoulders",
+    "the barista behind the counter, his hands on the machine",
+    "wearing your hoodie on my couch, alone",
+    "mirror selfie in your hoodie, alone in my room",
+    "wearing your jacket, just me at the pier",
+    "he's next to me at the bar, some guy from work",
+  ]) assert.equal(photoIncludesHim(d), false, d);
+  assert.equal(photoIncludesHim("you’re next to me on the bench"), true, "curly apostrophe");
+  assert.equal(photoIncludesHim("selfie with him"), true, "him as the subject stays a weak signal");
+  assert.equal(photoIncludesHim("his jacket on my shoulders"), true, "the spec's positive, now weak");
+  assert.equal(photoIncludesHim("his jacket on my shoulders, just me"), false, "and it yields to just me");
+});

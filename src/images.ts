@@ -104,6 +104,17 @@ export function appendFlag(json: string | null, flag: Flag): string {
   return JSON.stringify(list);
 }
 
+// Whether a flags_json list already carries a flag with this code.
+export function hasFlagCode(json: string | null, code: string): boolean {
+  if (!json) return false;
+  try {
+    const v: unknown = JSON.parse(json);
+    return Array.isArray(v) && v.some((f) => typeof f === "object" && f !== null && (f as Flag).code === code);
+  } catch {
+    return false;
+  }
+}
+
 function claimExpired(notes: string | null, now: number): boolean {
   if (!notes || !notes.startsWith(CLAIM_NOTE)) return true;
   const since = Date.parse(notes.slice(CLAIM_NOTE.length));
@@ -470,10 +481,14 @@ export async function generateCandidate(
         .bind(id, requestMessageId));
       // The reason his face is missing from a picture that named him rides on the message
       // (read, append, write back guarded by the id); an owner picture without a message writes nothing.
+      // Once per message: a regenerate (or a lost claim, whose batch still runs) never
+      // appends the same code a second time.
       if (himFlag) {
         const current = await db.prepare("SELECT flags_json FROM messages WHERE id = ?1").bind(requestMessageId).first<{ flags_json: string | null }>();
-        const flags = appendFlag(current?.flags_json ?? null, himFlag);
-        stmts.push(db.prepare("UPDATE messages SET flags_json = ?2 WHERE id = ?1").bind(requestMessageId, flags));
+        if (!hasFlagCode(current?.flags_json ?? null, himFlag.code)) {
+          const flags = appendFlag(current?.flags_json ?? null, himFlag);
+          stmts.push(db.prepare("UPDATE messages SET flags_json = ?2 WHERE id = ?1").bind(requestMessageId, flags));
+        }
       }
     }
     const results = await db.batch(stmts);

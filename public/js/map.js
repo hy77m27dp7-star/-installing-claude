@@ -114,7 +114,8 @@ export function drawMap(container, state, opts) {
   const svg = el("svg", {
     class: "map" + (typeof options.onTap === "function" ? " armed" : ""),
     viewBox: "0 0 " + view.w + " " + view.h,
-    role: "img",
+    // A group, not an img: an img role would make the place buttons inside it presentational.
+    role: "group",
     "aria-label": "Map",
     preserveAspectRatio: "xMidYMid meet",
   });

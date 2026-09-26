@@ -47,7 +47,7 @@
   --s-4: 16px;
   --s-5: 24px;
   --s-6: 32px;
-  --place-veil: linear-gradient(180deg, rgba(6, 10, 19, 0.82), rgba(6, 10, 19, 0.92));
+  --place-veil: linear-gradient(180deg, rgba(6, 10, 19, 0.86), rgba(6, 10, 19, 0.92));
   --dial-track: var(--line-2);
   --dial-fill: var(--accent-solid);
   --safe-b: env(safe-area-inset-bottom, 0px);
@@ -1039,6 +1039,9 @@ main.chat {
 }
 
 .drawer.open { transform: none; }
+/* A closed drawer leaves the tab order and the accessibility tree (its playlist iframe too),
+   after the slide out finishes. */
+.drawer:not(.open) { visibility: hidden; transition: transform 0.2s var(--ease), visibility 0s linear 0.2s; }
 
 .drawer-head {
   display: flex;
@@ -1356,7 +1359,7 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 @media (prefers-reduced-motion: reduce) {
   .photo-pending, .typing span, .icon-btn.recording, .bubble.enter { animation: none; }
-  .sidebar, .drawer, .btn, .switch .track, .switch .track::after, .seg button, .icon-btn, .thread { transition: none; }
+  .sidebar, .drawer, .drawer:not(.open), .btn, .switch .track, .switch .track::after, .seg button, .icon-btn, .thread { transition: none; }
 }
 
 /* ============================================================ v3 */
@@ -2147,9 +2150,9 @@ main.page.memory { display: grid; gap: var(--s-4); align-content: start; }
 .tile.mid { flex: 2 1 220px; font-size: var(--fs-1); }
 .tile.high { flex: 3 1 320px; font-size: var(--fs-2); }
 .tile.phase-faded, .tile.phase-fading { color: var(--text-2); }
-.tile .subject { font-size: var(--fs-0); font-weight: 600; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.tile .subject { font-size: var(--fs-0); font-weight: 600; color: var(--text-2); letter-spacing: 0.06em; text-transform: uppercase; }
 .tile .text { overflow-wrap: anywhere; }
-.tile .tile-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--fs-0); color: var(--muted); font-variant-numeric: tabular-nums; }
+.tile .tile-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--fs-0); color: var(--text-2); font-variant-numeric: tabular-nums; }
 
 /* An untold fact: a closed envelope, the subject only. */
 .tile.envelope {
@@ -2249,3 +2252,13 @@ main.page.memory { display: grid; gap: var(--s-4); align-content: start; }
 }
 
 a.btn, a.btn:hover { text-decoration: none; }
+
+/* The Spotify embeds (the phone panel's playlist, the one a song card or the now-playing
+   strip gets): no browser border on the dark ground. */
+.playlist-embed, .spotify-embed { display: block; border: 0; border-radius: var(--radius-s); }
+
+/* The v4 controls reach the full tap size at phone width. */
+@media (max-width: 600px) {
+  .place-row .place-actions .btn.small, .song-card .song-retry, .queue-control .btn.small { min-height: var(--tap); }
+  .now-playing .icon-btn, .song-card .song-play { width: var(--tap); height: var(--tap); }
+}

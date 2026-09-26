@@ -13,8 +13,11 @@
 //   was in the thread for it; a buzz twenty minutes later would only pull him back.
 // - DUE_WINDOW_MS: a reply due before the window is never pushed either; it sits in the
 //   thread and he reads it there.
+// - Quiet hours (herFirstQuietHours, her time; the cron passes `quiet`): a reply that lands
+//   inside them never buzzes his phone. It sits in the thread for the morning.
 // Every row the query finds is stamped pushed_at, pushed or skipped, whatever the push
-// result (no keys, no subscription, a failed send), so no reply is ever considered twice.
+// result (no keys, no subscription, a failed send, quiet hours), so no reply is ever
+// considered twice.
 // The instant-mode reply (deliver_at null) never enters the query at all.
 import { sendPush } from "./push";
 import type { PushSendResult } from "./push";
@@ -91,11 +94,14 @@ export interface PushDueResult {
   // Whether a push was attempted for the batch (the result says how it went).
   pushed: boolean;
   result: PushSendResult | null;
+  // Present (true) when the tick fell inside quiet hours: nothing was sent, the rows stamped.
+  quiet?: true;
 }
 
-// The cron's half. Reads the due rows, splits them, sends ONE push when any qualifies,
-// and stamps every row it saw (push and skip together) whatever the push result.
-export async function pushDueReplies(env: Env, db: D1Database, now: Date = new Date()): Promise<PushDueResult> {
+// The cron's half. Reads the due rows, splits them, sends ONE push when any qualifies and
+// the tick is outside quiet hours, and stamps every row it saw (push and skip together)
+// whatever the push result.
+export async function pushDueReplies(env: Env, db: D1Database, now: Date = new Date(), opts: { quiet?: boolean } = {}): Promise<PushDueResult> {
   const nowIso = now.toISOString();
   const floorIso = new Date(now.getTime() - DUE_WINDOW_MS).toISOString();
   const r = await db
@@ -104,7 +110,8 @@ export async function pushDueReplies(env: Env, db: D1Database, now: Date = new D
     .all<DueRow>();
   const split = dueReplies(r.results ?? [], now);
   let result: PushSendResult | null = null;
-  if (split.push.length) {
+  const quiet = opts.quiet === true;
+  if (split.push.length && !quiet) {
     // One notification for the batch, never one per message; sendPush never throws.
     result = await sendPush(env, db, PUSH_REASON_DELAYED, now);
   }
@@ -117,6 +124,7 @@ export async function pushDueReplies(env: Env, db: D1Database, now: Date = new D
       console.error("deliveries: pushed_at not stamped", e instanceof Error ? e.name : "error", stamped.length);
     }
   }
-  if (split.push.length) console.log("deliveries", "due", split.push.length, "skipped", split.skip.length, "push", result ? (result.skipped ?? "sent " + result.sent) : "-");
+  if (split.push.length) console.log("deliveries", "due", split.push.length, "skipped", split.skip.length, "push", quiet ? "quiet hours" : result ? (result.skipped ?? "sent " + result.sent) : "-");
+  if (quiet && split.push.length) return { due: split.push.length, pushed: false, result: null, quiet: true };
   return { due: split.push.length, pushed: split.push.length > 0, result };
 }

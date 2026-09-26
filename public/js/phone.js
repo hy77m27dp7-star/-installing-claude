@@ -9,6 +9,9 @@
 // only, no prose.
 import { api, h, chip, clear, flash, ago } from "./api.js";
 import { drawMap } from "./map.js";
+// player.js (A1) answers the Play / Pause / Next events this panel dispatches; importing it
+// only registers its listeners (no token is fetched until something plays).
+import "./player.js";
 
 const REFRESH_MS = 60 * 1000;
 const SPOTIFY_TTL_MS = 5 * 60 * 1000;
@@ -394,11 +397,19 @@ function renderPlayer(el, state) {
   }
   const playlistId = typeof info.playlistId === "string" && /^[A-Za-z0-9]{1,62}$/.test(info.playlistId) ? info.playlistId : "";
   if (!info.connected || !playlistId) {
+    delete el.dataset.playlistId;
     fill(el);
     hideIfEmpty(el, false);
     return;
   }
   hideIfEmpty(el, true);
+  // The panel refreshes every minute: the same playlist keeps its iframe (a new one would
+  // stop the embed's playback and cost a reload each time).
+  if (el.dataset.playlistId === playlistId && el.querySelector("iframe.playlist-embed")) {
+    renderNowPlaying(el);
+    return;
+  }
+  el.dataset.playlistId = playlistId;
   const uri = "spotify:playlist:" + playlistId;
   const frame = h("iframe", {
     class: "playlist-embed",
@@ -428,6 +439,15 @@ function renderPlayer(el, state) {
     strip,
     frame);
   renderNowPlaying(el);
+}
+
+// A places list he is working in: focus inside it, a pin typed and not saved, or an action
+// still running. The minute refresh leaves such a list alone; his own reload redraws it.
+function placesBusy(el) {
+  if (!el || typeof document === "undefined") return false;
+  const active = document.activeElement;
+  if (active && active !== document.body && el.contains(active)) return true;
+  return Boolean(el.querySelector(".place-row.busy, .place-row[data-dirty]"));
 }
 
 // ------------------------------------------------------------------ the map and the places
@@ -488,8 +508,9 @@ function placeCard(p, state, opts) {
       busy(false);
     }
   };
-  const latIn = h("input", { type: "number", step: "any", min: "-90", max: "90", inputmode: "decimal", placeholder: "lat", "aria-label": "Latitude", value: Number.isFinite(Number(p.lat)) ? String(p.lat) : "" });
-  const lonIn = h("input", { type: "number", step: "any", min: "-180", max: "180", inputmode: "decimal", placeholder: "lon", "aria-label": "Longitude", value: Number.isFinite(Number(p.lon)) ? String(p.lon) : "" });
+  const markDirty = () => { card.dataset.dirty = "1"; };
+  const latIn = h("input", { type: "number", step: "any", min: "-90", max: "90", inputmode: "decimal", placeholder: "lat", "aria-label": "Latitude", value: Number.isFinite(Number(p.lat)) ? String(p.lat) : "", oninput: markDirty });
+  const lonIn = h("input", { type: "number", step: "any", min: "-180", max: "180", inputmode: "decimal", placeholder: "lon", "aria-label": "Longitude", value: Number.isFinite(Number(p.lon)) ? String(p.lon) : "", oninput: markDirty });
   const pinned = Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon));
   const armed = armedPlaceId === p.id;
   const card = h("div", { class: "place-row" + (p.here ? " here" : "") + (p.active === false ? " inactive" : ""), id: "place-" + p.id, "data-id": p.id },
@@ -585,8 +606,8 @@ export function renderPhone(container, state, opts) {
   const full = typeof options.full === "boolean" ? options.full : !readOnly && Boolean(container.closest && (container.closest("main.page.phone") || container.matches("main.page.phone")));
   const ctx = {
     full,
-    reload: typeof options.reload === "function" ? options.reload : async () => renderPhone(container, state, options),
-    rerender: () => renderPhone(container, state, options),
+    reload: typeof options.reload === "function" ? options.reload : async () => renderPhone(container, state, { ...options, refresh: false }),
+    rerender: () => renderPhone(container, state, { ...options, refresh: false }),
     onMapTap: async (id, lat, lon) => {
       const status = slot(container, "placesStatus", "chips");
       flash(status, "pinning", "accent");
@@ -616,7 +637,7 @@ export function renderPhone(container, state, opts) {
       case "phoneListening": renderListening(el, state); break;
       case "phonePlayer": renderPlayer(el, state); break;
       case "phoneMap": renderMap(el, state, ctx); break;
-      case "placesList": renderPlaces(el, state, ctx); break;
+      case "placesList": if (!(options.refresh === true && placesBusy(el))) renderPlaces(el, state, ctx); break;
       default: break;
     }
   }
@@ -630,7 +651,9 @@ function bootPhonePage(main) {
   let loading = false;
   let last = null;
 
-  async function load() {
+  // `periodic`: the minute refresh (or a return to the tab), which leaves a places list he is
+  // working in alone; every other call (the first load, his own actions) redraws it all.
+  async function load(periodic) {
     if (loading) return;
     loading = true;
     try {
@@ -639,7 +662,7 @@ function bootPhonePage(main) {
         api("GET", "/api/places").then((r) => (r && Array.isArray(r.places) ? r.places : [])).catch(() => []),
       ]);
       last = mergePlaces(state, places);
-      renderPhone(main, last, { full: true, reload: load });
+      renderPhone(main, last, { full: true, reload: () => load(false), refresh: periodic === true });
     } catch (e) {
       flash(statusEl, e && e.message ? e.message : "error", "danger wrap");
     } finally {
@@ -649,7 +672,7 @@ function bootPhonePage(main) {
 
   function start() {
     stop();
-    timer = setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
+    timer = setInterval(() => { if (!document.hidden) load(true); }, REFRESH_MS);
   }
 
   function stop() {
@@ -659,7 +682,7 @@ function bootPhonePage(main) {
 
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stop();
-    else { load(); start(); }
+    else { load(true); start(); }
   });
 
   // The page's own add form (phone.html: #placeTitle, #placeDetail, #placeAdd, #placeAddStatus).
@@ -678,7 +701,7 @@ function bootPhonePage(main) {
         if (titleIn) titleIn.value = "";
         if (detailIn) detailIn.value = "";
         flash(status, "added", "ok");
-        await load();
+        await load(false);
       } catch (e) {
         flash(status, e && e.message ? e.message : "error", "danger wrap");
       } finally {

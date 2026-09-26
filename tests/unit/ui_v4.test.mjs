@@ -102,3 +102,34 @@ test("typography under public/: no em dash, en dash or Unicode ellipsis in any p
   const files = [...pages, "css/app.css", "sw.js", ...readdirSync(join(PUBLIC, "js")).filter((f) => f.endsWith(".js")).map((f) => "js/" + f)];
   for (const f of files) assert.ok(!BAD_TYPOGRAPHY.test(read(f)), f);
 });
+
+test("A1 player (review): chat.js and phone.js import player.js (its listeners answer the play, pause and next events), the shell caches it, and the song card carries an embed slot its play event targets", () => {
+  for (const f of ["js/chat.js", "js/phone.js"]) assert.ok(/^import "\.\/player\.js";$/m.test(read(f)), f + " imports player.js");
+  const sw = read("sw.js");
+  assert.ok(sw.includes('"/js/player.js"'), "shell /js/player.js");
+  const chat = read("js/chat.js");
+  assert.ok(/h\("div", \{ class: "song-embed hidden" \}\)/.test(chat), "the card's embed slot");
+  assert.ok(/new CustomEvent\("avelie:play", \{ detail: \{ uri, target: embed \} \}\)/.test(chat), "the play event targets the slot");
+  assert.ok(!/class: "icon-btn song-play hidden"/.test(chat), "the play control is not hidden until a device exists");
+  const player = read("js/player.js");
+  assert.ok(/t\.premium === false/.test(player) && !/!t\.premium/.test(player), "only an explicit false premium refuses the SDK");
+  assert.ok(/code === "player_off"/.test(player), "spotifyPlayer off renders no embed");
+});
+
+test("sw.js (review): her masters are served cache-first; /api and /media are never cached", () => {
+  const sw = read("sw.js");
+  assert.ok(/const MASTERS = "\/images\/masters\/";/.test(sw));
+  assert.ok(/url\.pathname\.startsWith\(MASTERS\)[\s\S]{0,200}caches\.match\(request/.test(sw), "cache first for the masters");
+  assert.ok(/url\.pathname\.startsWith\("\/api\/"\) \|\| url\.pathname\.startsWith\("\/media\/"\)\) return;/.test(sw));
+});
+
+test("app.css (review): the memory tiles' subject and foot read at AA on the vivid phase; embeds have no browser border; a closed drawer leaves the tab order; the veil starts at 0.86", () => {
+  const css = read("css/app.css");
+  assert.ok(/\.tile \.subject \{[^}]*color: var\(--text-2\)/.test(css));
+  assert.ok(/\.tile \.tile-foot \{[^}]*color: var\(--text-2\)/.test(css));
+  assert.ok(/\.playlist-embed, \.spotify-embed \{[^}]*border: 0/.test(css));
+  assert.ok(/\.drawer:not\(\.open\) \{ visibility: hidden;/.test(css));
+  assert.ok(/--place-veil: linear-gradient\(180deg, rgba\(6, 10, 19, 0\.86\)/.test(css));
+  const map = read("js/map.js");
+  assert.ok(/role: "group",\s*"aria-label": "Map"/.test(map), "the map is a group, so its place buttons stay buttons");
+});

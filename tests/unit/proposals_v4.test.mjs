@@ -4,6 +4,7 @@
 // system prompt's two new lines.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { loadSrc, relationshipState, sceneState } from "./helpers.mjs";
 import { loadSrcIfPresent, guard, NOW } from "./helpers_v4.mjs";
 
@@ -55,6 +56,29 @@ t("mergeSceneState: an empty payload keeps status, location and present (the reg
   assert.equal(tooLong.present.length, 10, "more than ten present is cut at ten");
   const cleaned = proposals.mergeSceneState(cur, { present: ["Avelie", " him ", "", 42] }, "x");
   assert.ok(Array.isArray(cleaned.present) && cleaned.present.every((p) => typeof p === "string" && p.trim()), JSON.stringify(cleaned.present));
+});
+
+t("mergeSceneState with auto (an auto-kept proposal): never moves the scene INTO together; inside a Together scene the place still moves; out of together and every other field as by hand", () => {
+  const apart = sceneState({ status: "apart", location: null, present: [] });
+  const auto = proposals.mergeSceneState(apart, { status: "together", location: "her bed", present: ["Avelie", "him"] }, "they kissed", { auto: true });
+  assert.equal(auto.status, "apart", "a model's reading never puts him in the room with her");
+  assert.equal(auto.location, "her bed", "the place is still hers to text from");
+  assert.equal(auto.summary, "they kissed");
+  const byHand = proposals.mergeSceneState(apart, { status: "together", location: "her bed" }, "they kissed");
+  assert.equal(byHand.status, "together", "his own approval moves it");
+  const inside = proposals.mergeSceneState(sceneState({ status: "together", location: "the sandwich table" }), { status: "together", location: "the pier" }, "they walked to the pier", { auto: true });
+  assert.equal(inside.status, "together");
+  assert.equal(inside.location, "the pier", "33a: the place follows the scene he already chose");
+  const leaving = proposals.mergeSceneState(sceneState({ status: "together", location: "the pier" }), { status: "apart" }, "they said goodnight", { auto: true });
+  assert.equal(leaving.status, "apart", "leaving is never held");
+  const padded = proposals.mergeSceneState(sceneState({ status: " Together " }), { status: "together", location: "the pier" }, "x", { auto: true });
+  assert.equal(padded.status, "together", "a padded current status still reads as together");
+});
+
+test("promote passes auto for an auto-kept proposal (keepAutomatically's actor) and nothing else", () => {
+  const src = readFileSync(new URL("../../src/proposals.ts", import.meta.url), "utf8");
+  assert.ok(/mergeSceneState\(cur\.state, payload, text, \{ auto: actor === "auto" \}\)/.test(src));
+  assert.ok(/export async function keepAutomatically\(db: D1Database, ids: readonly string\[\], actor = "auto"\)/.test(src));
 });
 
 t("mergeRelationshipState: takes status, his_name, trust, affection, attraction, nicknames when present; the mood keys still stamp; the frontier appends", () => {

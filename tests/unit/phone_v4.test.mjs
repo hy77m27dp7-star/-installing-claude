@@ -183,3 +183,43 @@ tp("map.js has no top-level DOM, location or fetch (it is imported under Node he
   assert.ok(!/\bfetch\(/.test(source), "the map never fetches");
   assert.ok(!/setAttribute\(\s*["']style["']/.test(source) && !/\.style\.cssText/.test(source), "no style attribute");
 });
+
+// ------------------------------------------------------------------ review fixes (v4)
+
+t("listeningFacts: only what she has told him (disclosed); an untold singing or music fact never reaches the line", () => {
+  const told = factRow({ id: "f_told", subject: "music", fact: "she plays records too loud", disclosed: 1 });
+  const untold = factRow({ id: "f_untold", subject: "singing", fact: "she has a folder of private clips", disclosed: 0 });
+  const got = phone.listeningFacts([told, untold]);
+  assert.deepEqual(got.map((f) => f.id), ["f_told"]);
+  const s = phone.listeningSystem([told, untold]);
+  assert.ok(/records too loud/.test(s) && !/private clips/.test(s));
+  assert.ok(/nothing written down yet/.test(phone.listeningSystem([untold])), "all untold: the bare line");
+});
+
+// A D1 stand-in whose day-row claim reports `changes` (0: another load holds it).
+function listeningDb(changes) {
+  const db = fakeDb({ facts: [factRow({ id: "f_told", subject: "music", fact: "she plays records too loud", disclosed: 1 })], panel_cache: [], model_runs: [], usage_daily: [] });
+  const prepare = db.prepare;
+  db.prepare = (sql) => {
+    const st = prepare(sql);
+    if (/INSERT INTO panel_cache/.test(sql) && /WHERE panel_cache\.fetched_at < \?4/.test(sql)) {
+      st.run = async () => { db.writes.push({ sql, binds: st.binds }); return { success: true, meta: { changes } }; };
+    }
+    return st;
+  };
+  return db;
+}
+
+t("listeningNow: the day's row is claimed before the paid call (a stale claim or failure is taken over after ten minutes); a claim held elsewhere answers null and calls nothing", async () => {
+  const on = settingsV4({ provider: "stub", model: "claude-opus-5", listeningLineEnabled: true, timezone: TZ, dailyCapUsd: 50, monthlyCapUsd: 500 });
+  const held = listeningDb(0);
+  assert.equal(await phone.listeningNow(secretEnv(), held, on, TUE_1510_NY), null);
+  const claim = held.writes.find((w) => /INSERT INTO panel_cache/.test(w.sql));
+  assert.ok(claim && claim.binds[0] === "listening:2026-09-29" && JSON.parse(claim.binds[1]).pending === true, JSON.stringify(claim));
+  assert.ok(Date.parse(claim.binds[2]) - Date.parse(claim.binds[3]) === phone.LISTENING_RETRY_MS, "the takeover window is ten minutes");
+  assert.ok(!held.writes.some((w) => /model_runs|usage_daily/.test(w.sql)), "no call, nothing paid");
+  const free = listeningDb(1);
+  await phone.listeningNow(secretEnv(), free, on, TUE_1510_NY);
+  const order = free.writes.map((w) => (/INSERT INTO panel_cache/.test(w.sql) && /pending/.test(String(w.binds[1])) ? "claim" : /model_runs/.test(w.sql) ? "run" : "")).filter(Boolean);
+  assert.deepEqual(order.slice(0, 2), ["claim", "run"], "claimed, then the call's run row");
+});

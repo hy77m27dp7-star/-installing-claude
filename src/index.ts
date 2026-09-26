@@ -28,7 +28,8 @@ import { servePlacePicture } from "./places";
 import { pushDueReplies } from "./deliveries";
 import { runBackup } from "./backup";
 import { runDrift } from "./drift";
-import { maybeTextFirst } from "./herfirst";
+import { inQuietHours, maybeTextFirst, parseQuietHours } from "./herfirst";
+import { localParts, safeTimezone } from "./life";
 import { runVoiceprint } from "./voiceprint";
 import { nightly as nightlyMaintenance } from "./maintenance";
 import { auditStmt, getSettings } from "./db";
@@ -199,7 +200,15 @@ async function runCron(cron: string, at: Date, env: Env, db: D1Database): Promis
     // v4 (SPEC_V4 section 6): the delayed replies that came due since the last tick are
     // pushed first (one notification for the batch, the rows stamped whatever the push
     // did), then the first-text decision runs as before. Both results in one object.
-    const delayed: unknown = await pushDueReplies(env, db, at);
+    // Never the whole tick: a failure here (a database behind 0008, a D1 error) is logged
+    // by class and her first-text decision still runs. Quiet hours are her first texts' own.
+    const p = localParts(at, safeTimezone(settings.timezone));
+    const quiet = inQuietHours(p.hour * 60 + p.minute, parseQuietHours(settings.herFirstQuietHours));
+    const delayed: unknown = await pushDueReplies(env, db, at, { quiet }).catch((e: unknown) => {
+      const cls = e instanceof Error ? e.name : "error";
+      console.warn("scheduled: delayed replies skipped", cls);
+      return { error: cls };
+    });
     const r: unknown = await maybeTextFirst(env, db, settings, at);
     const first = typeof r === "object" && r !== null ? (r as Record<string, unknown>) : { result: r ?? null };
     return { delayed: typeof delayed === "object" && delayed !== null ? delayed : { result: delayed ?? null }, ...first };

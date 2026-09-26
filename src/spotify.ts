@@ -25,9 +25,11 @@ export const SPOTIFY_API = "https://api.spotify.com/v1";
 // and the play endpoint require. Nothing else, ever.
 export const SPOTIFY_SCOPES = "playlist-modify-private playlist-read-private streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state";
 export const SPOTIFY_CALLBACK_PATH = "/api/spotify/callback";
-// "Add Items to Playlist" is POST /playlists/{id}/tracks in the published Web API; the one
-// constant to change if the first live add says otherwise.
-export const SPOTIFY_ADD_PATH = (id: string): string => "/playlists/" + id + "/tracks";
+// "Add Items to Playlist" is POST /playlists/{id}/items: Spotify's February 2026 Web API
+// changes retired /playlists/{id}/tracks for Development Mode apps (his app is one).
+export const SPOTIFY_ADD_PATH = (id: string): string => "/playlists/" + id + "/items";
+// "Create Playlist" is POST /me/playlists since the same changes (POST /users/{id}/playlists is gone).
+export const SPOTIFY_CREATE_PATH = "/me/playlists";
 export const DEFAULT_PLAYLIST_NAME = "songs from avelie";
 export const PLAYLIST_DESCRIPTION = "songs she sent";
 export const SPOTIFY_DEVICE_NAME = "Avelie";
@@ -81,7 +83,11 @@ export interface SpotifyStatusView {
 export interface SpotifyTokenView {
   accessToken: string;
   expiresAt: string;
-  premium: boolean;
+  // false only when Spotify said the account is not Premium; null when it did not say (the
+  // February 2026 changes took `product` out of GET /me for Development Mode apps). The page
+  // tries the Web Playback SDK unless this is false and falls back to the embed on the SDK's
+  // own account_error.
+  premium: boolean | null;
   deviceName: string;
   // The spotifyPlayer setting ("sdk" | "embed" | "off"), so the page knows which player to build.
   player: string;
@@ -333,7 +339,7 @@ async function apiPost(f: SpotifyFetch, token: string, path: string, body: unkno
 interface MeAnswer {
   id: string;
   displayName: string | null;
-  // null when the scope did not expose it.
+  // null when /me did not say (no `product` field: the February 2026 Development Mode shape).
   premium: boolean | null;
 }
 
@@ -347,8 +353,8 @@ async function readMe(f: SpotifyFetch, token: string): Promise<MeAnswer> {
   };
 }
 
-async function createPlaylist(f: SpotifyFetch, token: string, userId: string, name: string): Promise<{ id: string; name: string }> {
-  const json = await apiPost(f, token, "/users/" + encodeURIComponent(userId) + "/playlists", { name, public: false, description: PLAYLIST_DESCRIPTION });
+async function createPlaylist(f: SpotifyFetch, token: string, name: string): Promise<{ id: string; name: string }> {
+  const json = await apiPost(f, token, SPOTIFY_CREATE_PATH, { name, public: false, description: PLAYLIST_DESCRIPTION });
   const o = typeof json === "object" && json !== null ? (json as Record<string, unknown>) : {};
   if (!hasText(o.id)) throw new ProviderError("spotify", "server", "spotify created no playlist", 502, true);
   return { id: o.id.trim(), name: hasText(o.name) ? o.name : name };
@@ -356,21 +362,22 @@ async function createPlaylist(f: SpotifyFetch, token: string, userId: string, na
 
 // ------------------------------------------------------------------ the premium cache
 
-function premiumCacheStmt(db: D1Database, premium: boolean, at: string): D1PreparedStatement {
+function premiumCacheStmt(db: D1Database, premium: boolean | null, at: string): D1PreparedStatement {
   return db.prepare("INSERT INTO panel_cache (k, json, fetched_at) VALUES (?1, ?2, ?3) ON CONFLICT(k) DO UPDATE SET json = excluded.json, fetched_at = excluded.fetched_at")
     .bind(PREMIUM_CACHE_KEY, JSON.stringify({ premium }), at);
 }
 
-async function cachedPremium(db: D1Database, now: Date): Promise<boolean | null> {
+// The day's cached answer: true, false or null (Spotify did not say); undefined on a miss.
+async function cachedPremium(db: D1Database, now: Date): Promise<boolean | null | undefined> {
   const row = await db.prepare("SELECT json, fetched_at FROM panel_cache WHERE k = ?1").bind(PREMIUM_CACHE_KEY).first<{ json: string; fetched_at: string }>();
-  if (!row) return null;
+  if (!row) return undefined;
   const at = Date.parse(row.fetched_at);
-  if (!Number.isFinite(at) || now.getTime() - at > PREMIUM_CACHE_MS) return null;
+  if (!Number.isFinite(at) || now.getTime() - at > PREMIUM_CACHE_MS) return undefined;
   try {
     const j = JSON.parse(row.json) as { premium?: unknown };
-    return typeof j.premium === "boolean" ? j.premium : null;
+    return typeof j.premium === "boolean" || j.premium === null ? j.premium : undefined;
   } catch {
-    return null;
+    return undefined;
   }
 }
 
@@ -441,7 +448,7 @@ export async function finishConnect(
       "UPDATE spotify_auth SET status = 'connected', state = NULL, refresh_token = ?1, access_token = ?2, access_expires_at = ?3, scope = ?4, spotify_user_id = ?5, display_name = ?6, updated_at = ?7 WHERE id = 'owner'",
     ).bind(token.refresh_token, token.access_token, expiresAt, token.scope ?? SPOTIFY_SCOPES, me.id, me.displayName, t),
   ];
-  if (me.premium !== null) stmts.push(premiumCacheStmt(db, me.premium, t));
+  stmts.push(premiumCacheStmt(db, me.premium, t));
   await db.batch(stmts);
 
   const s = spotifySettingsOf(settings);
@@ -450,7 +457,7 @@ export async function finishConnect(
   if (!playlistId) {
     const name = hasText(s.spotifyPlaylistName) ? s.spotifyPlaylistName.trim() : DEFAULT_PLAYLIST_NAME;
     try {
-      playlistId = (await createPlaylist(f, token.access_token, me.id, name)).id;
+      playlistId = (await createPlaylist(f, token.access_token, name)).id;
     } catch (e) {
       throw toProviderError(e);
     }
@@ -521,15 +528,15 @@ export async function tokenView(env: Env, db: D1Database, settings: Settings, de
   const t = await freshToken(env, db, row, PAGE_TOKEN_SLACK_MS, deps);
   if (!t) throw new ApiHttpError(403, "not_connected", "Spotify is not connected", false);
   let premium = await cachedPremium(db, now);
-  if (premium === null) {
+  if (premium === undefined) {
     const f = deps.fetch ?? spotifyFetch(env);
     try {
-      const me = await readMe(f, t.token);
-      premium = me.premium === true;
+      premium = (await readMe(f, t.token)).premium;
+      await premiumCacheStmt(db, premium, now.toISOString()).run();
     } catch {
-      premium = false;
+      // Unknown, and not cached: a failed read never turns the player off for a day.
+      premium = null;
     }
-    await premiumCacheStmt(db, premium, now.toISOString()).run();
   }
   const s = spotifySettingsOf(settings);
   return { accessToken: t.token, expiresAt: t.expiresAt, premium, deviceName: SPOTIFY_DEVICE_NAME, player: hasText(s.spotifyPlayer) ? s.spotifyPlayer : "sdk" };
@@ -606,17 +613,16 @@ export async function addSongForMessage(env: Env, db: D1Database, settings: Sett
   }
   if (!track) return finish("not_found", null);
 
-  const dup = await db.prepare("SELECT id FROM messages WHERE song_json LIKE ?1 AND id != ?2 LIMIT 1")
+  // Only a song that actually reached the playlist counts: a failed add also stores the
+  // uri on its message, and must never make the same song read "already" for good.
+  const dup = await db.prepare("SELECT id FROM messages WHERE song_json LIKE ?1 AND id != ?2 AND spotify_status IN ('added', 'already') LIMIT 1")
     .bind("%\"uri\":\"" + track.uri + "\"%", messageId).first<{ id: string }>();
   if (dup) return finish("already", track);
 
   let playlistId = hasText(s.spotifyPlaylistId) ? s.spotifyPlaylistId.trim() : "";
   const recreate = async (): Promise<string> => {
-    const auth = await getSpotifyAuth(db);
-    const userId = auth && hasText(auth.spotify_user_id) ? auth.spotify_user_id : "";
-    if (!userId) throw new ProviderError("spotify", "config", "no Spotify user id on file", 503, false);
     const name = hasText(s.spotifyPlaylistName) ? s.spotifyPlaylistName.trim() : DEFAULT_PLAYLIST_NAME;
-    const made = await createPlaylist(f, token as string, userId, name);
+    const made = await createPlaylist(f, token as string, name);
     await putSettings(db, { spotifyPlaylistId: made.id } as Record<string, unknown> as Partial<Settings>);
     return made.id;
   };

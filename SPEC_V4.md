@@ -519,6 +519,7 @@ Cross-lane contracts (import by path and by the names above): L8 imports `phoneS
 
 ## What Justin does himself (and nothing else)
 
+0. Spotify Premium, first (review, 2026-09-26): Spotify's February 2026 rules for Development Mode apps (every new app is one): the app owner must hold an active Premium subscription for the app to work at all, the Connect and the playlist add included, not only for full playback; if Premium lapses the app stops; one Development Mode app per developer, at most five authorized users. Ask Justin whether he has Premium before he creates the app.
 1. The Spotify developer app, once: developer.spotify.com/dashboard, Create app, any name, Redirect URI exactly `https://avelie.bladepharoh.com/api/spotify/callback`, Web API, Save. Copy the Client ID to the clipboard and tell the session; it runs `pbpaste | npx wrangler secret put SPOTIFY_CLIENT_ID` and clears the clipboard; then the Client secret the same way into `SPOTIFY_CLIENT_SECRET`. Nothing is pasted in chat.
 2. The Connect click: Model page, Spotify card, Connect, then Agree on Spotify's page (the two playlist scopes), and he is back on the Model page with the playlist made.
 3. Later, if he wants a real lip-synced face on calls: a lip-sync provider account and its key (v4.1; the setting value `lipsync` is reserved for it).

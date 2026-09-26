@@ -104,3 +104,26 @@ t("listAlbum: the limit pages with nextBefore, `before` cuts, the groups filter,
   const empty = await album.listAlbum(fakeDb({ visual_assets: [], messages: [], state_versions: [] }));
   assert.deepEqual(empty, { items: [], nextBefore: null });
 });
+
+t("listAlbum (review): `before` in any form Date.parse reads cuts at the same instant; a page edge inside a created_at tie takes the whole tie, so the next page loses nothing", async () => {
+  const rfc = await album.listAlbum(fakeDb(tables()), { limit: 2, before: "Sat, 26 Sep 2026 10:00:00 GMT" });
+  const iso = await album.listAlbum(fakeDb(tables()), { limit: 2, before: "2026-09-26T10:00:00.000Z" });
+  assert.deepEqual(rfc.items.map((i) => i.id), iso.items.map((i) => i.id));
+  assert.deepEqual(rfc.items.map((i) => i.id), ["img_b", "img_a"]);
+  const same = "2026-09-27T10:00:00.000Z";
+  const tied = {
+    visual_assets: ["img_t1", "img_t2", "img_t3"].map((id, k) => ({ ...assetRow({ id, message_id: "m_" + id, conversation_id: "c1", created_at: same }), with_him: 0 }))
+      .concat([{ ...assetRow({ id: "img_old", message_id: "m_old", conversation_id: "c1", created_at: "2026-09-26T10:00:00.000Z" }), with_him: 0 }]),
+    messages: [],
+    state_versions: [],
+  };
+  const first = await album.listAlbum(fakeDb(tied), { limit: 2 });
+  assert.deepEqual(first.items.map((i) => i.id).sort(), ["img_t1", "img_t2", "img_t3"], "the whole tie on this page");
+  assert.equal(first.nextBefore, same);
+  const second = await album.listAlbum(fakeDb(tied), { limit: 2, before: first.nextBefore });
+  assert.deepEqual(second.items.map((i) => i.id), ["img_old"]);
+  assert.equal(second.nextBefore, null, "nothing older");
+  const exact = await album.listAlbum(fakeDb(tied), { limit: 4 });
+  assert.equal(exact.items.length, 4);
+  assert.equal(exact.nextBefore, null, "a page that holds everything says so");
+});

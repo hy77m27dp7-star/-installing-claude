@@ -91,3 +91,16 @@ test("sendPush refuses any reason but the two; a courtesy that never throws", as
   const ok = await push.sendPush({ ...secretEnv(), VAPID_PUBLIC_KEY: "", VAPID_PRIVATE_KEY: "" }, db, "her_delayed_reply", NOW);
   assert.equal(ok.skipped, "no VAPID keys");
 });
+
+t("pushDueReplies with quiet (her quiet hours): nothing is sent, every due row is still stamped so it never buzzes later; the result says quiet", async () => {
+  const env = { ...secretEnv(), VAPID_PUBLIC_KEY: "", VAPID_PRIVATE_KEY: "" };
+  const db = fakeDb({ messages: [row("m1", -5, 6 * 60_000), row("m_free", -1, 40_000)], push_subscriptions: [] });
+  const r = await deliveries.pushDueReplies(env, db, NOW, { quiet: true });
+  assert.deepEqual(r, { due: 1, pushed: false, result: null, quiet: true });
+  assert.ok(!db.queries.some((q) => /push_subscriptions/.test(q.sql)), "no push attempted");
+  const stamps = db.writes.filter((w) => /UPDATE messages SET pushed_at = \?1 WHERE id IN/.test(w.sql));
+  assert.deepEqual(stamps[0].binds.slice(1).sort(), ["m1", "m_free"]);
+  const loud = await deliveries.pushDueReplies(env, fakeDb({ messages: [row("m1", -5, 6 * 60_000)], push_subscriptions: [] }), NOW, { quiet: false });
+  assert.equal(loud.pushed, true);
+  assert.ok(!("quiet" in loud));
+});

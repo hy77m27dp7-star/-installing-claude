@@ -59,6 +59,8 @@ const LISTENING_LINE_MAX = 90;
 const WEATHER_TIMEOUT_MS = 3500;
 const DEFAULT_TZ = "America/New_York";
 const LISTENING_RUN_KIND = "listening" as ModelRunRow["kind"];
+// How long a claimed or failed day row keeps another call away.
+export const LISTENING_RETRY_MS = 10 * 60 * 1000;
 const EM_DASH = String.fromCharCode(0x2014);
 const EN_DASH = String.fromCharCode(0x2013);
 const ELLIPSIS = String.fromCharCode(0x2026);
@@ -75,11 +77,14 @@ export function cleanTypography(s: string): string {
   return String(s ?? "").replace(DASHES_RE, " -- ").replace(ELLIPSIS_RE, "...");
 }
 
-// The facts that carry her taste: scope avelie, subject music, singing, film or everyday.
+// The facts that carry her taste: scope avelie, subject music, singing, film or everyday,
+// and only what she has told him (disclosed). An untold fact (the open mics, the private
+// clips) never reaches his panel through this line before she chooses to say it.
 export function listeningFacts(facts: FactRow[]): FactRow[] {
   const out: FactRow[] = [];
   for (const f of Array.isArray(facts) ? facts : []) {
     if (!f || f.scope !== "avelie" || f.status !== "approved") continue;
+    if (Number(f.disclosed) !== 1) continue;
     const subject = typeof f.subject === "string" ? f.subject.trim().toLowerCase() : "";
     if (!LISTENING_FACT_SUBJECTS.has(subject)) continue;
     if (typeof f.fact !== "string" || !f.fact.trim()) continue;
@@ -194,6 +199,9 @@ function errorClass(e: unknown): string {
 // listeningLineEnabled false -> null; the day's cache row -> its value; else one call on
 // the story performer under the caps, recorded as a model_runs row of kind listening, the
 // answer cached (a null answer too, so a refusal costs one call a day, not one per load).
+// The day's row is claimed before the call, so two panel loads at once (the chat drawer
+// and the Phone page) pay once; a claim or a failed call holds the row LISTENING_RETRY_MS,
+// so a failing provider is asked again after ten minutes, not on every one-minute refresh.
 // Never throws: the panel is never the caps' to break, and a failed call is a null line.
 export async function listeningNow(env: Env, db: D1Database, settings: Settings, now: Date = new Date()): Promise<Listening> {
   const enabled = (settings as unknown as Record<string, unknown>).listeningLineEnabled;
@@ -218,6 +226,17 @@ export async function listeningNow(env: Env, db: D1Database, settings: Settings,
     await assertBudget(db, settings, estimateUsd(settings, model, system.length + LISTENING_USER.length, LISTENING_MAX_TOKENS));
   } catch (e) {
     console.warn("listening line skipped", errorClass(e));
+    return null;
+  }
+  try {
+    const claimAt = nowIso();
+    const staleBefore = new Date(Date.now() - LISTENING_RETRY_MS).toISOString();
+    const claim = await db.prepare(
+      "INSERT INTO panel_cache (k, json, fetched_at) VALUES (?1, ?2, ?3) ON CONFLICT(k) DO UPDATE SET json = excluded.json, fetched_at = excluded.fetched_at WHERE panel_cache.fetched_at < ?4",
+    ).bind(key, JSON.stringify({ pending: true, day }), claimAt, staleBefore).run();
+    if (!(Number(claim.meta?.changes ?? 0) > 0)) return null;
+  } catch (e) {
+    console.warn("listening: claim skipped", errorClass(e));
     return null;
   }
   const provider = getTextProvider(providerName);

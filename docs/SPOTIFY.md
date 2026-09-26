@@ -9,6 +9,14 @@ the chat and her phone panel (Premium required by Spotify; without it the embedd
 The app never reads his listening history, his library or any other playlist. The "listening to"
 line on her phone panel comes from her own facts, never from his Spotify.
 
+Premium first: Spotify's February 2026 rules for Development Mode apps (every new app is one): the app owner must hold an active Premium subscription for the app to work at all, the Connect and the playlist add included, not only for full playback; if Premium lapses the app stops; one Development Mode app per developer, at most five authorized users. Ask Justin whether he has Premium before he creates the app.
+
+The Web API paths are the ones Spotify's February 2026 changes left to Development Mode apps: the
+playlist is made with `POST /v1/me/playlists` (`POST /v1/users/{id}/playlists` is gone) and a song
+is added with `POST /v1/playlists/{id}/items` (`/tracks` is gone). `GET /v1/me` no longer carries
+`product`, `email` or `country` for such an app, so the Premium flag is usually unknown (null): the
+page tries the Web Playback SDK and falls back to the embed on the SDK's own `account_error`.
+
 ## What Justin does himself (once)
 
 1. https://developer.spotify.com/dashboard -> Create app. Name it anything ("Avelie"). Redirect URI,
@@ -21,8 +29,9 @@ line on her phone panel comes from her own facts, never from his Spotify.
 3. After the deploy: Model page -> Spotify card -> Connect. The consent screen lists the seven
    scopes below. Approve. The page comes back to `/model#spotify` with the chip `connected` and
    his display name; the playlist appears on his Spotify within a second of the first song.
-4. A Premium account for full playback (the SDK needs it). Without Premium the song card falls
-   back to Spotify's embed (30-second previews unless that browser is logged into Premium).
+4. A Premium account, before step 1: Spotify now requires it for a Development Mode app to work
+   at all (see above), not only for full playback. If the SDK still cannot play in a browser
+   (iOS Safari), the song card falls back to Spotify's embed.
 
 ## Scopes (exactly these, nothing else)
 
@@ -43,8 +52,10 @@ queue calls on that device.
   carry status, user id, display name and playlist id only), never logged.
 - The page gets only a short-lived access token from `GET /api/spotify/token` (refreshed by the
   Worker when under five minutes remain). That response is never audited or logged.
-- The Premium flag (`GET /v1/me` `product`) is cached for a day in `panel_cache` under the key
-  `spotify:premium` (the `spotify_auth` row has no column for it; the migration is fixed).
+- The Premium flag (`GET /v1/me` `product`: true, false, or null when Spotify does not say, which
+  is the Development Mode answer since February 2026) is cached for a day in `panel_cache` under
+  the key `spotify:premium` (the `spotify_auth` row has no column for it; the migration is fixed).
+  A failed read is null and is not cached. Only an explicit false keeps the page off the SDK.
 
 ## Content security policy (the origins the SDK needs)
 
@@ -102,7 +113,9 @@ wants to warm the device after a tap.
 ## Routes
 
 `GET /api/spotify` (status, never a token), `GET /api/spotify/connect` (302 to accounts.spotify.com),
-`GET /api/spotify/callback`, `POST /api/spotify/disconnect`, `GET /api/spotify/token`,
+`GET /api/spotify/callback` (302 to `/model#spotify`; a refusal, a Cancel on Spotify's page, a
+state mismatch or a Spotify failure goes to `/model?spotify=<code>#spotify`, shown on the card as a
+chip), `POST /api/spotify/disconnect`, `GET /api/spotify/token`,
 `POST /api/messages/:id/spotify` (runs the add by hand).
 
 ## Local run with no key

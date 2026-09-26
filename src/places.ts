@@ -55,6 +55,13 @@ export interface PlaceRow {
 }
 
 export const PLACE_PREFIX = "places/";
+// The only R2 keys a place row may name (placeKey's shape). A key outside it (a hand-edited
+// or corrupted import) is never read, served or deleted: it could name his photo or a
+// restore point.
+export const PLACE_KEY_RE = /^places\/[a-z0-9-]+\.png$/;
+export function isPlaceKey(key: unknown): key is string {
+  return typeof key === "string" && PLACE_KEY_RE.test(key);
+}
 export const PLACE_NEAR_KM = 30;
 export const PLACE_PROMPT_MAX = 900;
 export const PLACE_COST_DEFAULT = 0.08;
@@ -65,6 +72,11 @@ const SLUG_ID_CHARS = 6;
 const MICRO = 1_000_000;
 // weather.ts caps a geocode name at 80 characters (MAX_CITY) and throws 400 past it.
 const GEOCODE_MAX_QUERY = 80;
+// Results asked for by a place geocode; the 30 km filter does the localising.
+const PLACE_GEOCODE_COUNT = 30;
+// How long a place picture claim holds (a Runway picture can take 90 s).
+const PICTURE_CLAIM_MS = 3 * 60 * 1000;
+const PICTURE_CLAIM_PREFIX = "place_picture:";
 const EARTH_KM = 6371;
 const DEFAULT_TZ = "America/New_York";
 const PLACE_RUN_KIND = "place" as ModelRunRow["kind"];
@@ -296,8 +308,13 @@ export async function syncPlaces(db: D1Database, threads: LifeThread[]): Promise
     const row = byNorm.get(norm);
     if (row) {
       if (row.thread_id !== head.id) {
-        stmts.push(db.prepare("UPDATE places SET thread_id = ?2, updated_at = ?3 WHERE id = ?1").bind(row.id, head.id, now));
+        // The thread moved (an edit is a new version): the place takes its detail with it,
+        // so the picture prompt reads the current words. An owner's own edit to the detail
+        // stands until the thread changes again.
+        const detail = typeof head.detail === "string" && head.detail.trim() ? head.detail.trim().slice(0, MAX_DETAIL) : row.detail;
+        stmts.push(db.prepare("UPDATE places SET thread_id = ?2, detail = ?3, updated_at = ?4 WHERE id = ?1").bind(row.id, head.id, detail, now));
         row.thread_id = head.id;
+        row.detail = detail;
         row.updated_at = now;
       }
       continue;
@@ -473,23 +490,38 @@ export async function updatePlace(
   return decorate(after, activeOf(after, activeIds));
 }
 
-// One Open-Meteo search of the title with her city, the first result within 30 km kept.
-// The title is cut so the city always rides whole under weather.ts's 80-character cap; a
-// 400 from geocode is still a 404 no_match, never the caller's fault. Nothing is written
-// on a miss.
+// The region filter Open-Meteo reads: one comma and the region after it. Two commas ("Deering
+// Oaks Park, Portland, Maine") answer nothing, and a city name after the comma ("..., Portland")
+// filters everything out, so only the part of her city after its last comma rides ("Maine");
+// a city with no comma adds nothing. Pure, for the unit suite.
+export function placeGeocodeQueries(title: string, herCity: string | null | undefined): string[] {
+  const bare = oneLine(title).slice(0, GEOCODE_MAX_QUERY).trim();
+  if (!bare) return [];
+  const city = oneLine(herCity);
+  const comma = city.lastIndexOf(",");
+  const region = comma >= 0 ? city.slice(comma + 1).trim() : "";
+  if (!region) return [bare];
+  const room = Math.max(1, GEOCODE_MAX_QUERY - region.length - 2);
+  return [oneLine(title).slice(0, room).trim() + ", " + region, bare];
+}
+
+// Open-Meteo searches of the title (with her region, then bare), the first result within
+// 30 km of her city kept. A 400 from geocode is still a 404 no_match, never the caller's
+// fault. Nothing is written on a miss.
 export async function geocodePlace(env: Env, db: D1Database, settings: Settings, id: string, actor: string): Promise<PlaceRow> {
   const place = await requirePlace(db, id);
-  const city = oneLine(settings.herCity);
-  const room = Math.max(1, GEOCODE_MAX_QUERY - (city ? city.length + 2 : 0));
-  const query = oneLine(place.title).slice(0, room).trim() + (city ? ", " + city : "");
-  let results: Awaited<ReturnType<typeof geocode>>;
-  try {
-    results = await geocode(env, settings, query);
-  } catch (e) {
-    if (e instanceof ApiHttpError && e.status === 400) throw new ApiHttpError(404, "no_match", "no place found within 30 km of her city", false);
-    throw e;
+  let hit: Awaited<ReturnType<typeof geocode>>[number] | undefined;
+  for (const query of placeGeocodeQueries(place.title, settings.herCity)) {
+    let results: Awaited<ReturnType<typeof geocode>>;
+    try {
+      results = await geocode(env, settings, query, PLACE_GEOCODE_COUNT);
+    } catch (e) {
+      if (e instanceof ApiHttpError && e.status === 400) continue;
+      throw e;
+    }
+    hit = results.find((r) => isPlaceNearCity(r.latitude, r.longitude, settings));
+    if (hit) break;
   }
-  const hit = results.find((r) => isPlaceNearCity(r.latitude, r.longitude, settings));
   if (!hit) throw new ApiHttpError(404, "no_match", "no place found within 30 km of her city", false);
   const now = nowIso();
   const after: PlaceRow = { ...place, lat: hit.latitude, lon: hit.longitude, geocoded_by: "openmeteo", updated_at: now };
@@ -566,12 +598,8 @@ export async function makePlacePicture(
   settings: Settings,
   args: { id: string; remake?: boolean; actor: string; now?: Date; weather?: WeatherNow | null },
 ): Promise<PlaceRow> {
-  const place = await requirePlace(db, args.id);
-  if (place.picture_key && args.remake !== true) {
-    throw new ApiHttpError(409, "already_generated", "this place already has a picture; remake it to replace it", false, place.id);
-  }
+  alreadyMade(await requirePlace(db, args.id), args.remake);
   const providerName = settings.imageProvider;
-  const model = settings.imageModel;
   if (!imageProviderConfigured(env, providerName)) {
     throw new ApiHttpError(503, "provider_not_configured", `${providerName} image provider not configured`, false, providerName);
   }
@@ -580,7 +608,47 @@ export async function makePlacePicture(
     throw new ApiHttpError(402, "price_unknown", "placeCostUsd is 0 on a paid image provider; set the place price on the Model page", false);
   }
   await assertBudget(db, settings, cost);
+  // One picture at a time per place: the claim row is taken before anything is paid (a
+  // second press, a second tab or the page's refresh answers 409 in_progress) and released
+  // when this call ends, paid or not. A claim older than PICTURE_CLAIM_MS is taken over.
+  const claimKey = PICTURE_CLAIM_PREFIX + args.id;
+  const claimAt = nowIso();
+  const claim = await db.prepare(
+    "INSERT INTO panel_cache (k, json, fetched_at) VALUES (?1, ?2, ?3) ON CONFLICT(k) DO UPDATE SET json = excluded.json, fetched_at = excluded.fetched_at WHERE panel_cache.fetched_at < ?4",
+  ).bind(claimKey, JSON.stringify({ claim: true }), claimAt, new Date(Date.now() - PICTURE_CLAIM_MS).toISOString()).run();
+  if (!(Number(claim.meta?.changes ?? 0) > 0)) {
+    throw new ApiHttpError(409, "in_progress", "a picture of this place is already being made", true, args.id);
+  }
+  try {
+    // Read again under the claim: a call that finished just before it counts.
+    const place = await requirePlace(db, args.id);
+    alreadyMade(place, args.remake);
+    return await paintPlace(env, db, settings, place, cost, args);
+  } finally {
+    try {
+      await db.prepare("DELETE FROM panel_cache WHERE k = ?1 AND fetched_at = ?2").bind(claimKey, claimAt).run();
+    } catch (e) {
+      console.warn("place picture claim not released", safeErrorMessage(e));
+    }
+  }
+}
 
+function alreadyMade(place: PlaceRow, remake: boolean | undefined): void {
+  if (place.picture_key && remake !== true) {
+    throw new ApiHttpError(409, "already_generated", "this place already has a picture; remake it to replace it", false, place.id);
+  }
+}
+
+async function paintPlace(
+  env: Env,
+  db: D1Database,
+  settings: Settings,
+  place: PlaceRow,
+  cost: number,
+  args: { id: string; remake?: boolean; actor: string; now?: Date; weather?: WeatherNow | null },
+): Promise<PlaceRow> {
+  const providerName = settings.imageProvider;
+  const model = settings.imageModel;
   const now = args.now instanceof Date ? args.now : new Date();
   const tz = safeTimezone(settings.timezone || DEFAULT_TZ);
   const season = seasonOf(now, tz);
@@ -648,7 +716,7 @@ export async function makePlacePicture(
   ]);
   // A remake with a different key drops the old object once the new one is stored. The
   // slug is stable, so most remakes overwrite in place and there is nothing to delete.
-  if (place.picture_key && place.picture_key !== key) {
+  if (place.picture_key && place.picture_key !== key && isPlaceKey(place.picture_key)) {
     try {
       await env.MEDIA.delete(place.picture_key);
     } catch (e) {
@@ -662,7 +730,7 @@ export async function makePlacePicture(
 export async function deletePlacePicture(env: Env, db: D1Database, id: string, actor: string): Promise<PlaceRow> {
   const place = await requirePlace(db, id);
   const now = nowIso();
-  if (place.picture_key) {
+  if (isPlaceKey(place.picture_key)) {
     try {
       await env.MEDIA.delete(place.picture_key);
     } catch (e) {
@@ -695,7 +763,7 @@ export async function deletePlacePicture(env: Env, db: D1Database, id: string, a
 // GET /media/place/:id: image/png, private and never cached; 404 without a picture.
 export async function servePlacePicture(env: Env, db: D1Database, id: string): Promise<Response> {
   const row = await readOne(db, typeof id === "string" ? id : "");
-  if (!row || !row.picture_key) return new Response("not found", { status: 404, headers: { "cache-control": "private, no-store" } });
+  if (!row || !isPlaceKey(row.picture_key)) return new Response("not found", { status: 404, headers: { "cache-control": "private, no-store" } });
   const obj = await env.MEDIA.get(row.picture_key);
   if (!obj) return new Response("not found", { status: 404, headers: { "cache-control": "private, no-store" } });
   const headers = new Headers({ "content-type": "image/png", "cache-control": "private, no-store", "x-content-type-options": "nosniff" });

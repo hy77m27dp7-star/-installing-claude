@@ -649,8 +649,12 @@ function initHerTexts() {
 
 // ------------------------------------------------------------ Spotify (SPEC_V4 section 4, A1)
 
+// The callback's refusal code (?spotify=access_denied and the like), shown once as a chip.
+let spotifyRefusal = "";
+
 function spotifyChips(s) {
   const out = [];
+  if (spotifyRefusal) out.push(chip(spotifyRefusal, "danger"));
   if (s.connected) out.push(chip("connected" + (s.displayName ? ": " + String(s.displayName) : ""), "ok"));
   else if (s.configured === false) out.push(chip("not configured", "amber"));
   else out.push(chip("not connected"));
@@ -697,20 +701,35 @@ function initSpotify() {
   const disconnect = $("spotifyDisconnect");
   if (disconnect) {
     disconnect.addEventListener("click", async () => {
-      if (!window.confirm("Disconnect Spotify? The playlist stays on your account.")) return;
+      if (!window.confirm("Disconnect Spotify?")) return;
       disconnect.disabled = true;
       try {
         await api("POST", "/api/spotify/disconnect", {});
-        flash($("spotify-status"), "disconnected", "ok");
+        spotifyRefusal = "";
         await loadSettings();
-        loadSpotify();
+        await loadSpotify();
+        flash($("spotifyStatus"), "disconnected", "ok");
+        // The flash clears itself; the card's own chips come back after it.
+        setTimeout(() => { loadSpotify(); }, 2600);
       } catch (e) {
-        fail($("spotify-status") || $("spotifyStatus"), e);
+        fail($("spotifyStatus"), e);
       } finally {
         disconnect.disabled = false;
       }
     });
   }
+  // A refused callback lands on /model?spotify=<code>#spotify: keep the code for the chip and
+  // take it out of the address bar.
+  try {
+    const params = new URLSearchParams(location.search);
+    const code = params.get("spotify");
+    if (code) {
+      spotifyRefusal = code.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 40);
+      params.delete("spotify");
+      const q = params.toString();
+      history.replaceState(null, "", location.pathname + (q ? "?" + q : "") + location.hash);
+    }
+  } catch { /* the chip is a nicety */ }
   // The callback lands on /model#spotify: bring the card into view once.
   if (location.hash === "#spotify") {
     try { card.scrollIntoView({ block: "start" }); } catch { /* fine */ }

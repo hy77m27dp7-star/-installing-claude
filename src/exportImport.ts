@@ -295,6 +295,8 @@ const CANDIDATE_PREFIX = "candidates/";
 const PORTRAIT_PREFIX = "portraits/";
 const VIDEO_PREFIX = "videos/";
 const ASSET_PREFIXES: readonly string[] = [CANDIDATE_PREFIX, PORTRAIT_PREFIX, VIDEO_PREFIX];
+// places.ts PLACE_KEY_RE, copied so the import pulls in no provider module.
+const PLACE_KEY_RE = /^places\/[a-z0-9-]+\.png$/;
 
 const VISUAL_ASSETS: TableSpec = {
   table: "visual_assets",
@@ -564,7 +566,8 @@ const PLACES: TableSpec = {
     { name: "thread_id", type: "text", max: ID_MAX },
     { name: "title", type: "text", required: true, max: 300 },
     { name: "title_norm", type: "text", required: true, max: 300 },
-    { name: "detail", type: "text", max: 1000 },
+    // The same cap places.ts writes (MAX_DETAIL 2000): a place the runtime made always restores.
+    { name: "detail", type: "text", max: 2000 },
     { name: "lat", type: "num" },
     { name: "lon", type: "num" },
     { name: "geocoded_by", type: "text", oneOf: ["owner", "openmeteo", "map"] },
@@ -778,6 +781,15 @@ export async function importAll(
   for (const r of visualAssets) {
     const file = String(r.get("file"));
     if (!ASSET_PREFIXES.some((p) => file.startsWith(p))) throw bad("visualAssets", "file must be under " + ASSET_PREFIXES.join(", "));
+  }
+  // A place names only a key under places/ in placeKey's shape; anything else could point
+  // Remove picture at his photo or a restore point.
+  for (const { spec, rows } of v3) {
+    if (spec.table !== "places") continue;
+    for (const r of rows) {
+      const key = r.get("picture_key");
+      if (key !== null && !PLACE_KEY_RE.test(String(key))) throw bad(spec.key, "picture_key must be places/<slug>.png");
+    }
   }
   for (const { spec, rows } of v3) {
     for (const r of rows) {

@@ -119,3 +119,13 @@ t("exportImport.ts: the whitelists by name (places in EXTRA_TABLES, callface in 
   assert.ok(!/spotify_auth/.test(source) || /never/i.test(source.split("spotify_auth")[0].slice(-400)), "spotify_auth is named only to say it is never exported");
   assert.ok(!/panelCache/.test(source) || !/key: "panelCache"/.test(source), "no panelCache key");
 });
+
+t("importAll (review): a place detail up to 2000 restores (the cap places.ts writes); picture_key must be places/<slug>.png, never his photo or a restore point", async () => {
+  const ok = emptyDb();
+  const r = await importAll(ok, { version: 1, places: [{ id: "pl_long", title: "the pier", title_norm: "the pier", detail: "d".repeat(1500), picture_key: "places/the-pier-long00.png" }] }, ACTOR);
+  assert.equal(r.counts.places, 1, "a 1,500-character detail from a thread restores");
+  await assert.rejects(importAll(emptyDb(), { version: 1, places: [{ id: "pl_x", title: "x", title_norm: "x", detail: "d".repeat(2001) }] }, ACTOR), (e) => e.status === 400 && /detail/.test(e.message));
+  for (const key of ["him/him_38edf830605b4fa9bb51.webp", "snapshots/avelie-2026-09-25-2353.json", "places/../him/x.png", "candidates/img_1.png"]) {
+    await assert.rejects(importAll(emptyDb(), { version: 1, places: [{ id: "pl_x", title: "x", title_norm: "x", picture_key: key }] }, ACTOR), (e) => e.status === 400 && /picture_key/.test(e.message), key);
+  }
+});

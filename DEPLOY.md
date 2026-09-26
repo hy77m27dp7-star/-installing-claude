@@ -322,6 +322,7 @@ Then, in order, as SEPARATE commands with a check between the migration and the 
 
 ```
 cd ~/Documents/ClaudeCode/2026-09-24_avelie
+npx wrangler deployments list
 git pull
 ls migrations
 npm test
@@ -329,6 +330,7 @@ npm run test:integration
 npm run db:remote
 ```
 
+- `npx wrangler deployments list` first: write the top (current, v3.3) version id into this section and HANDOFF.md as the v4 rollback target before anything changes.
 - `ls migrations` must show 0008_v4.sql after 0007_his_face.sql and nothing after it.
 - `npm run db:remote` must print 0008_v4.sql as applied and skip 0001 to 0007. Read the output before going on: if it prints an error (a 7403 like the Sept 24 one, a timeout, anything), STOP, do not deploy; the v4 code reads the new tables on its first request and would fail on the old schema. Check with `npx wrangler d1 migrations list avelie --remote` (0008 must be listed as applied) or `npx wrangler d1 execute avelie --remote --command "SELECT COUNT(*) AS n FROM places"` (answers 0, not an error).
 - Only then:
@@ -338,7 +340,6 @@ npm run deploy
 ```
 
 - `npm run deploy` runs `npm test` and `check:deploy` again and then `wrangler deploy`. The output must list the custom domain and the same four cron triggers. If it shows `workers.dev` as enabled, stop.
-- The amendment's four settings (`spotifyPlayer`, `elevenLabsModel`, `elevenLabsTtsPricePer1kChars`, `videoMarkerEnabled`) read as their defaults from the code when the table has no row; the integrator decides whether 0008 carries rows for them too (the spec's migration text carries nine). Either way nothing needs a hand-typed INSERT this time.
 
 Proof (from outside, as in section 7): `/`, `/phone`, `/album`, `/memory`, `/api/avatar`, `/api/phone`, `/api/spotify`, `/media/place/x` all 302 to Access; workers.dev 404. Then, signed in: the header shows her face on every page; the Phone page draws the map; Images > Clips shows the Call face card with `clips` and no clip yet.
 
@@ -350,7 +351,7 @@ node scripts/gen_vapid.mjs --apply
 
 It generates the pair and runs the two `wrangler secret put` commands itself. After it, `GET /api/push/public-key` answers `configured: true`, the Model page's "Get her texts on this phone" subscribes the phone, and a delayed reply or a first text buzzes it. Without it the button still turns her first texts on and notes `no push key`.
 
-The Spotify developer app (Justin does this himself, once):
+The Spotify developer app (Justin does this himself, once). Spotify's February 2026 rules for Development Mode apps (every new app is one): the app owner must hold an active Premium subscription for the app to work at all, the Connect and the playlist add included, not only for full playback; if Premium lapses the app stops; one Development Mode app per developer, at most five authorized users. Ask Justin whether he has Premium before he creates the app.
 1. developer.spotify.com/dashboard, Log in, Create app: any name, any description, Redirect URI exactly `https://avelie.bladepharoh.com/api/spotify/callback`, tick Web API (and Web Playback SDK if the form lists it), Save.
 2. Open the app, Settings: copy the Client ID to the clipboard and say so. The session runs `pbpaste | npx wrangler secret put SPOTIFY_CLIENT_ID` then `printf '' | pbcopy`.
 3. View client secret, copy it, say so. The session runs `pbpaste | npx wrangler secret put SPOTIFY_CLIENT_SECRET` then `printf '' | pbcopy`. Nothing is pasted in chat; nothing is shown on screen. Secrets are live at once, no redeploy.
@@ -361,7 +362,7 @@ The call face (the deploy session, after his word on the source master, default 
 
 Her own voice (optional, A2): docs/ELEVENLABS.md has the exact steps (the account and plan, her voice, the agent with overrides on, the two ids on the Model page, the API key from the clipboard as `ELEVENLABS_API_KEY`). Until then both switches stay on OpenAI and Workers AI.
 
-Rollback target for v4: the Worker version that carried v3.3 (`npx wrangler rollback`); the v3 code runs against the v4 tables (it ignores the new columns and never reads the new tables). The Spotify row, if any, is untouched by a rollback; a later v4 deploy finds it again.
+Rollback target for v4: the Worker version that carried v3.3, the id written down from `npx wrangler deployments list` in the first step (`npx wrangler rollback <that id>`); the v3 code runs against the v4 tables (it ignores the new columns and never reads the new tables). The Spotify row, if any, is untouched by a rollback; a later v4 deploy finds it again.
 
 ## Cost ceilings (from the build brief, 2026-09-24; confirm on Cloudflare's pricing pages, they move)
 

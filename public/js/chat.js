@@ -13,6 +13,9 @@ import {
 } from "./api.js";
 import { splitBubbles, bubbleDelayMs, pauseForId, PAUSE_MS, dotsLeadMs } from "./bubbles.js";
 import { createCall } from "./call.js";
+// player.js (A1) owns the Spotify device and answers the avelie:play / pause / next events
+// this page and the phone drawer dispatch; importing it only registers those listeners.
+import "./player.js";
 // nav.js builds the header at load and exports avatarImg(size) (SPEC_V4 section 0); the
 // namespace import keeps this page alive on a tree where the export has not landed yet.
 import * as nav from "./nav.js";
@@ -152,7 +155,7 @@ const state = {
   songTimers: new Map(),
   // Messages whose pending song status was already read once more (one refresh, not a loop).
   songRefreshed: new Set(),
-  player: { state: "off", track: null, position: 0, duration: 0, at: 0 },
+  player: { state: "off", track: null, position: 0, duration: 0, at: 0, reason: null, embedSrc: null },
   playerTicker: null,
   placeRows: null,
   placeRowsAt: 0,
@@ -574,17 +577,20 @@ function songCard(m) {
       artist ? h("span", { class: "song-artist", text: artist }) : null),
     h("a", { class: "song-link", href, target: "_blank", rel: "noopener noreferrer", text: "Open in Spotify" }),
     slot);
-  // A1: the play control. Hidden until player.js says the device is ready; player.js swaps
-  // it for the embed when there is no Premium. The card never talks to Spotify itself.
+  // A1: the play control, shown whenever the song has a uri (the device is made on the first
+  // press). player.js renders the embed into this card's .song-embed slot when the SDK cannot
+  // play (no Premium, iOS Safari); the button then gives way to it. The card never talks to
+  // Spotify itself.
   if (uri) {
-    const play = h("button", { type: "button", class: "icon-btn song-play hidden", "aria-label": "Play", "data-uri": uri }, svgIcon("play"));
+    const embed = h("div", { class: "song-embed hidden" });
+    const play = h("button", { type: "button", class: "icon-btn song-play", "aria-label": "Play", "data-uri": uri }, svgIcon("play"));
     play.addEventListener("click", () => {
       const p = state.player;
       const mine = p.track && p.track.uri === uri;
       if (mine && p.state === "playing") window.dispatchEvent(new CustomEvent("avelie:pause"));
-      else window.dispatchEvent(new CustomEvent("avelie:play", { detail: { uri } }));
+      else window.dispatchEvent(new CustomEvent("avelie:play", { detail: { uri, target: embed } }));
     });
-    card.append(play);
+    card.append(play, embed);
     paintPlayButton(play);
   }
   return card;
@@ -723,8 +729,9 @@ function wireNowPlaying() {
 function paintPlayButton(btn) {
   const p = state.player;
   const uri = btn.getAttribute("data-uri") || "";
-  const on = p.state === "ready" || p.state === "playing" || p.state === "paused";
-  btn.classList.toggle("hidden", !on);
+  const card = btn.closest(".song-card");
+  const embedded = !!(card && card.querySelector(".song-embed iframe"));
+  btn.classList.toggle("hidden", embedded || p.reason === "player_off");
   const mine = !!(p.track && p.track.uri === uri && p.state === "playing");
   btn.classList.toggle("playing", mine);
   btn.setAttribute("aria-label", mine ? "Pause" : "Play");
@@ -758,10 +765,13 @@ function paintProgress(strip) {
 function renderNowPlaying() {
   const strip = wireNowPlaying();
   const p = state.player;
-  const show = (p.state === "playing" || p.state === "paused") && !!p.track;
+  // The embed player.js put into the strip itself (a play with no card, the phone drawer's
+  // playlist) keeps the strip open while the state is off.
+  const embedHere = p.state === "off" && !!p.embedSrc && !!strip.querySelector("iframe.spotify-embed");
+  const show = ((p.state === "playing" || p.state === "paused") && !!p.track) || embedHere;
   strip.classList.toggle("hidden", !show);
   strip.setAttribute("aria-hidden", String(!show));
-  if (!show) { stopPlayerTicker(); return; }
+  if (!show || embedHere) { stopPlayerTicker(); return; }
   const title = strip.querySelector("#npTitle");
   const artist = strip.querySelector("#npArtist");
   if (title) title.textContent = String(p.track.name || "");
@@ -795,7 +805,10 @@ function onPlayerEvent(e) {
   const d = e && e.detail && typeof e.detail === "object" ? e.detail : {};
   const st = ["ready", "playing", "paused", "off"].includes(d.state) ? d.state : "off";
   const track = d.track && typeof d.track === "object" && typeof d.track.uri === "string" ? { name: String(d.track.name || ""), artist: String(d.track.artist || ""), uri: d.track.uri } : null;
-  state.player = { state: st, track, position: Number(d.position) || 0, duration: Number(d.duration) || 0, at: Date.now() };
+  state.player = {
+    state: st, track, position: Number(d.position) || 0, duration: Number(d.duration) || 0, at: Date.now(),
+    reason: typeof d.reason === "string" ? d.reason : null, embedSrc: typeof d.embedSrc === "string" ? d.embedSrc : null,
+  };
   paintPlayButtons();
   renderNowPlaying();
 }
@@ -1590,6 +1603,21 @@ function startClipPoll(m) {
     try {
       r = await api("POST", "/api/video/" + encodeURIComponent(id) + "/poll", {});
     } catch (e) {
+      if (e.status === 409 && e.code === "in_progress") return;
+      if (e.status === 409 && e.code === "already_generated") {
+        // Another tab or device finished it first: read the assets and the message again and
+        // show the clip as it now is (a clip decided elsewhere as rejected goes).
+        stopClipPoll(id);
+        try { indexAssets(await api("GET", "/api/assets")); } catch { /* keep what the page has */ }
+        const a = state.assets.get(id);
+        if (a && a.approval_status === "rejected") state.rejected.add(id);
+        if (!a || a.approval_status === "generating" || a.approval_status === "pending") rememberAsset({ ...(a || {}), id, approval_status: "candidate" });
+        let fresh = null;
+        try { fresh = await api("GET", "/api/messages/" + encodeURIComponent(m.id)); } catch { fresh = null; }
+        const base = fresh && fresh.id ? fresh : m;
+        replacePhoto({ ...base, image_id: id, image_status: "ready" });
+        return;
+      }
       if (e.status === 404 || e.status === 422 || e.status === 409) {
         stopClipPoll(id);
         replacePhoto({ ...m, image_status: "failed" }, e.code || "error", e);

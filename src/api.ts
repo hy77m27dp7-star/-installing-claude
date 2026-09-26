@@ -72,7 +72,7 @@ import {
 import { CALL_FACE_KINDS, callFaceState, makeCallFace } from "./callface";
 import { addSongForMessage, beginConnect, disconnect as spotifyDisconnect, finishConnect, statusResponse as spotifyStatus, tokenView as spotifyTokenView } from "./spotify";
 import { ALBUM_GROUPS, listAlbum } from "./album";
-import { DUE_WINDOW_MS } from "./deliveries";
+import { DELAY_PUSH_MIN_MS, DUE_WINDOW_MS } from "./deliveries";
 import { memoryMap } from "./memory";
 import { ADAPTATIONS, ALWAYS_ON, CONSTITUTION_VERSION, OVERLAY } from "./generated/constitution";
 import { PROMPT_VERSION } from "./prompt";
@@ -1506,8 +1506,10 @@ route("GET", "/api/push/latest", async (c) => {
   if (!row) {
     try {
       row = await c.db
-        .prepare("SELECT * FROM messages WHERE role = 'assistant' AND channel = 'story' AND pushed_at IS NOT NULL AND pushed_at >= ?1 ORDER BY pushed_at DESC LIMIT 1")
-        .bind(since)
+        // Only a reply held two minutes or more was pushed; the skipped rows of the same tick
+        // carry the same pushed_at stamp and must never win the tie.
+        .prepare("SELECT * FROM messages WHERE role = 'assistant' AND channel = 'story' AND pushed_at IS NOT NULL AND pushed_at >= ?1 AND (julianday(deliver_at) - julianday(created_at)) * 86400000 >= ?2 ORDER BY pushed_at DESC, deliver_at DESC LIMIT 1")
+        .bind(since, DELAY_PUSH_MIN_MS - 0.5)
         .first<MessageRow>();
     } catch (e) {
       // A database behind 0008 has no pushed_at: only first texts can be the line.
@@ -2535,7 +2537,14 @@ route("GET", "/api/spotify/connect", async (c) => {
 });
 
 // Spotify sends him back here; the state must match the row's, single-use. Back to the
-// Model page's Spotify card on success; the error shapes are the module's (400, 403, 502).
+// Model page's Spotify card either way: on success plainly, on a refusal (he pressed Cancel,
+// the state did not match, Spotify failed) with ?spotify=<code> for the card's chip, never a
+// raw error page. The code is a short word from the module's errors, never a token or text.
+function spotifyCallbackCode(e: unknown): string {
+  const raw = e instanceof ApiHttpError ? (e.detail || e.code) : e instanceof ProviderError ? "provider_failed" : "error";
+  return String(raw).toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 40) || "error";
+}
+
 route("GET", "/api/spotify/callback", async (c) => {
   const settings = await loadSettings(c);
   const params: { code?: string; state?: string; error?: string } = {};
@@ -2545,7 +2554,12 @@ route("GET", "/api/spotify/callback", async (c) => {
   if (code !== undefined) params.code = code;
   if (state !== undefined) params.state = state;
   if (error !== undefined) params.error = error;
-  await finishConnect(c.env, c.db, settings, c.request.url, params, c.actor);
+  try {
+    await finishConnect(c.env, c.db, settings, c.request.url, params, c.actor);
+  } catch (e) {
+    console.warn("spotify callback refused", spotifyCallbackCode(e));
+    return redirect("/model?spotify=" + spotifyCallbackCode(e) + "#spotify");
+  }
   return redirect(MODEL_PAGE_SPOTIFY);
 });
 

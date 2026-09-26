@@ -3397,11 +3397,14 @@ async function scenariosV4(report) {
     ids.spotifyState = location.searchParams.get("state");
     assert.match(ids.spotifyState, /^[0-9a-f]{32}$/);
     const wrong = await apiRaw("GET", "/api/spotify/callback?code=stub&state=" + "0".repeat(32));
-    assert.equal(wrong.status, 403, wrong.text);
-    assert.equal(wrong.json.code, "forbidden");
+    assert.equal(wrong.status, 302, wrong.text);
+    assert.equal(wrong.headers.get("location"), "/model?spotify=state_mismatch#spotify", "a refusal lands on the Model page with its code, never a raw error body");
+    const cancelled = await apiRaw("GET", "/api/spotify/callback?error=access_denied&state=" + "0".repeat(32));
+    assert.equal(cancelled.status, 302, cancelled.text);
+    assert.equal(cancelled.headers.get("location"), "/model?spotify=access_denied#spotify", "Cancel on Spotify's page");
     const still = await api("GET", "/api/spotify");
     assert.equal(still.json.connected, false, "a mismatch stores nothing");
-    for (const r of [status, token, connect, wrong, still]) assert.ok(!r.text.includes("refresh_token"), "a Spotify body carried refresh_token");
+    for (const r of [status, token, connect, wrong, cancelled, still]) assert.ok(!r.text.includes("refresh_token"), "a Spotify body carried refresh_token");
     const audit = (await auditRows(50)).filter((e) => /^spotify\./.test(e.action));
     assert.ok(audit.some((e) => e.action === "spotify.connect"));
     assert.ok(!JSON.stringify(audit).includes(ids.spotifyState), "the state is not in the audit");
@@ -3424,7 +3427,8 @@ async function scenariosV4(report) {
     assert.equal(s.spotifyEnabled, true);
     assert.equal(s.spotifyPlaylistId, "stubplaylist");
     const replay = await apiRaw("GET", "/api/spotify/callback?code=stub&state=" + state);
-    assert.equal(replay.status, 403, "the state is single use: " + replay.text);
+    assert.equal(replay.status, 302, "the state is single use: " + replay.text);
+    assert.equal(replay.headers.get("location"), "/model?spotify=state_mismatch#spotify");
     assert.equal((await api("GET", "/api/spotify")).json.connected, true, "a replayed callback never disconnects him");
     const auditBefore = (await auditRows(200)).length;
     const token = await api("GET", "/api/spotify/token");
@@ -3545,7 +3549,9 @@ async function scenariosV4(report) {
       assert.equal(again.json.pushed_at, firstStamp, "a second tick changes nothing");
       const latest = await api("GET", "/api/push/latest");
       assert.equal(latest.status, 200, latest.text);
-      assert.equal(latest.json.messageId, reply.id, "the stamped reply is the notification's text while no first text is fresher");
+      // Held under two minutes (realDelayMaxMinutes 1), so it was stamped, never pushed; the
+      // spec: "a never-pushed reply never" is the notification's text.
+      assert.notEqual(latest.json.messageId, reply.id, "a stamped but never-pushed reply is never the notification's text");
     } finally {
       await settingsPut({ replyDelayMode: "instant", realDelayMaxMinutes: original.realDelayMaxMinutes, timezone: original.timezone });
       const d = await api("DELETE", `/api/life/threads/${routine.json.id}`);
@@ -3658,6 +3664,27 @@ async function scenariosV4(report) {
     const newestTogether = versions.json.find((v) => JSON.parse(v.state_json).status === "together");
     assert.equal(JSON.parse(newestTogether.state_json).location, "the pier", "the picker's prefill source");
     assert.notEqual(before.location, "the pier");
+  });
+
+  await report.check("v4 review: with proposalsAutoApprove on, an auto-kept scene proposal never moves an apart scene INTO together (his picker or his own approval does); the place still follows", async () => {
+    const original = (await api("GET", "/api/settings")).json;
+    const s0 = (await state()).scene.state;
+    const apart = await api("PUT", "/api/state/scene", { state: { ...s0, status: "apart", location: null }, note: "review: apart" });
+    assert.equal(apart.status, 200, apart.text);
+    await settingsPut({ proposalsAutoApprove: true });
+    try {
+      const r = await turn(conversationId, "[[SCENE:her bed]] night", key("v4-auto-scene"));
+      assert.equal(r.status, 200, r.text);
+      const s1 = await waitFor("the auto-kept scene proposal", async () => {
+        const s = (await state()).scene.state;
+        return s.location === "her bed" ? s : null;
+      }, 10_000, 300);
+      assert.equal(s1.status, "apart", "a model's reading never puts him in the room: " + JSON.stringify(s1));
+    } finally {
+      await settingsPut({ proposalsAutoApprove: original.proposalsAutoApprove ?? false });
+      const back = await api("PUT", "/api/state/scene", { state: { ...s0 }, note: "review: restored" });
+      assert.equal(back.status, 200, back.text);
+    }
   });
 
   await report.check("v4: [[REL:seeing each other|Justin]] -> approve -> relationship status and his_name set, trust kept; a mood-only relationship proposal -> approve -> nothing lost", async () => {

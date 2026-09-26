@@ -344,7 +344,9 @@ export function chooseClipSource(
   rows: readonly VisualAssetRow[],
   args: { conversationId: string; today: string; avatarAssetId?: string | null },
 ): VisualAssetRow | null {
-  const approvedPhotos = rows.filter((r) => roleOf(r) === "scene" && r.approval_status === "approved");
+  // A picture with him in it (with_him 1) never dresses a clip: a clip is never made with
+  // him in it (SPEC_V4 A3), and his face never rides where her line did not put him.
+  const approvedPhotos = rows.filter((r) => roleOf(r) === "scene" && r.approval_status === "approved" && Number(r.with_him ?? 0) !== 1);
   const byNewest = (a: VisualAssetRow, b: VisualAssetRow): number => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id);
   const sent = (r: VisualAssetRow): boolean => typeof r.message_id === "string" && r.message_id.trim() !== "";
   const todayHere = approvedPhotos

@@ -139,14 +139,19 @@ export function stripAllMarkers(text: string): StrippedMarkers {
 
 // ------------------------------------------------------------------ him in the picture (v4, SPEC_V4 section 3)
 
-// Her photo description says he is in it. Strong: an unmistakable co-presence phrase.
-export const HIM_STRONG_RE = /\b(?:the two of us|both of us|us two|us both|selfie (?:of|with) (?:us|you|him)|(?:you|him) and me|me and (?:you|him)|(?:you|he)(?:'re|'s| are| is)? (?:next to|beside|behind|holding|hugging|kissing) me|(?:your|his) (?:shoulder|shoulders|arm|arms|hand|hands|lap|chest|neck|face|hair|beard|glasses|sunglasses|jacket|hoodie|shirt)|(?:leaning|resting|my head) (?:on|against) (?:you|him)|with (?:you|him) in it|(?:you|him) in (?:it|the (?:picture|photo|shot|frame)))\b/i;
+// Her photo description says he is in it. She writes the line to him in the second
+// person, so "you" and "your" are him and "he", "him" and "his" are usually someone else
+// ("me and mason, his arm around my shoulders", "the barista, his hands on the machine").
+// Strong: an unmistakable co-presence phrase in the second person or "us" (a curly
+// apostrophe reads like a straight one).
+export const HIM_STRONG_RE = /\b(?:the two of us|both of us|us two|us both|selfie (?:of|with) (?:us|you)|you and me|me and you|you(?:'re|’re| are)? (?:next to|beside|behind|holding|hugging|kissing) me|your (?:shoulder|shoulders|arm|arms|hand|hands|lap|chest|neck|face|hair|beard)|(?:leaning|resting|my head) (?:on|against) you|with you in it|you in (?:it|the (?:picture|photo|shot|frame)))\b/i;
 
 // Weak: "us" or "him" as the subject of the picture (at the start, after "of", or next to a
-// co-presence word). A bare "we", "us", "him", "you" or "your" is not a signal: "the view we
-// talked about", "the barista behind me, him again", "trust us, the light was better in
-// person" and "the sweater you like" are pictures of her.
-export const HIM_WEAK_RE = /(?:^\s*(?:us|him)\b|\bof (?:us|him)\b|\b(?:with|next to|beside|behind|holding|hugging|against|leaning (?:on|against)) (?:him|us)\b|\b(?:him|us) (?:next to|beside|behind|in front of|holding) me\b)/i;
+// co-presence word), or his clothes on her (wearing his hoodie is not him being there, so
+// "alone" or "just me" overrides it). A bare "we", "us", "him", "you" or "your" is not a
+// signal: "the view we talked about", "the barista behind me, him again", "trust us, the
+// light was better in person" and "the sweater you like" are pictures of her.
+export const HIM_WEAK_RE = /(?:^\s*(?:us|him)\b|\bof (?:us|him)\b|\b(?:with|next to|beside|behind|holding|hugging|against|leaning (?:on|against)) (?:him|us)\b|\b(?:him|us) (?:next to|beside|behind|in front of|holding) me\b|\b(?:me and him|him and me)\b|\bhim in (?:it|the (?:picture|photo|shot|frame))\b|\b(?:his|your) (?:jacket|hoodie|shirt|glasses|sunglasses)\b)/i;
 
 // Absent: she says outright that it is her alone.
 export const HIM_ABSENT_RE = /\b(?:alone|just me|only me|by myself|me only|without (?:you|him)|no one else|nobody else|of (?:me|myself))\b/i;

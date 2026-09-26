@@ -507,12 +507,16 @@ const RELATIONSHIP_TEXT_FIELDS = ["status", "trust", "affection", "attraction", 
 // are kept and the payload's status, location, time and present are TAKEN when it carries
 // them: before v4 the promotion wrote summary and last_beat only, so a scene that moved
 // somewhere new stayed apart at the old place (HQ CONFLICTS 33a). A status of together
-// with no location keeps the previous location.
-export function mergeSceneState(cur: SceneState, payload: Record<string, unknown>, text: string): Record<string, unknown> {
+// with no location keeps the previous location. An auto-kept proposal (opts.auto) never
+// moves the scene INTO together: that is his picker or his own decision in the Inbox, so an
+// extractor reading can never put him in the room with her (and the IN BED section, which
+// runs only in a Together scene, can never switch on because a model said so).
+export function mergeSceneState(cur: SceneState, payload: Record<string, unknown>, text: string, opts: { auto?: boolean } = {}): Record<string, unknown> {
   const next: Record<string, unknown> = { ...cur, summary: text, last_beat: text };
   const p = payload && typeof payload === "object" ? payload : {};
-  const status = payloadText(p.status, 20);
-  if (status && SCENE_STATUSES.includes(status.toLowerCase())) next.status = status.toLowerCase();
+  const status = payloadText(p.status, 20)?.toLowerCase();
+  const intoTogether = status === "together" && String(cur.status ?? "").trim().toLowerCase() !== "together";
+  if (status && SCENE_STATUSES.includes(status) && !(opts.auto === true && intoTogether)) next.status = status;
   const location = payloadText(p.location, SCENE_LOCATION_MAX);
   if (location) next.location = location;
   const time = payloadText(p.time, SCENE_TIME_MAX);
@@ -685,7 +689,7 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
     }
     case "scene": {
       const cur = await getCurrentState<SceneState>(db, "scene");
-      const next = mergeSceneState(cur.state, payload, text);
+      const next = mergeSceneState(cur.state, payload, text, { auto: actor === "auto" });
       const r = await putState(db, "scene", next, source, actor, "proposal");
       return `scene:v${r.version}`;
     }

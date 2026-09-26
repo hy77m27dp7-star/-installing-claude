@@ -182,3 +182,24 @@ te("exportCharacterJson leaves a with-him picture out of images (a real person's
   assert.ok(!ids.includes("img_us"), "the with-him picture is out");
   assert.ok(!JSON.stringify(pkg).includes("the two of us"));
 });
+
+t("generateCandidate: a regenerate (the message already carries him_not_on_file) appends nothing a second time; hasFlagCode reads the list", async () => {
+  const flagged = JSON.stringify([{ code: "caption_tail", severity: "flag", detail: "x" }, { code: "him_not_on_file", severity: "flag", detail: "y" }]);
+  const message = messageRow({ id: "m_photo", conversation_id: "c_test", image_id: null, image_status: null, flags_json: flagged });
+  const db = fakeD1((sql, binds) => {
+    if (/SELECT \* FROM messages WHERE id = \?1/.test(sql)) return binds[0] === "m_photo" ? [message] : [];
+    if (/FROM visual_assets WHERE role = 'master'/.test(sql)) return MASTERS;
+    if (/FROM visual_assets WHERE role = \?1 AND approval_status = 'approved'/.test(sql)) return [];
+    if (/approval_status = 'rejected' AND sha256/.test(sql)) return [];
+    if (/SELECT 1 AS ok FROM visual_assets/.test(sql)) return [{ ok: 1 }];
+    if (/SELECT flags_json FROM messages/.test(sql)) return [{ flags_json: flagged }];
+    return [];
+  });
+  const row = await images.generateCandidate(env(), db, S, { conversationId: "c_test", messageId: "m_photo", description: "my head on your shoulder", actor: "test" });
+  assert.equal(row.with_him, 0);
+  assert.ok(!db.log.some((s) => /UPDATE messages SET flags_json/.test(s.sql)), "the code is already there");
+  assert.equal(images.hasFlagCode(flagged, "him_not_on_file"), true);
+  assert.equal(images.hasFlagCode(flagged, "photo_with_him"), false);
+  assert.equal(images.hasFlagCode(null, "him_not_on_file"), false);
+  assert.equal(images.hasFlagCode("not json", "him_not_on_file"), false);
+});

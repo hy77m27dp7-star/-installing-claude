@@ -25,10 +25,11 @@ const TOKENS = [...SPOTIFY_SECRET_VALUES, "stub-access", "client-SECRET"];
 // The stub records a form body as an object or as its raw string; read it as fields either way.
 const formOf = (q) => (typeof q.body === "string" ? Object.fromEntries(new URLSearchParams(q.body)) : (q.body && typeof q.body === "object" ? q.body : {}));
 
-t("the constants: the seven scopes of the amendment, the callback path, the add path, the device name", () => {
+t("the constants: the seven scopes of the amendment, the callback path, the add and create paths of Spotify's February 2026 API, the device name", () => {
   assert.deepEqual(spotify.SPOTIFY_SCOPES.split(" "), SCOPES);
   assert.equal(spotify.SPOTIFY_CALLBACK_PATH, "/api/spotify/callback");
-  assert.equal(spotify.SPOTIFY_ADD_PATH("abc"), "/playlists/abc/tracks");
+  assert.equal(spotify.SPOTIFY_ADD_PATH("abc"), "/playlists/abc/items");
+  assert.equal(spotify.SPOTIFY_CREATE_PATH, "/me/playlists");
   assert.equal(spotify.DEFAULT_PLAYLIST_NAME, "songs from avelie");
   assert.equal(spotify.SPOTIFY_DEVICE_NAME, "Avelie");
   assert.equal(spotify.SPOTIFY_API, "https://api.spotify.com/v1");
@@ -143,7 +144,8 @@ t("finishConnect on the stub fetch: the tokens stored, /me read, the playlist cr
   const token = fetch.requests.find((q) => /accounts\.spotify\.com\/api\/token/.test(q.url));
   assert.ok(token, "the token exchange");
   assert.deepEqual(formOf(token), { grant_type: "authorization_code", code: "stub", redirect_uri: "https://avelie.bladepharoh.com/api/spotify/callback" });
-  assert.equal(fetch.requests.filter((q) => /\/v1\/users\/stublistener\/playlists$/.test(q.url)).length, 1, "the playlist is created once");
+  assert.equal(fetch.requests.filter((q) => /\/v1\/me\/playlists$/.test(q.url) && q.method === "POST").length, 1, "the playlist is created once, at POST /me/playlists");
+  assert.ok(!fetch.requests.some((q) => /\/v1\/users\//.test(q.url)), "never the retired /users/{id}/playlists");
   const settingsWrites = writesOf(db).filter((s) => /INSERT INTO settings/.test(s.sql));
   assert.ok(settingsWrites.some((s) => s.binds[0] === "spotifyEnabled" && s.binds[1] === "true"));
   assert.ok(settingsWrites.some((s) => s.binds[0] === "spotifyPlaylistId" && s.binds[1] === "\"stubplaylist\""));
@@ -223,6 +225,24 @@ tt("tokenView (A1): 403 not_connected without a row or on a pending row; refresh
   assert.ok(!f3.requests.some((q) => /\/v1\/me$/.test(q.url)), "no /me while the cache is fresh");
 });
 
+tt("tokenView: /me without `product` (Spotify's February 2026 Development Mode shape) is premium null, cached as null, never false; a failed /me is null and not cached", async () => {
+  const now = new Date("2026-09-29T19:10:00Z");
+  const unknown = authDb(spotifyAuthRow({ access_expires_at: "2026-09-29T19:20:00.000Z" }));
+  const f = stub.stubSpotifyFetch({ premium: null });
+  const v = await spotify.tokenView(ENV(), unknown, S, { fetch: f, now: () => now });
+  assert.equal(v.premium, null, "unknown, so the page tries the SDK");
+  const cache = writesOf(unknown).find((s) => /panel_cache/.test(s.sql) && /spotify:premium/.test(s.binds.join(" ")));
+  assert.ok(cache && JSON.parse(cache.binds[1]).premium === null, "cached as unknown");
+  const cachedNull = fakeD1((sql) => (/FROM spotify_auth/.test(sql) ? [spotifyAuthRow({ access_expires_at: "2026-09-29T19:20:00.000Z" })] : /FROM panel_cache WHERE k = \?1/.test(sql) ? [{ json: JSON.stringify({ premium: null }), fetched_at: "2026-09-29T18:00:00.000Z" }] : []));
+  const f2 = stub.stubSpotifyFetch();
+  assert.equal((await spotify.tokenView(ENV(), cachedNull, S, { fetch: f2, now: () => now })).premium, null, "the cached unknown stands for the day");
+  assert.ok(!f2.requests.some((q) => /\/v1\/me$/.test(q.url)));
+  const down = fakeFetch(async (q) => (/\/v1\/me$/.test(q.url) ? { status: 503, json: { error: "down" } } : stub.stubSpotifyFetch()(q.url, { method: q.method, headers: q.headers, body: q.body })));
+  const failing = authDb(spotifyAuthRow({ access_expires_at: "2026-09-29T19:20:00.000Z" }));
+  assert.equal((await spotify.tokenView(ENV(), failing, S, { fetch: down, now: () => now })).premium, null, "a failed read is unknown");
+  assert.ok(!writesOf(failing).some((s) => /panel_cache/.test(s.sql)), "and never cached");
+});
+
 // ------------------------------------------------------------------ the add
 
 function songDb(row, opts = {}) {
@@ -251,13 +271,15 @@ t("addSongForMessage on the stub: added (the rewritten song_json carries trackUr
   const dup = songDb(spotifyAuthRow(), { already: true });
   assert.equal(await spotify.addSongForMessage(ENV(), dup, S, "m_song", deps()), "already");
   assert.equal(statusWrite(dup).binds[0], "already");
+  const probe = dup.log.find((q) => /song_json LIKE \?1/.test(q.sql));
+  assert.ok(probe && /spotify_status IN \('added', 'already'\)/.test(probe.sql), "only a song that reached the playlist counts: a failed add never makes it read already");
 
   const missing = songDb(spotifyAuthRow(), { title: "[[NOTFOUND]] nothing" });
   assert.equal(await spotify.addSongForMessage(ENV(), missing, S, "m_song", deps()), "not_found");
   assert.equal(statusWrite(missing).binds[0], "not_found");
   assert.equal(statusWrite(missing).binds[1], "m_song", "song_json untouched on not_found");
 
-  const failing = fakeFetch(async (q) => (/\/tracks$/.test(q.url) ? { status: 500, json: { error: "down" } } : stub.stubSpotifyFetch()(q.url, { method: q.method, headers: q.headers, body: q.body })));
+  const failing = fakeFetch(async (q) => (/\/items$/.test(q.url) ? { status: 500, json: { error: "down" } } : stub.stubSpotifyFetch()(q.url, { method: q.method, headers: q.headers, body: q.body })));
   const failed = songDb(spotifyAuthRow());
   assert.equal(await spotify.addSongForMessage(ENV(), failed, S, "m_song", { fetch: failing, now: () => new Date("2026-09-29T19:10:00Z") }), "failed");
   assert.equal(statusWrite(failed).binds[0], "failed");
@@ -278,8 +300,8 @@ t("addSongForMessage: a 404 on the playlist creates it again once and retries; a
   const db = songDb(spotifyAuthRow());
   const r = await spotify.addSongForMessage(ENV(), db, settingsV4({ spotifyEnabled: true, spotifyPlaylistId: "goneplaylist" }), "m_song", { fetch: f, now: () => new Date("2026-09-29T19:10:00Z") });
   assert.equal(r, "added");
-  assert.equal(f.requests.filter((q) => /\/v1\/users\/stublistener\/playlists$/.test(q.url)).length, 1, "recreated once");
-  assert.ok(f.requests.some((q) => /\/playlists\/stubplaylist\/tracks$/.test(q.url)), "the add retried on the new id");
+  assert.equal(f.requests.filter((q) => /\/v1\/me\/playlists$/.test(q.url)).length, 1, "recreated once");
+  assert.ok(f.requests.some((q) => /\/playlists\/stubplaylist\/items$/.test(q.url)), "the add retried on the new id");
   assert.ok(writesOf(db).some((s) => /INSERT INTO settings/.test(s.sql) && s.binds[0] === "spotifyPlaylistId" && s.binds[1] === "\"stubplaylist\""));
 });
 

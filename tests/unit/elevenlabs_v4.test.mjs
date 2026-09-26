@@ -413,3 +413,26 @@ test("package.json: @elevenlabs/client is the one dependency added, with the ven
   assert.equal(pkg.scripts["vendor:elevenlabs"], "node scripts/vendor_elevenlabs.mjs");
   assert.equal(pkg.scripts["check:vendor"], "node scripts/vendor_elevenlabs.mjs --check");
 });
+
+test("the face on the ElevenLabs path (review): faceFor gives talking while she speaks, listening while he does, idle otherwise; the level timer sets it directly, never through call.js's analyser meter", () => {
+  assert.equal(page.faceFor("speaking", false), "talking");
+  assert.equal(page.faceFor("speaking", true), "talking", "her speaking wins");
+  assert.equal(page.faceFor("listening", true), "listening");
+  assert.equal(page.faceFor("listening", false), "idle");
+  assert.ok(page.HIS_HOLD_MS > 0 && page.HIS_HOLD_MS <= 1500);
+  const src = readFileSync(new URL("../../public/js/call_elevenlabs.js", import.meta.url), "utf8");
+  assert.ok(!/setHisSpeaking\(/.test(src.replace(/\/\/.*$/gm, "")), "no call into the analyser path");
+  const state = { closed: false, mode: "listening", face: "idle" };
+  const faces = [];
+  const cb = page.clientCallbacks({ setFace: (k) => faces.push(k) }, state);
+  cb.onModeChange({ mode: "speaking" });
+  assert.equal(state.face, "talking", "the mode change and the level timer share one record");
+  assert.deepEqual(faces, ["talking"]);
+});
+
+test("sessionOptions (review): the WebSocket transport names the same-origin resampler, never the client's CDN default; WebRTC loads none", () => {
+  const ws = page.sessionOptions({ transport: "websocket", clientSecret: "wss://x" });
+  assert.equal(ws.libsampleratePath, page.LIBSAMPLERATE_PATH);
+  assert.ok(page.LIBSAMPLERATE_PATH.startsWith("/js/vendor/worklets/"), "same origin");
+  assert.equal(page.sessionOptions({ transport: "webrtc", clientSecret: "tok" }).libsampleratePath, undefined);
+});

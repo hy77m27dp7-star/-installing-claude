@@ -104,3 +104,15 @@ test("the frozen migrations 0001 to 0007 match git HEAD", (tc) => {
     assert.equal(read(f), committed, f + " differs from HEAD");
   }
 });
+
+test("0002_seed.sql is byte for byte the v3.3 file (35e9ce5): build:canon leaves the v4 settings to 0008's INSERT OR IGNORE rows, so an applied migration is never edited", (tc) => {
+  let v33;
+  try {
+    v33 = execFileSync("git", ["show", "35e9ce5:migrations/0002_seed.sql"], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    tc.diagnostic("git or commit 35e9ce5 not available; skipping the 0002 pin");
+    return;
+  }
+  assert.equal(read("0002_seed.sql"), v33, "0002_seed.sql differs from v3.3");
+  for (const key of Object.keys(THIRTEEN)) assert.ok(!read("0002_seed.sql").includes("('" + key + "'"), key + " belongs to 0008, not 0002");
+});

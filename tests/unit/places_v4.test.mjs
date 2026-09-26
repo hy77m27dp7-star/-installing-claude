@@ -195,3 +195,72 @@ tp("deletePlacePicture clears the columns and the object; servePlacePicture 404 
   assert.ok(del.writes.some((w) => /INSERT INTO audit_events/.test(w.sql) && w.binds.includes("place.picture_delete")));
   assert.equal((await places.servePlacePicture(env, pictureDb(placeRow({ id: "pl_bench", picture_key: made.picture_key })), "pl_bench")).status, 404, "the key without the object is 404");
 });
+
+// ------------------------------------------------------------------ review fixes (v4)
+
+t("syncPlaces: a thread that moved to a new version brings its detail with it (the picture prompt reads the current words)", async () => {
+  const v2 = placeThread({ id: "lt_bench_v2", title: "the harbour bench", detail: "the bench by the ferry, repainted green", created_at: "2026-09-21T00:00:00.000Z" });
+  const db = fakeDb({ places: [placeRow({ id: "pl_bench", thread_id: "lt_bench_v1", detail: "the bench by the ferry" })] });
+  const rows = await places.syncPlaces(db, [v2]);
+  const update = db.writes.find((w) => /UPDATE places SET thread_id/.test(w.sql));
+  assert.ok(update && /detail = \?3/.test(update.sql), "the detail rides with the thread");
+  assert.deepEqual(update.binds.slice(0, 3), ["pl_bench", "lt_bench_v2", "the bench by the ferry, repainted green"]);
+  assert.equal(rows.find((r) => r.id === "pl_bench").detail, "the bench by the ferry, repainted green");
+  const noDetail = fakeDb({ places: [placeRow({ id: "pl_bench", thread_id: "lt_bench_v1", detail: "his own words" })] });
+  await places.syncPlaces(noDetail, [placeThread({ id: "lt_bench_v3", title: "the harbour bench", detail: null })]);
+  assert.equal(noDetail.writes.find((w) => /UPDATE places SET thread_id/.test(w.sql)).binds[2], "his own words", "a thread with no detail keeps the row's");
+});
+
+const tg = guard(places, "placeGeocodeQueries", "isPlaceKey");
+
+tg("placeGeocodeQueries: the title with only the region after her city's last comma (Open-Meteo answers nothing for two commas or a city filter), then the bare title", () => {
+  assert.deepEqual(places.placeGeocodeQueries("Deering Oaks Park", "Portland, Maine"), ["Deering Oaks Park, Maine", "Deering Oaks Park"]);
+  assert.deepEqual(places.placeGeocodeQueries("  the  Eastern Promenade ", "Portland, Maine"), ["the Eastern Promenade, Maine", "the Eastern Promenade"]);
+  assert.deepEqual(places.placeGeocodeQueries("Deering Oaks Park", "Portland"), ["Deering Oaks Park"], "a city with no comma adds nothing");
+  assert.deepEqual(places.placeGeocodeQueries("Deering Oaks Park", ""), ["Deering Oaks Park"]);
+  assert.deepEqual(places.placeGeocodeQueries("   ", "Portland, Maine"), []);
+  for (const q of places.placeGeocodeQueries("x".repeat(200), "Portland, Maine")) {
+    assert.ok(q.length <= 80, "under weather.ts's 80-character cap: " + q.length);
+    assert.ok((q.match(/,/g) ?? []).length <= 1, "never two commas");
+  }
+});
+
+tg("isPlaceKey: only places/<slug>.png; never his photo, a restore point, a traversal or a candidate", () => {
+  assert.equal(places.isPlaceKey("places/the-harbour-bench-bench.png"), true);
+  assert.equal(places.isPlaceKey(places.placeKey("The Pier!", "pl_abc123")), true);
+  for (const bad of ["him/him_38edf830605b4fa9bb51.webp", "snapshots/avelie-2026-09-25.json", "places/../him/x.png", "places/x.webp", "candidates/img_1.png", "", null, 42]) {
+    assert.equal(places.isPlaceKey(bad), false, String(bad));
+  }
+});
+
+tp("a place row naming a key outside places/ is never served or deleted (a corrupted import cannot reach his photo)", async () => {
+  const env = { ...secretEnv(), MEDIA: fakeR2({ "him/him_1.webp": new Uint8Array([1, 2, 3]) }) };
+  const row = placeRow({ id: "pl_bench", picture_key: "him/him_1.webp", picture_sha256: "0".repeat(64) });
+  assert.equal((await places.servePlacePicture(env, pictureDb(row), "pl_bench")).status, 404);
+  const cleared = await places.deletePlacePicture(env, pictureDb(row), "pl_bench", "test");
+  assert.equal(cleared.picture_key, null, "the column is cleared");
+  assert.ok(env.MEDIA.has("him/him_1.webp"), "his photo is untouched");
+  assert.ok(!env.MEDIA.log.some((l) => l.op === "delete"), "no delete reached storage");
+});
+
+tp("makePlacePicture: the claim is taken before the paid call and released after; a claim held elsewhere is 409 in_progress with nothing paid", async () => {
+  const env = ENV();
+  const db = pictureDb();
+  await places.makePlacePicture(env, db, S, { id: "pl_bench", actor: "test", now: NOW, weather: null });
+  const claim = db.writes.findIndex((w) => /INSERT INTO panel_cache/.test(w.sql) && w.binds[0] === "place_picture:pl_bench");
+  const run = db.writes.findIndex((w) => /INSERT INTO model_runs/.test(w.sql));
+  const release = db.writes.findIndex((w) => /DELETE FROM panel_cache WHERE k = \?1 AND fetched_at = \?2/.test(w.sql) && w.binds[0] === "place_picture:pl_bench");
+  assert.ok(claim >= 0 && run > claim && release > run, `claim ${claim}, run ${run}, release ${release}`);
+
+  const busy = pictureDb();
+  const prepare = busy.prepare;
+  busy.prepare = (sql) => {
+    const st = prepare(sql);
+    if (/INSERT INTO panel_cache/.test(sql)) st.run = async () => { busy.writes.push({ sql, binds: st.binds }); return { success: true, meta: { changes: 0 } }; };
+    return st;
+  };
+  const busyEnv = ENV();
+  await assert.rejects(places.makePlacePicture(busyEnv, busy, S, { id: "pl_bench", actor: "test", now: NOW, weather: null }), (e) => e.status === 409 && e.code === "in_progress");
+  assert.equal(busyEnv.MEDIA.store.size, 0, "no picture made");
+  assert.ok(!busy.writes.some((w) => /model_runs|usage_daily|DELETE FROM panel_cache/.test(w.sql)), "nothing paid, and the other call's claim is not released");
+});

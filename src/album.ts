@@ -123,10 +123,13 @@ function normGroup(group: string | undefined): AlbumGroup {
   return group as AlbumGroup;
 }
 
+// Any time Date.parse reads, normalised to the ISO form created_at is stored in, so the
+// string comparison below cuts where the time says ("Sat, 26 Sep 2026 10:00:00 GMT" too).
 function normBefore(before: string | undefined): string | null {
   if (before === undefined || before === null || before === "") return null;
-  if (typeof before !== "string" || parseTime(before) === null) throw new ApiHttpError(400, "validation", "before must be an ISO time");
-  return before;
+  const t = typeof before === "string" ? parseTime(before) : null;
+  if (t === null) throw new ApiHttpError(400, "validation", "before must be an ISO time");
+  return new Date(t).toISOString();
 }
 
 function inGroup(row: AlbumAssetRow, group: AlbumGroup): boolean {
@@ -166,7 +169,8 @@ async function rowsIn<T>(db: D1Database, sql: (marks: string) => string, ids: st
   return out;
 }
 
-async function readAssets(db: D1Database, group: AlbumGroup, before: string | null, limit: number): Promise<AlbumAssetRow[]> {
+// `at`: only the rows created at exactly that time (the page-edge tie read below).
+async function readAssets(db: D1Database, group: AlbumGroup, before: string | null, limit: number, at?: string): Promise<AlbumAssetRow[]> {
   const where: string[] = [
     "role IN ('candidate', 'scene', 'video')",
     "approval_status IN ('candidate', 'approved')",
@@ -184,10 +188,14 @@ async function readAssets(db: D1Database, group: AlbumGroup, before: string | nu
     binds.push(before);
     where.push("created_at < ?" + binds.length);
   }
+  if (at !== undefined) {
+    binds.push(at);
+    where.push("created_at = ?" + binds.length);
+  }
   binds.push(limit);
   const sql = "SELECT * FROM visual_assets WHERE " + where.join(" AND ") + " ORDER BY created_at DESC, id DESC LIMIT ?" + binds.length;
   const r = await db.prepare(sql).bind(...binds).all<AlbumAssetRow>();
-  return r.results.filter((row) => eligibleRow(row, group, before)).sort(byNewest).slice(0, limit);
+  return r.results.filter((row) => eligibleRow(row, group, before) && (at === undefined || row.created_at === at)).sort(byNewest).slice(0, limit);
 }
 
 async function readSceneVersions(db: D1Database): Promise<SceneVersionLike[]> {
@@ -205,7 +213,18 @@ export async function listAlbum(db: D1Database, opts: AlbumOpts = {}): Promise<A
   const group = normGroup(opts.group);
   const before = normBefore(opts.before);
 
-  const rows = await readAssets(db, group, before, limit);
+  // One row past the limit says whether an older page exists. When the page edge falls inside
+  // rows that share one created_at, the whole tie joins this page (the cursor is a time and
+  // the next page cuts strictly before it, so a tie split across pages would lose rows).
+  const ahead = await readAssets(db, group, before, limit + 1);
+  let rows = ahead.slice(0, limit);
+  const edge = rows[rows.length - 1];
+  const past = ahead[limit];
+  const more = ahead.length > limit;
+  if (more && edge && past && past.created_at === edge.created_at) {
+    const tie = await readAssets(db, group, before, ALBUM_LIMIT_MAX, edge.created_at);
+    rows = rows.filter((r) => r.created_at !== edge.created_at).concat(tie).sort(byNewest);
+  }
   if (!rows.length) return { items: [], nextBefore: null };
 
   const messageIds = Array.from(new Set(rows.map((r) => r.message_id).filter((id): id is string => typeof id === "string" && id.length > 0)));
@@ -238,6 +257,6 @@ export async function listAlbum(db: D1Database, opts: AlbumOpts = {}): Promise<A
   });
 
   const last = rows[rows.length - 1];
-  const nextBefore = rows.length >= limit && last ? last.created_at : null;
+  const nextBefore = more && last ? last.created_at : null;
   return { items, nextBefore };
 }

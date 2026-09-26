@@ -29,10 +29,15 @@ export const WORKLET_PATHS = Object.freeze({
   rawAudioProcessor: "/js/vendor/worklets/rawAudioProcessor.js",
   audioConcatProcessor: "/js/vendor/worklets/audioConcatProcessor.js",
 });
+// The resampler worklet the WebSocket transport loads when the browser cannot set the mic
+// sample rate. Same origin, never the client's jsdelivr default (the CSP allows no CDN).
+export const LIBSAMPLERATE_PATH = "/js/vendor/worklets/libsamplerate.worklet.js";
 // His input level (0 to 1 from the client) above which he counts as speaking, and how
-// often it is read.
+// often it is read; he counts as still speaking for HIS_HOLD_MS after his level drops, so
+// the face does not flicker between words.
 export const HIS_LEVEL = 0.12;
 export const LEVEL_STEP_MS = 100;
+export const HIS_HOLD_MS = 600;
 
 const noop = () => {};
 
@@ -48,6 +53,12 @@ export function endReasonFor(details) {
   return null;
 }
 
+// The face for one read (pure): her speaking wins, then his speaking, else idle.
+export function faceFor(mode, hisSpeaking) {
+  if (mode === "speaking") return "talking";
+  return hisSpeaking ? "listening" : "idle";
+}
+
 // The session options for Conversation.startSession from the start response: the
 // credential by transport, the overrides as given, the self-hosted worklets. Nothing else
 // from `start` is copied.
@@ -57,7 +68,7 @@ export function sessionOptions(start) {
   const overrides = start && start.overrides && typeof start.overrides === "object" ? start.overrides : undefined;
   const base = { connectionType: transport, workletPaths: { ...WORKLET_PATHS } };
   if (overrides) base.overrides = overrides;
-  if (transport === "websocket") return { ...base, signedUrl: credential };
+  if (transport === "websocket") return { ...base, libsampleratePath: LIBSAMPLERATE_PATH, signedUrl: credential };
   return { ...base, conversationToken: credential };
 }
 
@@ -83,7 +94,8 @@ export function clientCallbacks(cb, state) {
     onModeChange: (props) => {
       const mode = props && props.mode === "speaking" ? "speaking" : "listening";
       state.mode = mode;
-      setFace(mode === "speaking" ? "talking" : "idle");
+      state.face = mode === "speaking" ? "talking" : "idle";
+      setFace(state.face);
     },
     onDisconnect: (details) => {
       if (state.closed) return;
@@ -118,7 +130,7 @@ export async function connectElevenLabs(opts) {
     err.code = "client_unavailable";
     throw err;
   }
-  const state = { closed: false, mode: "listening" };
+  const state = { closed: false, mode: "listening", face: "idle" };
   let conversation;
   try {
     conversation = await Conversation.startSession({ ...options, ...clientCallbacks(cb, state) });
@@ -129,20 +141,25 @@ export async function connectElevenLabs(opts) {
     throw err;
   }
   // The start response is not referenced past this point.
-  if (cb.setFace) cb.setFace("idle");
+  if (cb.setFace) cb.setFace(state.face);
 
-  // His level, read from the client, drives the "listening" face while she is quiet.
-  const setHisSpeaking = cb.setHisSpeaking || null;
-  let hisSpeaking = false;
-  const levelTimer = setHisSpeaking
+  // The face on this path comes from the client alone: her mode (talking while she speaks)
+  // and his input level (listening while he speaks, held HIS_HOLD_MS). It is set directly,
+  // never through call.js's analyser meter, which has no analyser here and would read her
+  // level as 0 and drop the talking and listening loops back to idle.
+  const setFace = cb.setFace || null;
+  let hisAt = -Infinity;
+  const levelTimer = setFace
     ? setInterval(() => {
         if (state.closed) return;
         let level = 0;
         try { level = Number(conversation.getInputVolume()) || 0; } catch { level = 0; }
-        const speaking = state.mode !== "speaking" && level >= HIS_LEVEL;
-        if (speaking !== hisSpeaking) {
-          hisSpeaking = speaking;
-          setHisSpeaking(speaking);
+        const now = Date.now();
+        if (level >= HIS_LEVEL) hisAt = now;
+        const next = faceFor(state.mode, now - hisAt < HIS_HOLD_MS);
+        if (next !== state.face) {
+          state.face = next;
+          setFace(next);
         }
       }, LEVEL_STEP_MS)
     : null;

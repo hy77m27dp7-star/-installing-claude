@@ -25,7 +25,10 @@
 // Without Premium (or where the SDK cannot run, iOS Safari for one), the embed
 // https://open.spotify.com/embed/track/<id> is rendered in place of the play control (the
 // event's `target` element, else #nowPlaying) and the state dispatched is "off" with the
-// embed's src, so a card can render it itself.
+// embed's src, so a card can render it itself. Spotify stopped reporting the account type
+// to Development Mode apps (February 2026), so an unknown `premium` (null) tries the SDK
+// and its own account_error turns a free account into the embed. With spotifyPlayer "off"
+// nothing plays here: the state is "off" with reason player_off and no embed.
 import { api } from "./api.js";
 
 export const SDK_URL = "https://sdk.scdn.co/spotify-player.js";
@@ -85,7 +88,8 @@ async function getToken() {
   token = {
     accessToken: String(t && t.accessToken || ""),
     expiresAt: Number.isFinite(exp) ? exp : Date.now() + 5 * 60 * 1000,
-    premium: !!(t && t.premium),
+    // true, false, or null when Spotify did not say.
+    premium: t && typeof t.premium === "boolean" ? t.premium : null,
     player: t && typeof t.player === "string" ? t.player : "sdk",
   };
   if (!token.accessToken) throw Object.assign(new Error("no token"), { code: "no_token" });
@@ -143,7 +147,7 @@ async function ensureDevice() {
     const t = await getToken();
     if (t.player === "off") throw Object.assign(new Error("off"), { code: "player_off" });
     if (t.player === "embed") throw Object.assign(new Error("embed"), { code: "embed_only" });
-    if (!t.premium) throw Object.assign(new Error("premium"), { code: "no_premium" });
+    if (t.premium === false) throw Object.assign(new Error("premium"), { code: "no_premium" });
     const Spotify = await loadSdk();
     if (!Spotify || !Spotify.Player) throw Object.assign(new Error("sdk"), { code: "sdk_load" });
     player = new Spotify.Player({
@@ -234,6 +238,10 @@ export async function play(detail) {
   try {
     id = await ensureDevice();
   } catch (e) {
+    if (e && e.code === "player_off") {
+      dispatch({ state: "off", track: null, position: 0, duration: 0, reason: "player_off", embedSrc: null });
+      return;
+    }
     fallback(uris[0], d.target, (e && e.code) || "unavailable");
     return;
   }

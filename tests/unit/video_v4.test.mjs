@@ -196,3 +196,14 @@ t("startClipForMessage: the row is role video bound to the conversation and the 
   await assert.rejects(video.startClipForMessage(e, db, S, { conversationId: "c_test", messageId: "m_clip", description: "", actor: "test" }), (e2) => e2.status === 400);
   await assert.rejects(video.startClipForMessage(e, fakeDb({ visual_assets: [], usage_daily: [] }), S, { conversationId: "c_test", messageId: "m_clip", description: "x", actor: "test" }), (e2) => e2.status === 404, "nothing to make it from");
 });
+
+t("chooseClipSource: a picture with him in it (with_him 1) never dresses a clip, even as today's newest here; the next one down is taken", () => {
+  const today = "2026-09-29";
+  const rows = [
+    master("master-05", "images/masters/05_dress.png"),
+    { ...assetRow({ id: "img_her", conversation_id: "c_here", message_id: "m1", created_at: today + "T10:00:00.000Z" }), with_him: 0 },
+    { ...assetRow({ id: "img_us", conversation_id: "c_here", message_id: "m2", created_at: today + "T12:00:00.000Z" }), with_him: 1 },
+  ];
+  assert.equal(video.chooseClipSource(rows, { conversationId: "c_here", today }).id, "img_her");
+  assert.equal(video.chooseClipSource([rows[0], rows[2]], { conversationId: "c_here", today }).id, "master-05", "only a picture of us on file: the master");
+});
