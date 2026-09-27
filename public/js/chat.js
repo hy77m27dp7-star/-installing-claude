@@ -3069,6 +3069,7 @@ async function dtListen(dt) {
     return;
   }
   dt.chunks = [];
+  dt.levels = [];
   dt.voicedMs = 0;
   dt.heard = false;
   dt.quietSince = 0;
@@ -3088,9 +3089,14 @@ async function dtListen(dt) {
     const now = Date.now();
     // The room's own level, learned while he is quiet; speech is a clear step above it (an
     // iPhone's mic runs far quieter than a Mac's, so a fixed line never fired there).
-    if (dt.noise === undefined) dt.noise = level;
-    const line = Math.min(DT_LEVEL, Math.max(0.006, dt.noise * 2.5 + 0.004));
-    if (level <= line) dt.noise = dt.noise * 0.95 + level * 0.05;
+    // 2026-09-27, Justin: "i have to click done for this shit". The phone's own gain lifts the
+    // room once he stops, so a slow average never saw the quiet. The floor is the quietest
+    // moment of the last 1.5 s (the gaps between his words keep it honest while he talks).
+    dt.levels = dt.levels || [];
+    dt.levels.push(level);
+    if (dt.levels.length > 15) dt.levels.shift();
+    const floor = Math.min(...dt.levels);
+    const line = Math.min(DT_LEVEL, Math.max(0.006, floor * 2.2 + 0.004));
     if (dt.dot) dt.dot.style.transform = "scale(" + (1 + Math.min(1.5, level / Math.max(line, 0.001))).toFixed(2) + ")";
     if (level > line) {
       dt.voicedMs = (dt.voicedMs || 0) + 100;
