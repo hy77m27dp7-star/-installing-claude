@@ -334,7 +334,7 @@ export interface VoiceNoteArgs {
 // 2026-09-27: on the hands-free call, silence and room noise came back from Whisper as
 // "Продолжение следует..." ("to be continued") and "ん ん ん", and she answered them. Its
 // known inventions, and a line that is mostly not Latin letters, are no line at all.
-const WHISPER_JUNK_RE = /^(?:продолжение следует|субтитры|редактор субтитров|thank you(?: so much)? for watching|thanks for watching|please subscribe|subtitles by|amara\.org|you|bye)[\s.!…]*$/i;
+const WHISPER_JUNK_RE = /^(?:продолжение следует|субтитры|редактор субтитров|thank you(?: so much)? for watching|thanks for watching|please subscribe|subtitles by|amara\.org|you|bye)[\s.!\u2026]*$/i;
 export function isWhisperJunk(text: string): boolean {
   const t = String(text ?? "").replace(/\s+/g, " ").trim();
   if (!t) return true;
