@@ -1,7 +1,9 @@
 // Anthropic adapter. The system prompt goes as text blocks with a cache breakpoint on the
 // stable constitution prefix (byte-identical every turn, so repeat turns hit the cache).
 // Sampling parameters are never sent: current models reject temperature and top_p.
-// Thinking is left at the model default; effort is the only depth control.
+// Thinking is left at the model default; effort is the only depth control, sent only to a
+// model that takes it (effortSupported): Haiku 4.5 and the models before Opus 4.5 answer a
+// request carrying output_config.effort with a 400 (the 2026-09-26 nightly hygiene failure).
 //
 // v3 (SPEC_V3 header, "the cache claim true in the adapter"): when the request carries
 // systemParts { prefix, state }, two system blocks are sent: the prefix with
@@ -30,6 +32,21 @@ function partsOf(req: GenerateRequest): { prefix: string; state: string } | null
   if (typeof parts.prefix !== "string" || typeof parts.state !== "string") return null;
   if (!parts.prefix.trim() || !parts.state.trim()) return null;
   return { prefix: parts.prefix, state: parts.state };
+}
+
+// Pure: whether a model id takes output_config.effort. False for every Haiku, every Claude 3
+// id, and Sonnet 4.5, Opus 4.1, Opus 4 and Sonnet 4 (with or without a date suffix, "-0"
+// alias included); true for everything else (Opus 4.5 and later, every 4.6+, 5.x, Fable,
+// Sonnet 5, Opus 5, Opus 5.5). A Bedrock-style "anthropic." prefix and a Vertex "@date"
+// suffix read the same as the bare id.
+const NO_EFFORT_RE = /^claude-(?:sonnet-4-5|opus-4-1|opus-4|opus-4-0|sonnet-4|sonnet-4-0)(?:[-@]\d{8})?(?:-v\d+(?::\d+)?)?$/;
+
+export function effortSupported(model: string): boolean {
+  const id = String(model ?? "").trim().toLowerCase().replace(/^(?:[a-z0-9-]+\.)?anthropic\./, "");
+  if (!id) return true;
+  if (id.includes("haiku")) return false;
+  if (id.startsWith("claude-3")) return false;
+  return !NO_EFFORT_RE.test(id);
 }
 
 // Pure: the system blocks a request is sent with. Two blocks when systemParts is present
@@ -119,7 +136,7 @@ export const anthropicProvider: TextProvider = {
         max_tokens: req.maxTokens,
         ...(system.length ? { system } : {}),
         messages,
-        output_config: { effort: req.effort },
+        ...(effortSupported(req.model) ? { output_config: { effort: req.effort } } : {}),
       });
     } catch (e) {
       throw mapError(e);

@@ -7,7 +7,7 @@
 //
 // This module NEVER imports src/proposals.ts: proposals.ts imports it for the two promotions.
 import { ApiHttpError } from "./errors";
-import { listFacts } from "./db";
+import { getCurrentState, listFacts } from "./db";
 import { safeTimezone } from "./life";
 import { herDayKey } from "./clock";
 import { cleanLine, fileNightlyProposals, paidJsonCall, parseJsonArray } from "./storycall";
@@ -15,7 +15,7 @@ import type { NightlyBudget, NightlyProposal, StepResult } from "./storycall";
 import { mergeFacts, setFactInferred } from "./state";
 import { normalizeForMatch } from "./checks";
 import { numberWordsToDigits, saidKey, saidLine } from "./said";
-import type { Env, FactRow, ProposalRow, ProviderName, Settings } from "./types";
+import type { Env, FactRow, ProposalRow, ProviderName, RelationshipState, Settings } from "./types";
 
 export const MERGE_PREFIX = "Decide which groups of facts";
 export const INFERRED_PREFIX = "Decide whether he said";
@@ -44,8 +44,11 @@ const MERGE_TEXT_MAX = 300;
 const PROPOSAL_TEXT_MAX = 300;
 const HIS_TEXT_MAX = 600;
 // Review fix: a merged head's source reads "merged: proposal p_..; ...", so the proposal id is
-// found anywhere in the source, not only at its start.
-const PROPOSAL_SOURCE_RE = /\bproposal (p_[A-Za-z0-9]+)/;
+// found anywhere in the source, not only at its start. Fix 2026-09-27: EVERY proposal id in the
+// source is read ("proposal p_a | proposal p_b"), not only the first.
+const PROPOSAL_SOURCE_RE = /\bproposal (p_[A-Za-z0-9]+)/g;
+// Fix 2026-09-27: how many of his own justin_fact proposals the said keys are built from.
+export const SAID_PROPOSALS_MAX = 500;
 // Review fix: mergeFacts takes a keep and at most ten merged ids.
 const EXACT_KEEP = 11;
 // Review fix: what the last nights already looked at (the facts asked "did he say it", the
@@ -256,18 +259,76 @@ export function proposalUserMessageId(p: Pick<ProposalRow, "payload_json">): str
   }
 }
 
-function proposalIdOf(f: FactRow): string | null {
-  const m = typeof f.source === "string" ? PROPOSAL_SOURCE_RE.exec(f.source) : null;
-  return m && m[1] ? m[1] : null;
+// Every proposal id in a fact's source, in order, each once.
+export function proposalIdsOf(f: Pick<FactRow, "source">): string[] {
+  const src = f && typeof f.source === "string" ? f.source : "";
+  const out: string[] = [];
+  for (const m of src.matchAll(PROPOSAL_SOURCE_RE)) if (m[1] && !out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+
+// The quote a proposal was filed from, found in his own message of that turn (the same
+// normalizeForMatch containment the guess check has always used).
+function quoteInHisMessage(quote: string | null, hisText: string | null): boolean {
+  if (!quote || !hisText) return false;
+  const q = normalizeForMatch(quote);
+  return !!q && normalizeForMatch(hisText).includes(q);
+}
+
+// Fix 2026-09-27: the said keys. The saidKey of every justin_fact proposal whose quote is in his
+// own message of that turn: what he has told her himself, whatever fact it was filed as. Live
+// case: "Justin is 44 years old" was filed from a turn where the quote was HER line ("you're
+// forty four, you're not dying"), so the check answered said=false, while an earlier turn's
+// proposal "He is 44 years old" carried the quote "44" from his own "im 44".
+export function saidKeysFrom(
+  rows: ReadonlyArray<{ proposal: string | null; evidence: string | null; userMessageId: string | null }>,
+  hisTexts: ReadonlyMap<string, string>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const r of Array.isArray(rows) ? rows : []) {
+    if (!r || typeof r.proposal !== "string") continue;
+    const quote = typeof r.evidence === "string" && r.evidence.trim() ? r.evidence.trim() : null;
+    const his = r.userMessageId ? hisTexts.get(r.userMessageId) : undefined;
+    if (!quoteInHisMessage(quote, typeof his === "string" && his.trim() ? his : null)) continue;
+    const k = saidKey(saidLine(r.proposal));
+    if (k) out.add(k);
+  }
+  return out;
+}
+
+// His own name words (lowercased, from the relationship's his_name): "Justin is 44" and "He is
+// 44" name the same man, so the name never keeps a fact out of what he said.
+export function nameWords(name: string | null | undefined): Set<string> {
+  return new Set(saidKey(typeof name === "string" ? name : "").split(" ").filter(Boolean));
+}
+
+// Whether a fact is one he said himself by its words: its saidKey (his name words left out)
+// equals a said key, or its words are all inside one. An empty key is never covered.
+export function saidCovered(text: string, said: ReadonlySet<string>, names: ReadonlySet<string> = new Set()): boolean {
+  if (!said || !said.size) return false;
+  const words = saidKey(saidLine(text)).split(" ").filter((w) => w && !names.has(w));
+  if (!words.length) return false;
+  const key = words.join(" ");
+  for (const k of said) {
+    if (k === key) return true;
+    const have = new Set(k.split(" ").filter((w) => w && !names.has(w)));
+    if (have.size && words.every((w) => have.has(w))) return true;
+  }
+  return false;
 }
 
 // Facts about him filed from a proposal whose quote is not in his own message: the model is asked
 // whether he said them. Newest first, so each night reaches what the last turns filed.
+// Fix 2026-09-27: every proposal in the source counts (a fact is no candidate when ANY of them
+// has its quote in his own message), and a fact whose words he said himself in any turn (the
+// said keys, his name words left out) is no candidate either.
 export function inferredCandidates(
   facts: FactRow[],
   proposals: ReadonlyMap<string, { evidence: string | null; userMessageId: string | null }>,
   hisTexts: ReadonlyMap<string, string>,
   skip: ReadonlySet<string> = new Set(),
+  said: ReadonlySet<string> = new Set(),
+  names: ReadonlySet<string> = new Set(),
 ): InferredCandidate[] {
   const out: InferredCandidate[] = [];
   // Review fix: `skip` holds the facts a merge proposed tonight takes (a mark on one would
@@ -275,24 +336,31 @@ export function inferredCandidates(
   const pool = (Array.isArray(facts) ? facts : []).filter((f) => hygieneScope(f) && f.scope === "justin" && !isInferred(f) && !skip.has(f.id)).slice().sort((a, b) => byAge(b, a));
   for (const f of pool) {
     if (out.length >= INFERRED_MAX) break;
-    const pid = proposalIdOf(f);
-    if (!pid) continue;
-    const info = proposals.get(pid);
-    const quote = info && typeof info.evidence === "string" && info.evidence.trim() ? info.evidence.trim() : null;
-    const umid = info && typeof info.userMessageId === "string" ? info.userMessageId : null;
-    const his = umid ? hisTexts.get(umid) : undefined;
-    const hisText = typeof his === "string" && his.trim() ? his : null;
-    if (quote && hisText) {
-      const q = normalizeForMatch(quote);
-      if (q && normalizeForMatch(hisText).includes(q)) continue;
+    const pids = proposalIdsOf(f);
+    if (!pids.length) continue;
+    let first: { quote: string | null; hisText: string | null } | null = null;
+    let his = false;
+    for (const pid of pids) {
+      const info = proposals.get(pid);
+      const quote = info && typeof info.evidence === "string" && info.evidence.trim() ? info.evidence.trim() : null;
+      const umid = info && typeof info.userMessageId === "string" ? info.userMessageId : null;
+      const text = umid ? hisTexts.get(umid) : undefined;
+      const hisText = typeof text === "string" && text.trim() ? text : null;
+      if (!first) first = { quote, hisText };
+      if (quoteInHisMessage(quote, hisText)) {
+        his = true;
+        break;
+      }
     }
-    out.push({ factId: f.id, text: f.fact, quote, hisText });
+    if (his) continue;
+    if (saidCovered(f.fact, said, names)) continue;
+    out.push({ factId: f.id, text: f.fact, quote: first ? first.quote : null, hisText: first ? first.hisText : null });
   }
   return out;
 }
 
 export function inferredSystem(): string {
-  return "Decide whether he said each fact himself. For each FACT you get the fact, the quote it was filed from, and his own message. \"said\": true only when his own message states it, in any words; false when it was worked out from hints, guessed, or said by her. Output strictly a JSON array, no prose, no fences: [{\"fact\": the fact id, \"said\": true|false}].";
+  return "Decide whether he said each fact himself. For each FACT you get the fact, the quote it was filed from, and his own message. \"said\": true when his own message states it, in any words, and true whenever you are unsure (he may have said it in a message you are not shown); false only when the quote plainly shows she worked it out from hints or guessed it. Output strictly a JSON array, no prose, no fences: [{\"fact\": the fact id, \"said\": true|false}].";
 }
 
 export function inferredUser(cands: ReturnType<typeof inferredCandidates>): string {
@@ -421,6 +489,31 @@ async function readProposals(db: D1Database, ids: string[]): Promise<Map<string,
   return out;
 }
 
+// His own justin_fact proposals, newest first, any status: one bounded read. A database that
+// cannot answer adds nothing (the check then runs as before).
+async function readSaidProposals(db: D1Database): Promise<Array<{ proposal: string | null; evidence: string | null; userMessageId: string | null }>> {
+  try {
+    const r = await db.prepare("SELECT id, proposal, evidence, payload_json FROM proposals WHERE kind = 'justin_fact' ORDER BY created_at DESC LIMIT ?1")
+      .bind(SAID_PROPOSALS_MAX).all<{ id: string; proposal: string | null; evidence: string | null; payload_json: string | null }>();
+    return (r.results ?? [])
+      .filter((p) => !!p && typeof p.proposal === "string")
+      .map((p) => ({ proposal: p.proposal, evidence: typeof p.evidence === "string" ? p.evidence : null, userMessageId: proposalUserMessageId(p) }));
+  } catch {
+    return [];
+  }
+}
+
+// His first name from the current relationship state, or null.
+async function readHisName(db: D1Database): Promise<string | null> {
+  try {
+    const rel = await getCurrentState<RelationshipState>(db, "relationship");
+    const n = rel && rel.state ? rel.state.his_name : null;
+    return typeof n === "string" && n.trim() ? n.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 async function readHisMessages(db: D1Database, ids: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   for (let i = 0; i < ids.length; i += IN_CHUNK) {
@@ -492,14 +585,22 @@ export async function runHygienePass(env: Env, db: D1Database, settings: Setting
   // (4) facts filed from a proposal whose quote is not in his own message: did he say it?
   let marked = 0;
   const pids = Array.from(new Set(
-    facts.filter((f) => hygieneScope(f) && f.scope === "justin" && !isInferred(f)).map(proposalIdOf).filter((x): x is string => !!x),
+    facts.filter((f) => hygieneScope(f) && f.scope === "justin" && !isInferred(f)).flatMap(proposalIdsOf),
   ));
   if (pids.length) {
     const proposals = await readProposals(db, pids);
-    const umids = Array.from(new Set(Array.from(proposals.values()).map((p) => p.userMessageId).filter((x): x is string => !!x)));
+    // Fix 2026-09-27: his own justin_fact proposals (any status, newest SAID_PROPOSALS_MAX) and
+    // his name, so a fact he said in ANY turn is never asked about.
+    const saidRows = await readSaidProposals(db);
+    const umids = Array.from(new Set([
+      ...Array.from(proposals.values()).map((p) => p.userMessageId),
+      ...saidRows.map((p) => p.userMessageId),
+    ].filter((x): x is string => !!x)));
     const hisTexts = umids.length ? await readHisMessages(db, umids) : new Map<string, string>();
+    const said = saidKeysFrom(saidRows, hisTexts);
+    const names = nameWords(await readHisName(db));
     const skip = new Set<string>([...merging, ...marks.checked]);
-    const cands = inferredCandidates(facts, proposals, hisTexts, skip);
+    const cands = inferredCandidates(facts, proposals, hisTexts, skip, said, names);
     if (cands.length) {
       const call = await paidJsonCall(env, db, settings, budget, {
         tag: "hygiene_inferred", provider, model, system: inferredSystem(), user: inferredUser(cands), maxTokens: 400, temperature: 0,

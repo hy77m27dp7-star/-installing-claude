@@ -103,7 +103,12 @@ export function parseVoiceMarker(text: string): { clean: string; voice: boolean 
 
 // Whether this reply gets audio: never with the provider off or the mode off; on every
 // reply in mode "all"; in mode "some" only when she asked with the marker.
-export function voiceWanted(settings: Settings, marker: boolean): boolean {
+// Fix 2026-09-27: never in a Together scene (`together` true). She is in the room with him, so
+// a voice note makes no sense there; her [voice] marker is still stripped from her text by
+// parseVoiceMarker, only no note is made (the 9:30am record store reply that came out in the
+// generic Workers AI voice).
+export function voiceWanted(settings: Settings, marker: boolean, together = false): boolean {
+  if (together === true) return false;
   if (settings.voiceProvider === "off") return false;
   const mode = settings.voiceMode;
   if (mode === "all") return true;
