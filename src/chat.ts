@@ -52,6 +52,7 @@ import { contextStmt } from "./provenance";
 import { resolveMediaTitle } from "./media";
 import { attachVoiceNote, voiceWanted } from "./voice";
 import { spokenText } from "./narrate";
+import { fetchGame, tvSection, tvWanted } from "./tv";
 import { elevenLabsVoiceConfigured } from "./providers/elevenlabs";
 import type { ImageRef } from "./vision";
 import { extractProposals } from "./proposals";
@@ -698,11 +699,23 @@ export async function prepareTurn(
     ...(opts?.speak === true ? { cues: false } : {}),
   });
   const turnNote = !opener && typeof opts?.turnNote === "string" && opts.turnNote.trim() ? opts.turnNote.trim() : "";
-  const statePart = opener
+  // The game on TV while they watch together (src/tv.ts); nothing when it cannot be read.
+  let tvPart = "";
+  try {
+    const sc = assembled.state.scene;
+    const sceneText = [sc.location, sc.summary, sc.last_beat].filter((x) => typeof x === "string").join(" ");
+    if (tvWanted(String(assembled.state.mode ?? sceneMode(sc.status)), sceneText, opener ? "" : userText)) {
+      const game = await fetchGame();
+      if (game && game.state !== "post") tvPart = SYSTEM_SEPARATOR + tvSection(game);
+    }
+  } catch {
+    tvPart = "";
+  }
+  const statePart = (opener
     ? assembled.systemParts.state + SYSTEM_SEPARATOR + openerBlock(openerNote)
     : turnNote
       ? assembled.systemParts.state + SYSTEM_SEPARATOR + "ONE-TIME OPERATOR NOTE (not part of the story; he did not write this and never sees it)\n" + turnNote
-      : assembled.systemParts.state;
+      : assembled.systemParts.state) + tvPart;
   const system = assembled.systemParts.prefix + SYSTEM_SEPARATOR + statePart;
   const inputChars = system.length + assembled.messages.reduce((n, m) => n + m.content.length, 0);
   let estimate = 0;
