@@ -3866,6 +3866,14 @@ td .empty-label { padding: 16px 0; }
 .home-label { font-style: normal; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(236, 244, 255, 0.85); text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); }
 .home-open:hover .home-label { color: #fff; }
 
+/* fix0927: a short window (the app's side pane is about 600 px tall) keeps the clock, both
+   notification cards and her pictures in view instead of clipping the stack. */
+@media (max-height: 720px) {
+  .lock { gap: 8px; padding-top: calc(env(safe-area-inset-top) + 20px); }
+  .lock-time { font-size: clamp(52px, 11vh, 80px); }
+  .lock-date { font-size: 15px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
