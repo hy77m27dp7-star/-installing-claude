@@ -141,6 +141,21 @@ export function drawableRoll(items, limit) {
   return out;
 }
 
+// fix0927 review: a roll as the Her side shows it: the pictures she sent (newest first),
+// then her masters (`master: true`), at most `limit`, with `keep` of the masters always given
+// a place however many she has sent. Items drawableRoll would drop are dropped here first,
+// so no reserved place goes to a picture that cannot be drawn. src/roll.ts rollWithMasters
+// is the same rule on the server.
+export function rollWithMasters(items, limit, keep) {
+  const list = (Array.isArray(items) ? items : []).filter((it) => drawableRoll([it]).length === 1);
+  const max = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : Infinity;
+  const sent = list.filter((it) => it.master !== true);
+  const masters = list.filter((it) => it.master === true);
+  const want = Number.isFinite(Number(keep)) && Number(keep) > 0 ? Math.floor(Number(keep)) : 0;
+  const reserve = Math.min(want, masters.length, max);
+  return [...sent.slice(0, Math.max(0, max - reserve)), ...masters].slice(0, max);
+}
+
 // Her Maps app: only the places with stored coordinates.
 export function pinnedPlaces(places) {
   const out = [];

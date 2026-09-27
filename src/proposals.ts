@@ -15,7 +15,7 @@ import { WEEKDAYS, createThread, listThreads, localParts, logLife, safeTimezone,
 // story clock (the extractor's today and the occurred stamp), and the seven new kinds'
 // promotions, each in the module that owns its table.
 import { appendText, moveRelationship, normalizeSceneFields } from "./standing";
-import { loadStoryClock, localDayKeyOf, storyInstantOf, storyNow } from "./clock";
+import { heldNow, loadStoryClock, localDayKeyOf, storyInstantOf } from "./clock";
 import type { StoryClock } from "./clock";
 import { applyBeatOutcome, createBeatFromProposal } from "./arcs";
 import { applyViewProposal } from "./views";
@@ -358,7 +358,8 @@ async function extractorDay(db: D1Database, settings: Settings): Promise<{ today
   });
   try {
     const clock = await loadStoryClock(db, settings, new Date());
-    return dayOf(storyNow(clock));
+    // fix0927: heldNow, never the moving time of day, so a held scene keeps its day.
+    return dayOf(heldNow(clock));
   } catch {
     try {
       return dayOf(new Date());
@@ -823,7 +824,8 @@ async function promote(db: D1Database, p: ProposalRow, kind: ProposalKind, text:
     }
     case "beat_outcome": {
       const clock = await promotionClock(db, clockRef);
-      return applyBeatOutcome(db, beatOutcomePayload(p, payload), source, actor, clock ? storyNow(clock).getTime() : Date.now());
+      // fix0927: the held instant, so a step due a few minutes into a held scene is not "past".
+      return applyBeatOutcome(db, beatOutcomePayload(p, payload), source, actor, clock ? heldNow(clock).getTime() : Date.now());
     }
     case "her_view":
       return applyViewProposal(db, payload, source, actor);

@@ -161,22 +161,18 @@ export function splitActions(paragraph) {
     const lineEnd = nl < 0 ? p.length : nl;
     return blank(p.slice(lineStart, sp.start)) && blank(p.slice(sp.end, lineEnd));
   });
-  // The edges: a span with only space (or actions) between it and the paragraph's start or
-  // end is an action; repeated until nothing changes, so "*laughs* *covers her face* ok" and
-  // "ok *pulls you closer* *smiles*" read as two stage lines each.
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (let k = 0; k < n; k++) {
-      if (action[k]) continue;
-      const sp = spans[k];
-      const leads = k === 0 ? blank(p.slice(0, sp.start)) : action[k - 1] && blank(p.slice(spans[k - 1].end, sp.start));
-      const ends = k === n - 1 ? blank(p.slice(sp.end)) : action[k + 1] && blank(p.slice(sp.end, spans[k + 1].start));
-      if (leads || ends) {
-        action[k] = true;
-        changed = true;
-      }
-    }
+  // The edges: a span with only space (or other spans) between it and the paragraph's start
+  // or end is an action, so "*laughs* *covers her face* ok" and "ok *pulls you closer*
+  // *smiles*" read as two stage lines each. fix0927 review: the chain is anchored at the edge
+  // itself; a short span that only touches a mid-sentence action ("i said *leans in close
+  // now* *so* dramatic") stays emphasis.
+  for (let k = 0; k < n; k++) {
+    if (!blank(p.slice(k === 0 ? 0 : spans[k - 1].end, spans[k].start))) break;
+    action[k] = true;
+  }
+  for (let k = n - 1; k >= 0; k--) {
+    if (!blank(p.slice(spans[k].end, k === n - 1 ? p.length : spans[k + 1].start))) break;
+    action[k] = true;
   }
   const out = [];
   let from = 0;

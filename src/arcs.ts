@@ -754,8 +754,8 @@ export async function applyBeatOutcome(db: D1Database, payload: Record<string, u
       "SELECT b.id AS beat_id, r.id AS run_id, r.due_at AS due_at FROM arc_beats b JOIN beat_runs r ON r.beat_id = b.id AND r.reader = ?2 WHERE b.status = 'active' AND lower(trim(b.title)) = lower(trim(?1)) ORDER BY r.due_at ASC LIMIT 50",
     ).bind(p.beat.trim(), OWNER_READER).all<{ beat_id: string; run_id: string; due_at: string }>();
     const rows = (r.results ?? []).filter((x) => x && Number.isFinite(parseMs(x.due_at)));
-    // Review fix: "now" is the story's (the caller passes storyNow), so a step that fell due
-    // inside a held scene is still in her future and is not the one resolved.
+    // Review fix: "now" is the story's (the caller passes heldNow, fix0927), so a step that fell
+    // due inside a held scene is still in her future and is not the one resolved.
     const now = Number.isFinite(nowMs) ? nowMs : Date.now();
     const past = rows.filter((x) => parseMs(x.due_at) <= now);
     const pick = past.length ? past[past.length - 1] : rows.find((x) => parseMs(x.due_at) > now);

@@ -239,7 +239,10 @@ function modeSection(s: PromptState, now: Date, tz: string): string {
   const location = cleanText(s.scene.location);
   if (mode === "together") {
     return "MODE: together\n" +
-      `You are in the same place as him right now: ${location || "where the scene has you"}. Present tense. You move, choose, touch, leave, the way a person does. He is not narrating you. When you put an action between asterisks it is you telling him what you are doing, so he is "you" in it (*looks at you*, *hands you the hat*) and you are "I" or "my" (*bites the inside of my cheek*), never "him", "he", "his", "her", "she" or your own name; you are talking to him, not describing a scene to someone else.`;
+      `You are in the same place as him right now: ${location || "where the scene has you"}. Present tense. You move, choose, touch, leave, the way a person does. He is not narrating you. When you put an action between asterisks it is you telling him what you are doing, so he is "you" in it (*looks at you*, *hands you the hat*) and you are "I" or "my" (*bites the inside of my cheek*), never "him", "he", "his", "her", "she" or your own name; you are talking to him, not describing a scene to someone else.` +
+      // fix0927 (review, C4): the fixed VOICE NOTES rule offers a note on every turn; face to
+      // face there is no note to send (chat.ts makes none), so the rule is off here.
+      " No voice notes while you are together: you are talking out loud already, so never end a message with the [voice] line and never write it as a note to be heard.";
   }
   let where = location;
   if (!where) {
@@ -307,6 +310,9 @@ function knowAboutHimSection(s: PromptState): string {
 export function stateSections(s: PromptState): string {
   const out: string[] = [];
   const now = s.life && s.life.now instanceof Date ? s.life.now : new Date();
+  // fix0927: the stated time of day (moves with the talk inside a held scene); `now` stays
+  // the held instant for her plans, her day, what she sent and every other measure.
+  const clockNow = s.life && s.life.clockNow instanceof Date && Number.isFinite(s.life.clockNow.getTime()) ? s.life.clockNow : now;
   const tz = s.life && s.life.tz ? s.life.tz : DEFAULT_TZ;
   const push = (text: string): void => { if (text) out.push(text); };
   const clock: StoryClock | null = s.clock ?? null;
@@ -410,7 +416,7 @@ export function stateSections(s: PromptState): string {
   const clockWords = typeof s.clockWords === "string" && s.clockWords.trim() ? s.clockWords.trim() : null;
   if (s.grounding) {
     const g = s.grounding;
-    push(guarded("grounding", () => groundingSection({ now, tz, city: g.city, weather: g.weather, outfit: g.outfit, today: g.today, clockWords })));
+    push(guarded("grounding", () => groundingSection({ now: clockNow, tz, city: g.city, weather: g.weather, outfit: g.outfit, today: g.today, clockWords })));
   }
 
   // How long since they last talked (v5 section 1): apart only, never on an opener, never
@@ -430,7 +436,7 @@ export function stateSections(s: PromptState): string {
     const deferAt = clock ? (iso: string): string => deferredInstant(clock, iso) : null;
     // Review fix: the notes' ages on story time, as the callbacks and WHAT YOU WANT read them.
     const ageOf = clock ? (iso: string): number => storyAgeDays(clock, iso) : null;
-    push(guarded("life", () => lifeSection(life.threads, life.log, now, tz, { together: mode === "together", clockWords, deferAt, ageOf })));
+    push(guarded("life", () => lifeSection(life.threads, life.log, now, tz, { together: mode === "together", clockWords, deferAt, ageOf, clockNow })));
   }
 
   // The people and places in this (v5 section 8): their names and fixed facts.

@@ -24,7 +24,7 @@ import { api, h } from "./api.js";
 import { drawMap, pulsePlace } from "./map.js";
 import {
   APP_NAMES, APP_TITLES, appFromHash, whenWords, weatherWords, tickOffset, clockWords, dateWords,
-  focusPosition, progressWidth, noteNext, drawableRoll, pinnedPlaces, songLines, playlistIdOf, listKey,
+  focusPosition, progressWidth, noteNext, drawableRoll, rollWithMasters, pinnedPlaces, songLines, playlistIdOf, listKey,
 } from "./lockwords.js";
 // player.js (A1) answers the play, pause and next events this page dispatches; importing it
 // only registers its listeners (no token is fetched until something plays).
@@ -36,6 +36,10 @@ const FRESH_MS = 60 * 1000;
 const SWIPE_PX = 80;
 const STRIP_MAX = 6;
 const PHOTOS_MAX = 12;
+// fix0927 review: how many of her masters keep a place however many pictures she has sent:
+// all five in Photos, two on the lock strip (src/lockscreen.ts LOCK_ROLL_MASTERS).
+const PHOTOS_MASTERS = 5;
+const STRIP_MASTERS = 2;
 const SPOTIFY_EMBED = "https://open.spotify.com/embed/playlist/";
 const SPOTIFY_SEARCH = "https://open.spotify.com/search/";
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -166,7 +170,7 @@ function listening() {
 }
 
 function photos() {
-  return drawableRoll(S.roll, PHOTOS_MAX);
+  return drawableRoll(rollWithMasters(S.roll, PHOTOS_MAX, PHOTOS_MASTERS), PHOTOS_MAX);
 }
 
 // An app with nothing in it is not on her home screen (Maps only once a place of hers is
@@ -299,7 +303,7 @@ function thumb(it, cls) {
 function renderStrip(roll) {
   const strip = $("rollStrip");
   if (!strip) return;
-  const items = drawableRoll((Array.isArray(roll) ? roll : []).filter((it) => it && it.us !== true), STRIP_MAX);
+  const items = drawableRoll(rollWithMasters((Array.isArray(roll) ? roll : []).filter((it) => it && it.us !== true), STRIP_MAX, STRIP_MASTERS), STRIP_MAX);
   const key = listKey(items, ["id", "src"]);
   show(strip, items.length > 0);
   if (key === S.stripKey) return;

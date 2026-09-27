@@ -10,7 +10,8 @@
 // the exemplars and the cue are identical on the retry.
 //
 // v5 (SPEC_V5): the story clock is read first (Justin's rule: time runs while apart and
-// holds inside a together scene), and every story consumer of the turn reads `storyNow`;
+// holds inside a together scene), and every story consumer of the turn reads the held
+// instant (fix0927: only the stated time of day reads `storyNow`, which moves with the talk);
 // the new per-turn state (her read of him, dated beats, the people and places in this,
 // what she sent him, the songs he knows, the time since they last talked) joins the reads,
 // each a nicety; the rhythm cue replaces the v3 shape cue.
@@ -32,7 +33,7 @@ import { hisTextIsSubstantive, rhythmAsShapeCue, rhythmCue, signature } from "./
 // v5: the clock (L1), beats (L2), her read of him (L3), state that moves (L4), the record,
 // the world and the songs (L6), places and portraits (unchanged modules).
 import {
-  clockWordsFor, disabledClock, heldGrounding, lastExchange as readLastExchange, loadStoryClock, localDayKeyOf, storyAgeDays,
+  clockWordsFor, disabledClock, heldGrounding, heldNow, lastExchange as readLastExchange, loadStoryClock, localDayKeyOf, storyAgeDays,
   storyNow as storyNowOf, storyWindowStart, timeSince,
 } from "./clock";
 import type { LastExchange, StoryClock } from "./clock";
@@ -162,6 +163,12 @@ export interface LoadOptions {
   clock?: StoryClock;
   lastExchange?: LastExchange | null;
   realNow?: Date;
+  // fix0927: the story's time of day (clock storyNow), which inside a held scene moves with
+  // the conversation while `now` stays the frozen instant (clock heldNow). Only the stated
+  // time reads it: RIGHT NOW, the "It is" line of her life and the time-of-day tags. Every
+  // measure (her plans coming up or past, her day, the callbacks, the mood, what she sent)
+  // reads `now`. Absent: now.
+  clockNow?: Date;
   // v5 (section 8): the last messages with who wrote each (hers: her lines), so a relation
   // word ("my mom") pulls in her mother only from her lines, or from his after "your".
   // Absent: the plain recentTexts are read as his.
@@ -306,8 +313,11 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
   // v5: `now` is the story instant (the real now unless a together scene holds the moment);
   // `realNow` is the wall clock for the reads that are his (the sends window, the missing
   // song, the proven-wrong window).
+  // fix0927: `clockNow` is the time of day, which moves with the conversation inside a held
+  // scene; `now` stays the held instant for everything that measures time.
   const now = opts.now ?? new Date();
   const realNow = opts.realNow ?? now;
+  const clockNow = opts.clockNow instanceof Date && Number.isFinite(opts.clockNow.getTime()) ? opts.clockNow : now;
   const clock: StoryClock | null = opts.clock ?? null;
   const tz = opts.tz && opts.tz.trim() ? opts.tz.trim() : DEFAULT_TZ;
   const settings = opts.settings ?? DEFAULT_SETTINGS;
@@ -429,7 +439,7 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
   let tags: string[] = [];
   let exemplars: VoiceLine[] = [];
   if (perTurn > 0 && approvedLines.length) {
-    const localHour = localParts(now, safeTimezone(tz)).hour;
+    const localHour = localParts(clockNow, safeTimezone(tz)).hour;
     tags = attempt("turnTags", () => turnTags({
       mode, localHour, hasSharedHistory, mood, coolingOff: cooling, hisText: opts.hisText ?? "", cue, opener,
     }), []);
@@ -541,7 +551,7 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     relationship: rel.state,
     scene: scene.state,
     mode,
-    life: { threads, log, now, tz },
+    life: { threads, log, now, clockNow, tz },
     callbacks,
     media,
     // v3
@@ -663,7 +673,11 @@ export async function assembleContext(
   // throws), and every story consumer below reads the story instant.
   const realNow = now;
   const clock = await clockFor(db, settings, realNow);
+  // fix0927: storyNow is the time of day (it moves with the conversation inside a held
+  // scene); heldAt is the frozen instant every measure of the turn reads (review finding 1:
+  // on the moving clock a plan due a few minutes into the scene read as already happened).
   const storyNow = storyNowOf(clock);
+  const heldAt = heldNow(clock);
   const [recentAll, seq, weather, sinceFace, last] = await Promise.all([
     listRecentStoryMessages(db, conversationId, settings.contextRecentMessages),
     pendingMessageId ? Promise.resolve(0) : nextSeq(db, conversationId),
@@ -690,7 +704,8 @@ export async function assembleContext(
   const recentAssistantTexts = recentRows.filter((r) => r.role === "assistant").slice(-5).map((r) => r.content);
   const state = await loadPromptState(db, recentText, {
     storyRows: recentRows.length,
-    now: storyNow,
+    now: heldAt,
+    clockNow: storyNow,
     realNow,
     clock,
     lastExchange: last,
@@ -788,6 +803,7 @@ export async function assembleSystemOnly(
   const realNow = now;
   const clock = await clockFor(db, settings, realNow);
   const storyNow = storyNowOf(clock);
+  const heldAt = heldNow(clock);
   const [recentAll, seq, weather, last] = await Promise.all([
     listRecentStoryMessages(db, conversationId, settings.contextRecentMessages),
     nextSeq(db, conversationId),
@@ -798,7 +814,8 @@ export async function assembleSystemOnly(
   const recentText = recentRows.slice(-8).map((r) => r.content).join(" ");
   const recentAssistantTexts = recentRows.filter((r) => r.role === "assistant").slice(-5).map((r) => r.content);
   const promptState = await loadPromptState(db, recentText, {
-    now: storyNow,
+    now: heldAt,
+    clockNow: storyNow,
     realNow,
     clock,
     lastExchange: last,

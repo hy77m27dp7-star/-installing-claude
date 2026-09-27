@@ -187,6 +187,7 @@ const state = {
   deliveries: new Map(),
   dotsHold: false,
   lastStoryRole: null,
+  threadLoading: false,
   cache: { state: null, life: null },
   rec: null,
   // v3
@@ -515,6 +516,9 @@ async function loadThread() {
   state.rows = new Map();
   state.lastStoryRole = null;
   state.lastStoryAt = null;
+  // fix0927 review: while a chapter's rows are on their way (or failed to come), "no role
+  // yet" is not an empty chapter, so Let her start stays hidden until they are in.
+  state.threadLoading = !!id;
   setTasting(null);
   refreshTyping();
   updateStartButton();
@@ -566,6 +570,7 @@ async function loadThread() {
   flush();
   layoutRuns();
   if (!els.thread.querySelector(":scope > [data-id]") && !state.deliveries.size) showEmptyHer();
+  state.threadLoading = false;
   updateStartButton();
   scrollBottom();
   restoreTasting(id, seq);
@@ -774,10 +779,10 @@ function updateStartButton() {
 // live, a tasting waits or the workings show.
 const START_CHIP_MS = 2 * 60 * 1000;
 
-// Pure (the unit test evaluates it): { lastRole, lastAt, operator, tasting, busy, onCall,
-// pending } and the time now -> whether the chip shows.
+// Pure (the unit test evaluates it): { loading, lastRole, lastAt, operator, tasting, busy,
+// onCall, pending } and the time now -> whether the chip shows.
 function startChipShows(s, now) {
-  if (!s || s.operator || s.tasting || s.busy || s.onCall || s.pending) return false;
+  if (!s || s.loading || s.operator || s.tasting || s.busy || s.onCall || s.pending) return false;
   if (!s.lastRole) return true;
   if (s.lastRole !== "assistant") return false;
   const at = Date.parse(s.lastAt || "");
@@ -787,6 +792,7 @@ function startChipShows(s, now) {
 
 function startChipState() {
   return {
+    loading: !!state.threadLoading,
     lastRole: state.lastStoryRole,
     lastAt: state.lastStoryAt,
     operator: state.operator,
@@ -3105,19 +3111,30 @@ function trapTab(e, root) {
   else if (!e.shiftKey && (!inside || document.activeElement === last)) { e.preventDefault(); first.focus(); }
 }
 
+// fix0927 review: her masters 01 to 05 (never master-00, the face crop), as the Album's
+// "Her" row shows them (src/album.ts HER_MASTER_IDS).
+const HER_MASTER_IDS = ["master-01", "master-02", "master-03", "master-04", "master-05"];
+
+// Her pictures: the ones she SENT (approved, a message behind each; a picture the owner fired
+// from Studio or the API stays in Studio > Pictures), newest first, then her masters.
 async function openPhotos() {
   openDrawer(els.photosDrawer);
   clear(els.photosList);
   let scenes = [];
+  let masters = [];
   try {
     const assets = await api("GET", "/api/assets");
-    scenes = Array.isArray(assets.scenes) ? assets.scenes.slice() : [];
+    scenes = (Array.isArray(assets.scenes) ? assets.scenes : [])
+      .filter((a) => a && typeof a.message_id === "string" && a.message_id.trim());
+    masters = (Array.isArray(assets.masters) ? assets.masters : [])
+      .filter((m) => m && HER_MASTER_IDS.includes(m.id) && m.approval_status === "approved" && typeof m.file === "string" && m.file.trim())
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   } catch (e) {
     els.photosList.append(chip(errorWords(e.code), "danger"));
     return;
   }
   scenes.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
-  if (!scenes.length) {
+  if (!scenes.length && !masters.length) {
     els.photosList.append(h("p", { class: "empty-label", text: "No pictures yet" }));
     return;
   }
@@ -3128,6 +3145,15 @@ async function openPhotos() {
       h("span", { class: "photo-text" },
         h("span", { class: "photo-date", text: fmtDate(a.created_at) }),
         desc ? h("span", { class: "photo-desc", text: desc }) : null)));
+  }
+  // A master opens in the Album's lightbox (album.js reads /album#<id>).
+  for (const m of masters) {
+    const file = String(m.file).split(/[\\/]/).pop() || "";
+    if (!file) continue;
+    els.photosList.append(h("button", { type: "button", class: "photo-row", onclick: () => { window.location.href = "/album#" + encodeURIComponent(m.id); } },
+      h("img", { src: "/images/masters/" + encodeURIComponent(file), alt: "", loading: "lazy" }),
+      h("span", { class: "photo-text" },
+        h("span", { class: "photo-date", text: "Her" }))));
   }
 }
 
@@ -3641,7 +3667,13 @@ els.tasteBtn.addEventListener("click", () => { closeMenus(false); send({ tasting
 const onCallClick = () => { closeMenus(false); startCall(); };
 const onStartClick = () => { closeMenus(false); letHerStart(); };
 const onPhotoClick = () => { closeMenus(false); els.fileInput.click(); };
-const onTextingClick = () => { closeMenus(true); setScene("apart", null); };
+// fix0927 review: already texting, a tap writes nothing (no new scene version, no audit row,
+// and her apart place is kept).
+const onTextingClick = () => {
+  closeMenus(true);
+  if (state.scene && state.scene.status === "apart") return;
+  setScene("apart", null);
+};
 const onPlaceToggle = (from) => (els.placesPop.classList.contains("hidden") ? openPlaces(from) : closeMenus(true));
 for (const b of callButtons()) b.addEventListener("click", onCallClick);
 els.callMute.addEventListener("click", () => {

@@ -524,7 +524,9 @@ function v5CheckContext(assembled: AssembledContext): Pick<CheckContext, "sent" 
   const out: Pick<CheckContext, "sent" | "people" | "rhythm" | "knownArtists"> = {};
   if (state.sent && state.sent.length) {
     const items = state.sent;
-    const storyNow = new Date(Date.parse(assembled.storyNow));
+    // fix0927: the instant the sent section rendered with (the held one inside a together
+    // scene), so the check and the section agree on "today".
+    const storyNow = state.life && state.life.now instanceof Date ? state.life.now : new Date(Date.parse(assembled.storyNow));
     const tz = state.life.tz;
     try {
       out.sent = sentForCheck(items, Number.isFinite(storyNow.getTime()) ? storyNow : new Date(), tz, assembled.clock ?? null);

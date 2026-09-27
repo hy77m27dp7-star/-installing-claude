@@ -11,7 +11,7 @@ import { agoLabel, formatClock, localParts, parseSchedule, safeTimezone, seededU
 import type { LifeLog, LifeThread } from "./life";
 import type { HistoryRow } from "./types";
 import type { AskRow, WantLogRow, WantRow } from "./wants";
-import { deferredInstant, localDayKeyOf, storyElapsedMs, storyNow } from "./clock";
+import { deferredInstant, heldNow, localDayKeyOf, storyElapsedMs } from "./clock";
 import type { StoryClock } from "./clock";
 import { OUTCOME_LOG, outcomeWords } from "./arcs";
 import type { BeatView } from "./arcs";
@@ -138,7 +138,9 @@ export function pickCallbacks(args: {
   tz?: string;
 }): Array<{ text: string; ageDays: number; sourceId: string }> {
   const clock = args.clock ?? null;
-  const now = clock ? storyNow(clock) : args.now;
+  // fix0927: the held instant (heldNow), not the moving time of day: inside a held scene a
+  // plan due a few minutes in stays coming up instead of reading as already happened.
+  const now = clock ? heldNow(clock) : args.now;
   const t = now.getTime();
   const opener = args.opener === true;
   // v5: the elapsed time since an instant, in story time with a clock, real time without.

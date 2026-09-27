@@ -16,7 +16,10 @@
 // the displayed and stated time of day moves: every measure of time passing (storyElapsedMs,
 // the overlap, story age, the story instant, the deferred instant, the story window, TIME
 // SINCE, the beat shift, her day, the mood fade, absence) stays held exactly as before, and
-// heldNow is the frozen instant for any reader that needs it.
+// heldNow is the frozen instant for any reader that needs it. Review fix: every per-turn
+// measure reads heldNow too (her plans coming up or past, the callbacks, the extractor's day,
+// the beat outcome, what she sent); storyNow reaches only RIGHT NOW, the "It is" line of her
+// life, the time-of-day tags, the lock screen's time and date, and GET /api/clock.
 //
 // The spans live in one small table (story_clock) that every reader syncs lazily against
 // state_versions (syncStoryClock), so every path that moves the scene (the Apart switch, a

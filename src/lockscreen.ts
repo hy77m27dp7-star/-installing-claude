@@ -21,7 +21,7 @@ import type { StoryClock } from "./clock";
 import { getCurrentState } from "./db";
 import { safeTimezone } from "./life";
 import { localDayKey, weatherFor } from "./phone";
-import { listRoll } from "./roll";
+import { listRoll, rollWithMasters } from "./roll";
 import type { RollItem } from "./roll";
 import type { Env, RelationshipState, Settings } from "./types";
 import { listWants } from "./wants";
@@ -164,6 +164,9 @@ export const LOCK_MESSAGE_HOURS = 48;
 export const LOCK_SONG_HOURS = 72;
 export const LOCK_ROLL_READ = 12;
 export const LOCK_ROLL_SHOWN = 6;
+// fix0927 review: this many of her masters keep a place on the lock strip however many
+// pictures she has sent (public/js/phone.js STRIP_MASTERS is the same).
+export const LOCK_ROLL_MASTERS = 2;
 export const LOCK_WANTS_MAX = 8;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -293,9 +296,11 @@ export function lockScreenFrom(parts: {
   const weather = w && Number.isFinite(Number(w.temp)) && typeof w.words === "string"
     ? { temp: Math.round(Number(w.temp)), units: w.units === "celsius" ? "celsius" as const : "fahrenheit" as const, words: w.words }
     : null;
-  const roll = (Array.isArray(parts.roll) ? parts.roll : [])
-    .filter((i) => i && !i.us && !(i.kind === "clip" && !i.poster))
-    .slice(0, LOCK_ROLL_SHOWN);
+  const roll = rollWithMasters(
+    (Array.isArray(parts.roll) ? parts.roll : []).filter((i) => i && !i.us && !(i.kind === "clip" && !i.poster)),
+    LOCK_ROLL_SHOWN,
+    LOCK_ROLL_MASTERS,
+  );
   const wants = (Array.isArray(parts.wants) ? parts.wants : []).slice(0, LOCK_WANTS_MAX).map((wt) => {
     const next = beats.find((b) => b.wantId === wt.id) ?? null;
     return { id: wt.id, title: wt.title, next: next ? { title: next.title, dueOn: next.dueOn, day: dayWord(next.dueOn, todayKey) } : null };

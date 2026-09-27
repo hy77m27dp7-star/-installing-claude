@@ -646,7 +646,13 @@ export type SceneMode = "together" | "apart";
 export interface PromptLife {
   threads: LifeThread[];
   log: LifeLog[];
+  // The instant every measure reads: her plans (coming up or was), her day, the callbacks,
+  // what she sent him. Inside a held scene it is the moment the scene froze (clock heldNow).
   now: Date;
+  // fix0927: the story's time of day (clock storyNow), which inside a held scene moves with
+  // the conversation. Only the stated time reads it (RIGHT NOW, the "It is" line of her
+  // life, the time-of-day tags). Absent: now.
+  clockNow?: Date;
   tz: string;
 }
 

@@ -399,6 +399,9 @@ export interface LifeSectionOptions {
   // Review fix: the age in days of a note (prompt.ts passes story ages from the clock, so a
   // note is "today" here as it is in her callbacks after a held scene). Absent: real days.
   ageOf?: ((iso: string) => number) | null;
+  // fix0927: the stated time of day for the "It is" line (it moves with the talk inside a
+  // held scene); where she is, what is next and every age read `now`. Absent: now.
+  clockNow?: Date | null;
 }
 
 export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz: string, opts: LifeSectionOptions = {}): string {
@@ -430,9 +433,10 @@ export function lifeSection(threads: LifeThread[], log: LifeLog[], now: Date, tz
   };
   const words = typeof o.clockWords === "string" ? o.clockWords.replace(/\s+/g, " ").trim().replace(/[.]+$/, "") : "";
   const p = localParts(now, zone);
+  const shown = o.clockNow instanceof Date && Number.isFinite(o.clockNow.getTime()) ? localParts(o.clockNow, zone) : p;
   let line = words
-    ? `It is ${WEEKDAYS[p.weekday] ?? ""}, ${words}.`
-    : `It is ${WEEKDAYS[p.weekday] ?? ""} ${formatClock(p.hour * 60 + p.minute)}.`;
+    ? `It is ${WEEKDAYS[shown.weekday] ?? ""}, ${words}.`
+    : `It is ${WEEKDAYS[shown.weekday] ?? ""} ${formatClock(shown.hour * 60 + shown.minute)}.`;
   if (!together) {
     const where = whereSheIs(all, now, zone);
     if (where.busy && where.label) {

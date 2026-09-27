@@ -80,6 +80,19 @@ export function masterItem(m: HerMaster): RollItem {
   return { id: m.id, kind: "photo", url: m.url, poster: null, at: m.created_at, place: null, us: false, conversationId: null, messageId: null, master: true };
 }
 
+// fix0927 review: a roll as the Her side shows it: the pictures she sent (in the order
+// given, newest first), then her masters (`master: true`, in the order given), at most
+// `limit`, with `keep` of the masters always given a place however many she has sent (the
+// newest sent pictures fill the rest). public/js/lockwords.js rollWithMasters is the same.
+export function rollWithMasters<T extends { master?: true }>(items: readonly T[], limit: number, keep: number): T[] {
+  const list = (Array.isArray(items) ? items : []).filter((i): i is T => !!i && typeof i === "object");
+  const max = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+  const sent = list.filter((i) => i.master !== true);
+  const masters = list.filter((i) => i.master === true);
+  const reserve = Math.min(Number.isFinite(keep) && keep > 0 ? Math.floor(keep) : 0, masters.length, max);
+  return [...sent.slice(0, Math.max(0, max - reserve)), ...masters].slice(0, max);
+}
+
 // The picture a clip was made from, as chat.js clipSourceOf reads it: the part of `notes`
 // before the first "|", when it starts with "source:", trimmed after the prefix.
 export function clipSourceOf(notes: string | null): string | null {
