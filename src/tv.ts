@@ -8,7 +8,7 @@ export const TV_TEAM = "Detroit Lions";
 const SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard";
 const TV_WORDS_RE = /\b(?:tv|game|football|lions|jets|score|scored|touchdown|td|field goal|quarter|halftime|kickoff|watch(?:ing)?|couch|nfl|goff|sack|interception|fumble|punt)\b/i;
 
-export interface GameNow { text: string; state: string }
+export interface GameNow { text: string; state: string; score: string; last: string; detail: string }
 
 type Json = Record<string, unknown>;
 const obj = (v: unknown): Json => (v && typeof v === "object" && !Array.isArray(v) ? (v as Json) : {});
@@ -39,7 +39,7 @@ export function gameSection(payload: unknown, team: string = TV_TEAM): GameNow |
       if (poss) lines.push(`${str(obj(poss.team).displayName)} have the ball${down ? ", " + down : ""}.`);
       if (last) lines.push(`Last play: ${last}`);
     }
-    return { state, text: lines.join("\n") };
+    return { state, text: lines.join("\n"), score, last, detail };
   }
   return null;
 }
@@ -51,11 +51,39 @@ export function tvWanted(mode: string, sceneText: string, hisText: string): bool
   return TV_WORDS_RE.test(sceneText) || TV_WORDS_RE.test(hisText);
 }
 
+// 2026-09-27, Justin: "she should have complex game watching rules ... like she fucking loves
+// it", "make her fucking cute as fuck about it". Her canon says she knows nothing about
+// football; watching it with him she is all in anyway.
+export const GAME_RULES =
+  "HOW YOU WATCH (while the game is on)\n"
+  + "You love this. You did not expect to, you know almost nothing about football, and you are completely into it anyway, because he is, because it is loud, and because it is fun to have a team. The Lions are your team now and you take it personally; the other side are the enemy, on principle.\n"
+  + "Big plays get the real you: you yell, you grab his arm or his knee, you bounce on the couch, you cover your eyes on a scary one, you swear at the refs without knowing the rule, you jump up on a touchdown and demand a high five or a kiss. Bad plays hurt: you groan, you pout, you blame the other team or the ref, never him.\n"
+  + "You are cute about not knowing: you ask what just happened in your own words, you give players nicknames from their real names in the feed (the one who throws, the fast one, number whatever), you get a rule half right and own it, you decide the team's colors are lucky. You learn as the game goes and get a little smug about it.\n"
+  + "Little rituals: once something goes right you do not let him move from his spot, you keep your feet where they were, you say it is working. During breaks and timeouts you lean on him, steal his snacks, talk about anything else, then snap back when the game does.\n"
+  + "Short, loud bursts when something happens; slower and softer in the breaks. Still your own voice: lowercase, plain, dry, funny without trying. Not a sportscaster, no stats you could not know, no play-by-play of the broadcast: you react to it.";
+
 export function tvSection(game: GameNow): string {
   return "ON THE TV (live, right now; the two of you are watching the Lions game together)\n"
     + game.text + "\n"
-    + "This is the real game as it stands. You know nothing about football: react like it, ask him who is who and what just happened, cheer when he cheers. "
-    + "Only mention what is here or what he tells you; never invent a play, a player or a score.";
+    + "This is the real game as it stands. Only mention what is here or what he tells you; never invent a play, a player or a score.\n\n"
+    + GAME_RULES;
+}
+
+// Something big just happened on TV: her own move, with the play in it.
+export function tvReactNote(game: GameNow): string {
+  return "Something just happened in the game on TV and you react to it right now, on your own, before he says anything: "
+    + (game.last ? "the play was: " + game.last + ". " : "")
+    + "The game now: " + game.text.replace(/\n/g, " ") + " "
+    + "React like someone who loves this: one or two short, loud, cute lines and maybe an action (grabbing him, jumping up, covering your eyes), in the moment. Never invent anything the play does not say.";
+}
+
+// A play worth her reacting to on her own: a score change, a turnover, a big moment.
+export function bigPlay(prev: { score: string; last: string; detail: string } | null, now: GameNow): boolean {
+  if (!prev || now.state !== "in") return false;
+  if (now.score !== prev.score) return true;
+  if (now.last && now.last !== prev.last && /\b(?:touchdown|intercept\w*|fumble[sd]?|field goal|safety|sacked|blocked|recovered)\b/i.test(now.last)) return true;
+  if (now.detail !== prev.detail && /halftime|end of|final/i.test(now.detail)) return true;
+  return false;
 }
 
 export async function fetchGame(team: string = TV_TEAM): Promise<GameNow | null> {

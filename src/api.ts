@@ -64,6 +64,7 @@ import { createGroundingRow, deleteGroundingRow, outfitNow, timeOfDay, todayRows
 import { geocode, getWeather } from "./weather";
 import { generatePortrait } from "./portraits";
 import { localParts } from "./life";
+import { fetchGame, tvReactNote } from "./tv";
 import { CALL_NOTE, endCall, getCall, listCallMessages, listCalls, startCall, tickCall } from "./calls";
 import { pollClip, startClip } from "./video";
 import {
@@ -1091,9 +1092,10 @@ route("POST", "/api/conversations/:id/turn", async (c) => {
   const content = reqString(body, "content", 20000);
   const idempotencyKey = reqString(body, "idempotencyKey", 200);
   const tasting = optBool(body, "tasting") === true;
+  const tv = optBool(body, "tv") === true;
   const settings = await loadSettings(c);
   if (tasting) return json(await runTastingTurn(c.env, c.ctx, c.db, settings, id, content, idempotencyKey, c.actor));
-  return json(await runTurn(c.env, c.ctx, c.db, settings, id, content, idempotencyKey, c.actor));
+  return json(await runTurn(c.env, c.ctx, c.db, settings, id, content, idempotencyKey, c.actor, tv ? { tv: true } : undefined));
 });
 
 // She opens (SPEC_V2 section Q): a turn with no message of his and the one-time note.
@@ -1114,8 +1116,19 @@ route("POST", "/api/conversations/:id/open", async (c) => {
     const scene = await getCurrentState<SceneState>(c.db, "scene");
     if (sceneMode(scene.state.status) === "together") note = SCENE_OPENER_NOTE;
   } catch { /* no scene record: the plain opener */ }
+  // 2026-09-27: the Watch game button's own reaction: a big play just happened.
+  const body = await readBody(c.request).catch(() => ({} as Record<string, unknown>));
+  if (body && (body as Record<string, unknown>).reason === "tv") {
+    const game = await fetchGame();
+    if (!game) throw new ApiHttpError(503, "tv_unavailable", "the game could not be read", true);
+    const speakTv = optBool(body as never, "speak") === true;
+    return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: tvReactNote(game), tv: true, ...(speakTv ? { speak: true } : {}) }));
+  }
   return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: note }));
 });
+
+// The game on TV for the Watch game button: the live snapshot, or null.
+route("GET", "/api/tv", async () => json({ game: await fetchGame() }));
 
 // A transcribed voice note as read from the provider: a string, or { text }.
 function transcriptText(v: unknown): string {
@@ -1173,7 +1186,9 @@ route("POST", "/api/conversations/:id/voice", async (c) => {
         turnNote = sceneMode(scene.state.status) !== "together" ? PHONE_TURN_NOTE : IN_PERSON_TURN_NOTE;
       } catch { /* no scene record: texting, so a phone call */ turnNote = PHONE_TURN_NOTE; }
     }
-    r = await runTurn(c.env, c.ctx, c.db, settings, id, transcript, idempotencyKey, c.actor, speak ? { speak: true, ...(turnNote ? { turnNote } : {}) } : undefined);
+    const tvOn = formString(form, "tv", 8, false) === "1";
+    const vopts = { ...(speak ? { speak: true } : {}), ...(turnNote ? { turnNote } : {}), ...(tvOn ? { tv: true } : {}) };
+    r = await runTurn(c.env, c.ctx, c.db, settings, id, transcript, idempotencyKey, c.actor, Object.keys(vopts).length ? vopts : undefined);
   } catch (e) {
     await deleteKeys(c.env, [key]);
     throw e;

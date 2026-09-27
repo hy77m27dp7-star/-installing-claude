@@ -143,6 +143,8 @@ export interface TurnOptions {
   // 2026-09-27: a one-time note for this turn only (the hands-free call while apart: he is
   // on the phone with her). Appended after the state sections like the opener's note.
   turnNote?: string;
+  // 2026-09-27: the Watch game button is on; her prompt carries the live game and her rules.
+  tv?: boolean;
 }
 
 // Dirty talk mode: whether the scene record says an intimate Together scene she chose is
@@ -704,9 +706,9 @@ export async function prepareTurn(
   try {
     const sc = assembled.state.scene;
     const sceneText = [sc.location, sc.summary, sc.last_beat].filter((x) => typeof x === "string").join(" ");
-    if (tvWanted(String(assembled.state.mode ?? sceneMode(sc.status)), sceneText, opener ? "" : userText)) {
+    if (opts?.tv === true || tvWanted(String(assembled.state.mode ?? sceneMode(sc.status)), sceneText, opener ? "" : userText)) {
       const game = await fetchGame();
-      if (game && game.state !== "post") tvPart = SYSTEM_SEPARATOR + tvSection(game);
+      if (game && (game.state !== "post" || opts?.tv === true)) tvPart = SYSTEM_SEPARATOR + tvSection(game);
     }
   } catch {
     tvPart = "";

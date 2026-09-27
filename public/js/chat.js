@@ -151,6 +151,7 @@ const els = {
   // still runs): the Together / Texting pill and Call in the bar, Send a photo and Voice
   // note beside the box, the Let her start chip above it.
   modePill: $("modePill"),
+  tvBtn: $("tvBtn"),
   modeTogether: $("modeTogether"),
   modeTexting: $("modeTexting"),
   barCall: $("barCall"),
@@ -2577,6 +2578,7 @@ async function send(opts) {
         } else {
           const body = { content: text, idempotencyKey: pending.key };
           if (tasting) body.tasting = true;
+          if (state.tv && state.tv.on) body.tv = true;
           r = await api("POST", path, body);
         }
       } catch (e) {
@@ -2805,6 +2807,7 @@ async function sendVoice(blob, mime, opts) {
     fd.append("audio", blob, "voice." + ext);
     fd.append("idempotencyKey", crypto.randomUUID());
     if (opts && opts.speak) fd.append("speak", "1");
+    if (state.tv && state.tv.on) fd.append("tv", "1");
     const r = await apiForm("POST", "/api/conversations/" + encodeURIComponent(id) + "/voice", fd);
     handleTurnResponse(r, id);
     touchConversation(id);
@@ -2816,6 +2819,96 @@ async function sendVoice(blob, mime, opts) {
     const onCall = state.dt && state.dt.on;
     if (!(onCall && e && e.code === "empty_transcript")) showError(e.code || "error", false);
     if (onCall) setTimeout(() => dtListen(state.dt), e && e.code === "empty_transcript" ? 100 : 1500);
+  } finally {
+    setInFlight(false);
+  }
+}
+
+// ------------------------------------------------------------ watch the game (2026-09-27)
+
+// Justin: "there should be a watch game button". On: every turn of his carries the live game
+// (the server adds it and her game rules), the page checks the game every 20 s, and a big
+// play (a score, a turnover, halftime) gets her own reaction, out loud on the call. Off: none.
+const TV_POLL_MS = 20000;
+const TV_REACT_GAP_MS = 60000;
+const TV_KEY = "avelie.tv";
+
+function tvPaint() {
+  if (!els.tvBtn) return;
+  const on = !!(state.tv && state.tv.on);
+  els.tvBtn.setAttribute("aria-pressed", String(on));
+  els.tvBtn.classList.toggle("on", on);
+  const label = els.tvBtn.querySelector(".tv-label");
+  if (label) label.textContent = on ? (state.tv.score ? state.tv.score.replace("Detroit Lions", "DET").replace("New York Jets", "NYJ") : "Watching") : "Watch game";
+}
+
+function tvToggle() {
+  if (state.tv && state.tv.on) tvStop();
+  else tvStart();
+}
+
+function tvStart() {
+  state.tv = { on: true, prev: null, lastReactAt: 0, timer: null, score: "" };
+  storeSet(TV_KEY, "1");
+  tvPaint();
+  tvPoll();
+  state.tv.timer = setInterval(tvPoll, TV_POLL_MS);
+}
+
+function tvStop() {
+  if (state.tv) clearInterval(state.tv.timer);
+  state.tv = null;
+  storeSet(TV_KEY, "");
+  tvPaint();
+}
+
+const TV_BIG_RE = /\b(?:touchdown|intercept\w*|fumble[sd]?|field goal|safety|sacked|blocked|recovered)\b/i;
+
+async function tvPoll() {
+  const tv = state.tv;
+  if (!tv || !tv.on || document.hidden) return;
+  let game = null;
+  try {
+    const r = await api("GET", "/api/tv");
+    game = r && r.game ? r.game : null;
+  } catch {
+    return;
+  }
+  if (!game || state.tv !== tv) return;
+  tv.score = game.state === "pre" ? "" : game.score;
+  tvPaint();
+  const prev = tv.prev;
+  tv.prev = { score: game.score, last: game.last, detail: game.detail };
+  if (!prev || game.state !== "in") return;
+  const big = game.score !== prev.score
+    || (game.last && game.last !== prev.last && TV_BIG_RE.test(game.last))
+    || (game.detail !== prev.detail && /halftime|end of|final/i.test(game.detail));
+  if (!big || Date.now() - tv.lastReactAt < TV_REACT_GAP_MS) return;
+  tvReact(tv);
+}
+
+// Her own reaction. Never over him: not while he is typing a send, recording, or mid-sentence
+// on the call (that recording is dropped and the mic closed while she talks).
+async function tvReact(tv) {
+  if (state.inFlight || state.rec || state.tasting) return;
+  const id = state.currentId;
+  if (!id) return;
+  const dt = state.dt && state.dt.on ? state.dt : null;
+  if (dt && dt.recorder && dt.recorder.state === "recording") {
+    if (dt.heard) return; // he is talking: the next big play gets her
+    dt.discard = true;
+    dt.recorder.stop();
+    dtCloseMic(dt);
+  }
+  tv.lastReactAt = Date.now();
+  setInFlight(true);
+  try {
+    const r = await api("POST", "/api/conversations/" + encodeURIComponent(id) + "/open", { reason: "tv", speak: !!dt });
+    handleTurnResponse(r, id);
+    touchConversation(id);
+    if (dt && !(r && r.spoken === true)) setTimeout(() => dtListen(state.dt), 1000);
+  } catch {
+    if (dt) setTimeout(() => dtListen(state.dt), 500);
   } finally {
     setInFlight(false);
   }
@@ -2973,6 +3066,7 @@ async function dtListen(dt) {
 
 function dtSend(dt) {
   if (!dt.on || state.dt !== dt) return;
+  if (dt.discard) { dt.discard = false; return; }
   const mime = (dt.recorder && dt.recorder.mimeType) || "audio/webm";
   const blob = new Blob(dt.chunks, { type: mime });
   // His turn is over: the mic closes while she answers.
@@ -3989,6 +4083,11 @@ els.tasteBtn.addEventListener("click", () => { closeMenus(false); send({ tasting
 // fix0927 lane A: each of these acts the same from the menu and from its twin in sight.
 // Dirty talk call: in a bed scene the Call button runs the hands-free loop (dtToggle), never
 // the realtime call (OpenAI will not do explicit talk).
+if (els.tvBtn) {
+  els.tvBtn.addEventListener("click", () => tvToggle());
+  if (storeGet(TV_KEY) === "1") tvStart();
+}
+
 const onCallClick = () => { closeMenus(false); if (state.dt || herVoiceReady()) dtToggle(); else startCall(); };
 const onStartClick = () => { closeMenus(false); letHerStart(); };
 const onPhotoClick = () => { closeMenus(false); els.fileInput.click(); };

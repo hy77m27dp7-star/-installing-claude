@@ -3897,6 +3897,13 @@ td .empty-label { padding: 16px 0; }
 .meta .meta-heart[aria-pressed="true"] svg { fill: currentColor; }
 .meta .why { opacity: 0.75; }
 
+/* 2026-09-27: Watch game, beside Together / Texting. */
+.tv-btn { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--glass-edge); background: transparent; color: var(--text-2); font-size: 13px; cursor: pointer; white-space: nowrap; }
+.tv-btn svg { width: 16px; height: 16px; }
+.tv-btn:hover { color: var(--text); }
+.tv-btn.on { background: linear-gradient(135deg, #0076b6, #22d3ee); color: #fff; border-color: transparent; box-shadow: 0 0 14px rgba(34, 211, 238, 0.35); }
+@media (max-width: 520px) { .tv-btn .tv-label { display: none; } .tv-btn { padding: 0 10px; } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
