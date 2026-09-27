@@ -88,7 +88,18 @@ export function bigPlay(prev: { score: string; last: string; detail: string } | 
 
 export async function fetchGame(team: string = TV_TEAM): Promise<GameNow | null> {
   try {
-    const r = await fetch(SCOREBOARD, { signal: AbortSignal.timeout(3000), cf: { cacheTtl: 20 } } as RequestInit);
+    // ESPN answers 403 to a request that does not look like a browser (2026-09-27: every
+    // Worker fetch was refused, so she never saw the game).
+    const r = await fetch(SCOREBOARD, {
+      signal: AbortSignal.timeout(3000),
+      headers: {
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36",
+        accept: "application/json",
+        "accept-language": "en-US,en;q=0.9",
+      },
+      cf: { cacheTtl: 20 },
+    } as RequestInit);
+    if (!r.ok) console.warn("tv: scoreboard answered", r.status);
     if (!r.ok) return null;
     return gameSection(await r.json(), team);
   } catch {
