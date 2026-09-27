@@ -1750,6 +1750,26 @@ function handleTurnResponse(r, id) {
   scrollBottom();
 }
 
+// 2026-09-27, Justin: "i had to click the play button for the playback". An iPhone only lets
+// a page start sound by itself on an audio element a tap has already played once. The first
+// tap anywhere unlocks one shared player (a silent clip), and her spoken lines auto-play on it.
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+function unlockHerAudio() {
+  if (state.herAudio) return;
+  try {
+    const a = new Audio();
+    a.setAttribute("playsinline", "");
+    a.src = SILENT_WAV;
+    const p = a.play();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+    state.herAudio = a;
+  } catch {
+    // no shared player: the row's own button still plays her
+  }
+}
+document.addEventListener("click", unlockHerAudio, { capture: true });
+document.addEventListener("touchend", unlockHerAudio, { capture: true });
+
 // While her voice is being made: three soft dots in the voice row's place.
 function pendingVoiceRow() {
   return h("div", { class: "audio-note voice-note voice-pending", role: "status", "aria-label": "Voice coming" }, h("span", { class: "vp-dots", "aria-hidden": "true" }, h("span"), h("span"), h("span")));
@@ -1804,10 +1824,14 @@ async function waitForSpoken(messageId, conversationId) {
       else if (meta) el.insertBefore(row, meta);
       else el.append(row);
     }
-    const audio = row.querySelector("audio");
-    if (!audio) return;
+    const rowAudio = row.querySelector("audio");
+    if (!rowAudio) return;
     const other = state.voicePlaying;
-    if (other && other !== audio && !other.paused) other.pause();
+    if (other && !other.paused) other.pause();
+    // The tap-unlocked shared player plays her on its own (an iPhone refuses a new element);
+    // the row keeps its own button for a replay.
+    const audio = state.herAudio || rowAudio;
+    if (audio !== rowAudio) audio.src = src;
     state.voicePlaying = audio;
     playWoken(audio);
     dtHeard(audio);
@@ -2999,6 +3023,7 @@ function dtSay(dt, text) {
 
 async function dtStart() {
   if (state.dt || state.inFlight || state.tasting || (state.call && state.call.live)) return;
+  unlockHerAudio();
   const dt = { on: true, stream: null, ctx: null, analyser: null, recorder: null, chunks: [], heard: false, quietSince: 0, startedAt: 0, poll: null, bar: null, status: null };
   state.dt = dt;
   dtBar(dt);
