@@ -188,7 +188,8 @@ const state = {
   deliveries: new Map(),
   dotsHold: false,
   lastStoryRole: null,
-  threadLoading: false,
+  // fix0927: true until the first chapter is read, so the chip never flashes at boot.
+  threadLoading: true,
   cache: { state: null, life: null },
   rec: null,
   // v3
