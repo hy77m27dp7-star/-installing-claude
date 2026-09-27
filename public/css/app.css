@@ -3729,6 +3729,101 @@ td .empty-label { padding: 16px 0; }
   .sidebar, .drawer, .drawer:not(.open), .btn, .switch .track, .switch .track::after, .seg button, .icon-btn, .thread { transition: none; }
 }
 
+/* ------------------------------------------------------------ fix0927 lane A */
+
+/* Her actions inside a paragraph are their own stage lines now: the bubble after one opens
+   with its full corner, and an emphasis inside her words keeps her colour. */
+.msg.hers .bubble.action + .bubble:not(.action) { border-top-left-radius: 22px; }
+.msg.his .bubble.action + .bubble:not(.action) { border-top-right-radius: 22px; }
+/* His stage lines read like hers: no ground, right-aligned (his bubble colour stayed on them). */
+.msg.his .bubble.action { background: none; box-shadow: none; }
+.bubble em.emph { font-style: italic; color: inherit; }
+
+/* The bar in plain sight: the Together / Texting pill (the active one lit in the accent)
+   and Call beside the three dots. */
+.mode-pill { flex: none; padding: 3px; }
+.mode-pill button { min-height: 34px; padding: 0 13px; font-size: 13.5px; }
+.mode-pill button[aria-pressed="true"],
+.mode-pill button[aria-pressed="true"]:hover { background: var(--accent); color: var(--ink); font-weight: 600; box-shadow: 0 0 18px rgba(34, 211, 238, 0.3); }
+.mode-pill button:disabled { opacity: 0.6; cursor: default; }
+.mode-pill button:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: 2px; }
+.bar-call { color: var(--text); }
+.her-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The composer: Send a photo and Voice note to the left of the box. */
+.composer-tools { align-self: flex-end; margin-left: -4px; }
+.composer-tool { width: 40px; height: 40px; }
+.composer-tool svg { width: 21px; height: 21px; }
+
+/* Let her start: one small glass chip over the composer. */
+.start-chip-row { display: flex; justify-content: center; }
+.start-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--glass-strong);
+  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.32), var(--shadow-1);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  transition: box-shadow var(--dur-1);
+}
+.start-chip svg { width: 16px; height: 16px; color: var(--accent-solid); }
+.start-chip:hover { box-shadow: inset 0 0 0 1px var(--accent-solid), var(--glow); }
+.start-chip:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: 2px; }
+
+/* Her voice note: a round play button, a thin line that fills, the length. */
+.voice-note { gap: 10px; width: min(280px, 72vw); padding: 5px 14px 5px 5px; }
+.voice-note audio { display: none; }
+.vn-play {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--ink);
+  box-shadow: var(--glow);
+  cursor: pointer;
+}
+.vn-play svg { width: 18px; height: 18px; }
+.vn-play[aria-pressed="false"] svg { margin-left: 2px; }
+.vn-play:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: 2px; }
+.vn-track { position: relative; flex: 1 1 auto; min-width: 60px; height: 4px; border-radius: 999px; background: rgba(150, 190, 255, 0.2); overflow: hidden; }
+.vn-fill { position: absolute; inset: 0; border-radius: inherit; background: var(--accent-solid); transform: scaleX(0); transform-origin: left center; }
+.voice-note.playing .vn-fill { box-shadow: 0 0 10px rgba(34, 211, 238, 0.6); }
+.vn-time { flex: none; min-width: 2.6em; text-align: right; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+/* 760 and under: a tighter pill. On a phone the pill takes a second row of the bar, centred
+   under her name (the ::after is the line break), so her name and the place stay readable. */
+@media (max-width: 760px) {
+  .her-who { gap: 8px; }
+  .mode-pill button { min-height: 34px; padding: 0 12px; font-size: 13px; }
+}
+
+@media (max-width: 520px) {
+  .thread-bar { flex: none; flex-wrap: wrap; row-gap: 0; padding-bottom: 6px; }
+  .thread-bar::after { content: ""; order: 9; flex: 0 0 100%; height: 0; }
+  .her-who { flex: 1 1 0; }
+  .mode-pill { order: 10; margin: 0 auto; }
+  .mode-pill button { min-width: 104px; padding: 0 18px; }
+}
+
+@media (max-width: 360px) {
+  .thread-bar .icon-btn { width: 40px; height: 40px; }
+  .mode-pill button { min-width: 92px; }
+}
+
 /* The one global switch, last in the file: no animation and no transition anywhere. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

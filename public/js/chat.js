@@ -17,7 +17,7 @@
 import {
   api, apiForm, h, chip, clear, fmtDate, fmtTime, fmtDuration, flagCodes, parseJson, registerServiceWorker, storeGet, storeSet, svgIcon,
 } from "./api.js";
-import { splitBubbles, bubbleDelayMs, pauseForId, PAUSE_MS, dotsLeadMs } from "./bubbles.js";
+import { splitReply, bubbleDelayMs, pauseForId, PAUSE_MS, dotsLeadMs } from "./bubbles.js";
 import { createCall } from "./call.js";
 // player.js (A1) owns the Spotify device and answers the avelie:play / pause / next events
 // this page and the phone drawer dispatch; importing it only registers those listeners.
@@ -146,7 +146,24 @@ const els = {
   lbKeep: $("lbKeep"),
   lbReject: $("lbReject"),
   lbAgain: $("lbAgain"),
+  // fix0927 lane A: the controls in plain sight (every one optional, so an older shell
+  // still runs): the Together / Texting pill and Call in the bar, Send a photo and Voice
+  // note beside the box, the Let her start chip above it.
+  modePill: $("modePill"),
+  modeTogether: $("modeTogether"),
+  modeTexting: $("modeTexting"),
+  barCall: $("barCall"),
+  composerPhoto: $("composerPhoto"),
+  composerMic: $("composerMic"),
+  startRow: $("startRow"),
+  startChip: $("startChip"),
 };
+
+// The menu's controls and their twins in plain sight: one handler, one state, both places.
+const callButtons = () => [els.callBtn, els.barCall].filter(Boolean);
+const micButtons = () => [els.micBtn, els.composerMic].filter(Boolean);
+const photoButtons = () => [els.attachBtn, els.composerPhoto].filter(Boolean);
+const sceneButtons = () => [els.sceneTogether, els.sceneApart, els.modeTogether, els.modeTexting].filter(Boolean);
 
 const state = {
   conversations: [],
@@ -216,6 +233,11 @@ const state = {
   sheetReturn: null,
   renaming: false,
   titleRefresh: false,
+  // fix0927 lane A: when the last story row landed (the Let her start chip reads it), the
+  // timer that shows the chip once her line is two minutes old, and the voice note playing.
+  lastStoryAt: null,
+  startTimer: null,
+  voicePlaying: null,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -492,6 +514,7 @@ async function loadThread() {
   els.thread.replaceChildren(...(els.chapterHead ? [els.chapterHead] : []), els.typing);
   state.rows = new Map();
   state.lastStoryRole = null;
+  state.lastStoryAt = null;
   setTasting(null);
   refreshTyping();
   updateStartButton();
@@ -524,7 +547,10 @@ async function loadThread() {
     group = null;
   };
   for (const m of rows) {
-    if (m.channel === "story") state.lastStoryRole = m.role;
+    if (m.channel === "story") {
+      state.lastStoryRole = m.role;
+      state.lastStoryAt = storyAt(m);
+    }
     if (m.call_id && m.channel === "story") {
       if (group && group.callId === m.call_id) group.rows.push(m);
       else { flush(); group = { callId: m.call_id, rows: [m] }; }
@@ -722,13 +748,69 @@ function mountTypingAvatar() {
 function noteRole(m) {
   if (m && m.channel === "story") {
     state.lastStoryRole = m.role;
+    state.lastStoryAt = storyAt(m);
     updateStartButton();
   }
+}
+
+// When a story row landed: its delivery time when it had one, else when it was written, else
+// now (a row straight from a turn).
+function storyAt(m) {
+  for (const iso of [m && m.deliver_at, m && m.created_at]) {
+    if (iso && Number.isFinite(Date.parse(iso))) return iso;
+  }
+  return new Date().toISOString();
 }
 
 function updateStartButton() {
   const show = !state.operator && state.lastStoryRole !== "user" && !state.tasting;
   els.letHerStart.classList.toggle("hidden", !show);
+  updateStartChip();
+}
+
+// fix0927 lane A: Let her start in plain sight, a chip above the composer, when the chapter
+// has nothing in it yet, or when the last line is hers and two minutes old (she said her
+// piece and he has not answered). Never while a turn runs, a reply is on its way, a call is
+// live, a tasting waits or the workings show.
+const START_CHIP_MS = 2 * 60 * 1000;
+
+// Pure (the unit test evaluates it): { lastRole, lastAt, operator, tasting, busy, onCall,
+// pending } and the time now -> whether the chip shows.
+function startChipShows(s, now) {
+  if (!s || s.operator || s.tasting || s.busy || s.onCall || s.pending) return false;
+  if (!s.lastRole) return true;
+  if (s.lastRole !== "assistant") return false;
+  const at = Date.parse(s.lastAt || "");
+  if (!Number.isFinite(at)) return false;
+  return now - at >= START_CHIP_MS;
+}
+
+function startChipState() {
+  return {
+    lastRole: state.lastStoryRole,
+    lastAt: state.lastStoryAt,
+    operator: state.operator,
+    tasting: !!state.tasting,
+    busy: state.inFlight || state.arriving > 0,
+    onCall: !!(state.call && !state.call.ended),
+    pending: state.deliveries.size > 0,
+  };
+}
+
+function updateStartChip() {
+  if (!els.startRow) return;
+  clearTimeout(state.startTimer);
+  state.startTimer = null;
+  const s = startChipState();
+  const now = Date.now();
+  const show = startChipShows(s, now);
+  els.startRow.classList.toggle("hidden", !show);
+  if (els.startChip) els.startChip.disabled = !show;
+  // Her line is not two minutes old yet: look again when it is.
+  if (!show && s.lastRole === "assistant") {
+    const wait = Date.parse(s.lastAt || "") + START_CHIP_MS - now;
+    if (Number.isFinite(wait) && wait > 0) state.startTimer = setTimeout(updateStartChip, Math.min(wait + 250, 0x7fffffff));
+  }
 }
 
 // Her *actions*: a bubble that is only an action reads as a stage line (the .action bubble,
@@ -757,6 +839,22 @@ function bubbleEl(text) {
   return fillWithActions(h("div", { class: "bubble" }), text);
 }
 
+// fix0927 lane A: one element per piece of splitReply (bubbles.js), in reading order. An
+// action is its own stage line; a speech piece is a bubble whose *emphasis* is an em. Built
+// from text nodes, never markup.
+function pieceEl(piece) {
+  if (piece.kind === "action") return h("div", { class: "bubble action", text: piece.text });
+  const b = h("div", { class: "bubble" });
+  for (const r of piece.runs) b.append(r.em ? h("em", { class: "emph", text: r.text }) : document.createTextNode(r.text));
+  return b;
+}
+
+// A line as its bubbles and stage lines; an empty line keeps one empty bubble as before.
+function lineEls(text, opts) {
+  const pieces = splitReply(text, opts);
+  return pieces.length ? pieces.map(pieceEl) : [bubbleEl(String(text || ""))];
+}
+
 function renderMessage(m, errorCode, error) {
   const his = m.role === "user";
   const op = m.channel === "operator";
@@ -766,22 +864,22 @@ function renderMessage(m, errorCode, error) {
   if (!his) el.append(avatarSpacer());
   const bubbles = h("div", { class: "bubbles" });
   if (his) {
-    const whole = !m.audio_key && !op ? ACTION_WHOLE.exec(String(m.content || "").trim()) : null;
-    if (whole) {
-      bubbles.append(h("div", { class: "bubble action", text: whole[1].trim() }));
-    } else {
+    if (m.audio_key || op) {
       const b = h("div", { class: "bubble" });
       if (m.audio_key) b.append(h("span", { class: "mic-chip", "aria-label": "Voice", role: "img" }, svgIcon("mic")));
       if (op) b.append(document.createTextNode(m.content || ""));
       else fillWithActions(b, m.content || "");
       bubbles.append(b);
+    } else {
+      // His *actions* read the same way as hers; his line is never cut for length.
+      bubbles.append(...lineEls(m.content, { long: false }));
     }
   } else {
-    const parts = op ? [m.content || ""] : splitBubbles(m.content);
+    // fix0927 lane A: her actions are their own stage lines wherever they sit in a paragraph.
+    const parts = op ? [bubbleEl(m.content || "")] : lineEls(m.content);
     // exp 3.4 item 5: each bubble of a line of hers with an id opens the reaction bar.
     const reacts = !op && !!m.id;
-    for (const p of parts.length ? parts : [m.content || ""]) {
-      const b = bubbleEl(p);
+    for (const b of parts) {
       if (reacts) {
         b.setAttribute("tabindex", "0");
         b.setAttribute("aria-haspopup", "menu");
@@ -799,10 +897,7 @@ function renderMessage(m, errorCode, error) {
     const thumbs = hisThumbs(m);
     if (thumbs) extras.append(thumbs);
   } else if (!op) {
-    if (m.audio_key && m.id) {
-      extras.append(h("div", { class: "audio-note" },
-        h("audio", { controls: true, preload: "none", src: "/media/audio/" + encodeURIComponent(m.id) })));
-    }
+    if (m.audio_key && m.id) extras.append(voiceNote(m.id));
     const photo = renderPhoto(m, errorCode, error);
     if (photo) extras.append(photo);
     const song = songCard(m);
@@ -816,6 +911,86 @@ function renderMessage(m, errorCode, error) {
   if (extras.childElementCount) el.append(extras);
   el.append(metaRow(m));
   return el;
+}
+
+// ------------------------------------------------------------ her voice notes (fix0927 lane A)
+
+// Play and pause, drawn with the SVG namespace (no markup is parsed).
+const VN_PATHS = { play: ["M8 5.5v13l11-6.5z"], pause: ["M8.5 5v14", "M15.5 5v14"] };
+
+function vnIcon(name) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  for (const [k, v] of [["viewBox", "0 0 24 24"], ["fill", name === "play" ? "currentColor" : "none"], ["stroke", "currentColor"], ["stroke-width", "2.4"], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["aria-hidden", "true"]]) svg.setAttribute(k, v);
+  for (const d of VN_PATHS[name]) {
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("d", d);
+    svg.append(p);
+  }
+  return svg;
+}
+
+// Pure (the unit test evaluates it): what the row's time reads. The length once it is known
+// while the note sits at its start; the time played while it plays or waits part way;
+// nothing before the length is known and nothing is playing.
+function voiceNoteLabel(current, duration, fmt) {
+  const d = Number(duration);
+  const c = Number(current) || 0;
+  const known = Number.isFinite(d) && d > 0;
+  if (c > 0.05) return fmt(c);
+  return known ? fmt(d) : "";
+}
+
+// Her voice note as a small row in the thread's own look: a round play button, a thin line
+// that fills as it plays, and the length once the metadata is in (preload="metadata"). The
+// source stays /media/audio/<messageId>. A note that cannot load hides the whole row. One
+// note plays at a time.
+function voiceNote(messageId) {
+  const audio = h("audio", { preload: "metadata", src: "/media/audio/" + encodeURIComponent(messageId) });
+  const btn = h("button", { type: "button", class: "vn-play", "aria-label": "Play voice note", "aria-pressed": "false" }, vnIcon("play"));
+  const fill = h("span", { class: "vn-fill" });
+  const track = h("div", { class: "vn-track", role: "progressbar", "aria-label": "Voice note played", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": "0" }, fill);
+  const time = h("span", { class: "vn-time" });
+  const row = h("div", { class: "audio-note voice-note" }, btn, track, time, audio);
+  const paint = () => {
+    const d = audio.duration;
+    const f = Number.isFinite(d) && d > 0 ? Math.min(1, Math.max(0, audio.currentTime / d)) : 0;
+    fill.style.transform = "scaleX(" + f.toFixed(4) + ")";
+    track.setAttribute("aria-valuenow", String(Math.round(f * 100)));
+    time.textContent = voiceNoteLabel(audio.currentTime, d, fmtDuration);
+  };
+  const playing = (on) => {
+    row.classList.toggle("playing", on);
+    btn.setAttribute("aria-pressed", String(on));
+    btn.setAttribute("aria-label", on ? "Pause voice note" : "Play voice note");
+    btn.replaceChildren(vnIcon(on ? "pause" : "play"));
+  };
+  btn.addEventListener("click", () => {
+    if (!audio.paused) {
+      audio.pause();
+      return;
+    }
+    const other = state.voicePlaying;
+    if (other && other !== audio && !other.paused) other.pause();
+    state.voicePlaying = audio;
+    const p = audio.play();
+    if (p && typeof p.catch === "function") p.catch(() => playing(false));
+  });
+  audio.addEventListener("loadedmetadata", paint);
+  audio.addEventListener("durationchange", paint);
+  audio.addEventListener("timeupdate", paint);
+  audio.addEventListener("play", () => playing(true));
+  audio.addEventListener("pause", () => playing(false));
+  audio.addEventListener("ended", () => {
+    playing(false);
+    audio.currentTime = 0;
+    paint();
+  });
+  audio.addEventListener("error", () => {
+    row.classList.add("hidden");
+    if (state.voicePlaying === audio) state.voicePlaying = null;
+  });
+  return row;
 }
 
 // A run's time as a phone shows it: "9:04 PM", no leading zero and no date (the day
@@ -1495,6 +1670,7 @@ function scheduleDelivery(m, seq) {
   }, Math.min(ms, 0x7fffffff));
   state.deliveries.set(m.id, entry);
   refreshTyping();
+  updateStartChip();
 }
 
 function clearDeliveries() {
@@ -1514,6 +1690,7 @@ function onVisible() {
   let passed = false;
   for (const d of state.deliveries.values()) if (d.at <= now) passed = true;
   if (passed && state.currentId) loadThread();
+  else updateStartChip();
 }
 
 function handleTurnResponse(r, id) {
@@ -1574,8 +1751,7 @@ function renderTasting(t, userMessage) {
   const lock = (on) => { for (const b of buttons) b.disabled = on; };
   const panelFor = (c) => {
     const bubbles = h("div", { class: "bubbles" });
-    const parts = splitBubbles(c.text);
-    for (const p of parts.length ? parts : [String(c.text || "")]) bubbles.append(bubbleEl(p));
+    bubbles.append(...lineEls(c.text));
     const choose = h("button", { type: "button", class: "btn small primary", text: "This one", disabled: true, onclick: () => pick(c.side) });
     buttons.push(choose);
     const extras = [];
@@ -1727,6 +1903,14 @@ function renderCallCard(callId, rows) {
   return h("div", { class: "call-card", "data-id": "call:" + callId, "data-at": first.created_at || "" }, line, list);
 }
 
+// The Call row in the menu and the Call button in the bar show the live call together.
+function markCalling(on) {
+  for (const b of callButtons()) {
+    b.classList.toggle("calling", on);
+    b.setAttribute("aria-pressed", String(on));
+  }
+}
+
 async function startCall() {
   if (state.call && state.call.live) return;
   if (state.inFlight || state.arriving) return;
@@ -1743,22 +1927,19 @@ async function startCall() {
     els: { sheet: els.callSheet, status: els.callStatus, timer: els.callTimer, captions: els.callCaptions, reason: els.callReason, mute: els.callMute, end: els.callEnd, audio: els.callAudio },
     onEnd: () => {
       state.call = null;
-      els.callBtn.classList.remove("calling");
-      els.callBtn.setAttribute("aria-pressed", "false");
+      markCalling(false);
       updateSendState();
       if (state.currentId === id) loadThread();
     },
   });
   state.call = call;
-  els.callBtn.classList.add("calling");
-  els.callBtn.setAttribute("aria-pressed", "true");
+  markCalling(true);
   updateSendState();
   try {
     await call.start();
   } catch (e) {
     state.call = null;
-    els.callBtn.classList.remove("calling");
-    els.callBtn.setAttribute("aria-pressed", "false");
+    markCalling(false);
     updateSendState();
     showError(e.code || "error", false);
   }
@@ -2194,14 +2375,17 @@ function updateSendState() {
   els.sendBtn.disabled = busy;
   els.retryBtn.disabled = busy;
   els.letHerStart.disabled = busy || onCall;
-  els.micBtn.disabled = busy || state.operator;
-  els.attachBtn.disabled = busy || state.operator;
+  for (const b of micButtons()) b.disabled = busy || state.operator;
+  for (const b of photoButtons()) b.disabled = busy || state.operator;
   // A tasting carries no photos (the multipart route runs a plain turn), so Taste waits
   // until the attachments are gone rather than silently spending one ordinary turn.
   els.tasteBtn.disabled = busy || state.operator || state.attachments.length > 0 || !els.input.value.trim();
   els.tasteBtn.classList.toggle("hidden", !(state.settings && state.settings.tastingEnabled === true) || state.operator);
-  els.callBtn.classList.toggle("hidden", !callVisible() || state.operator);
-  els.callBtn.disabled = onCall ? false : (state.inFlight || state.arriving > 0);
+  for (const b of callButtons()) {
+    b.classList.toggle("hidden", !callVisible() || state.operator);
+    b.disabled = onCall ? false : (state.inFlight || state.arriving > 0);
+  }
+  updateStartChip();
 }
 
 function setInFlight(on) {
@@ -2381,15 +2565,28 @@ function renderAttachments() {
 function initMic() {
   const supported = navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function" && typeof MediaRecorder !== "undefined";
   if (!supported) {
-    els.micBtn.classList.add("hidden");
+    for (const b of micButtons()) b.classList.add("hidden");
     return;
   }
   els.micBtn.addEventListener("click", () => {
     closeMenus(false);
     startRecording();
   });
+  // fix0927 lane A: the same tap-to-record from the mic beside the box.
+  if (els.composerMic) els.composerMic.addEventListener("click", () => {
+    closeMenus(false);
+    startRecording();
+  });
   if (els.recSend) els.recSend.addEventListener("click", () => stopRecording());
   if (els.recCancel) els.recCancel.addEventListener("click", () => cancelRecording());
+}
+
+// The Voice note row in the menu and the mic beside the box show the recording together.
+function markRecording(on) {
+  for (const b of micButtons()) {
+    b.classList.toggle("recording", on);
+    b.setAttribute("aria-pressed", String(on));
+  }
 }
 
 function composerBox() {
@@ -2423,8 +2620,7 @@ async function startRecording() {
   if (state.rec || state.inFlight || state.operator || state.tasting) return;
   const rec = { stream: null, recorder: null, chunks: [], startedAt: Date.now(), released: false, cancelled: false, timer: null, ticker: null };
   state.rec = rec;
-  els.micBtn.classList.add("recording");
-  els.micBtn.setAttribute("aria-pressed", "true");
+  markRecording(true);
   showRecBar(rec);
   try {
     rec.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -2488,8 +2684,7 @@ function resetRecording(rec) {
     clearInterval(rec.ticker);
     if (rec.stream) rec.stream.getTracks().forEach((t) => t.stop());
   }
-  els.micBtn.classList.remove("recording");
-  els.micBtn.setAttribute("aria-pressed", "false");
+  markRecording(false);
   hideRecBar();
 }
 
@@ -2530,8 +2725,9 @@ async function loadScene() {
 
 function renderScene() {
   const s = state.scene ? state.scene.status : null;
-  els.sceneTogether.setAttribute("aria-pressed", String(s === "together"));
-  els.sceneApart.setAttribute("aria-pressed", String(s === "apart"));
+  // The sheet's pair and the bar's pill (fix0927 lane A) light the same mode.
+  for (const b of [els.sceneTogether, els.modeTogether]) if (b) b.setAttribute("aria-pressed", String(s === "together"));
+  for (const b of [els.sceneApart, els.modeTexting]) if (b) b.setAttribute("aria-pressed", String(s === "apart"));
   if (els.placeLine) {
     const text = placeLineText(state.scene);
     els.placeLine.textContent = text;
@@ -2598,8 +2794,7 @@ async function setScene(status, location) {
   const base = state.scene && typeof state.scene === "object" ? state.scene : {};
   const next = { ...base, status, location: location || null };
   if (status === "together" && location) storeSet(PLACE_KEY, location);
-  els.sceneTogether.disabled = true;
-  els.sceneApart.disabled = true;
+  for (const b of sceneButtons()) b.disabled = true;
   showPlaceNeeded(false);
   let place;
   let clock;
@@ -2617,8 +2812,7 @@ async function setScene(status, location) {
     if (status === "together" && e.status === 400) needPlace = true;
     else showError(e.code || "error", false);
   } finally {
-    els.sceneTogether.disabled = false;
-    els.sceneApart.disabled = false;
+    for (const b of sceneButtons()) b.disabled = false;
     renderScene();
     applyPlaceBackground(place);
     loadClock(clock);
@@ -2772,9 +2966,10 @@ async function loadLife() {
 }
 
 // The scene sheet opens from the place line (or, while that line is hidden, from the
-// tools button), with today's picker inside it.
-async function openPlaces() {
-  const anchor = els.placeLine && !els.placeLine.classList.contains("hidden") ? els.placeLine : els.moreBtn;
+// tools button), or from the control passed in (the bar's Together, fix0927 lane A), with
+// today's picker inside it.
+async function openPlaces(from) {
+  const anchor = from || (els.placeLine && !els.placeLine.classList.contains("hidden") ? els.placeLine : els.moreBtn);
   openSheet(els.placesPop, anchor);
   showPlaceNeeded(false);
   els.placeInput.value = state.scene && state.scene.status === "together" && state.scene.location ? String(state.scene.location) : "";
@@ -2876,6 +3071,7 @@ function closeMenus(returnFocus) {
   els.moreBtn.setAttribute("aria-expanded", "false");
   els.placesPop.classList.add("hidden");
   if (els.placeLine) els.placeLine.setAttribute("aria-expanded", "false");
+  if (els.modeTogether) els.modeTogether.setAttribute("aria-expanded", "false");
   const back = state.sheetReturn;
   state.sheetReturn = null;
   syncScrim();
@@ -3441,7 +3637,13 @@ els.input.addEventListener("input", () => {
 els.retryBtn.addEventListener("click", () => send());
 // The tools sheet: every row closes the sheet, then acts.
 els.tasteBtn.addEventListener("click", () => { closeMenus(false); send({ tasting: true }); });
-els.callBtn.addEventListener("click", () => { closeMenus(false); startCall(); });
+// fix0927 lane A: each of these acts the same from the menu and from its twin in sight.
+const onCallClick = () => { closeMenus(false); startCall(); };
+const onStartClick = () => { closeMenus(false); letHerStart(); };
+const onPhotoClick = () => { closeMenus(false); els.fileInput.click(); };
+const onTextingClick = () => { closeMenus(true); setScene("apart", null); };
+const onPlaceToggle = (from) => (els.placesPop.classList.contains("hidden") ? openPlaces(from) : closeMenus(true));
+for (const b of callButtons()) b.addEventListener("click", onCallClick);
 els.callMute.addEventListener("click", () => {
   if (!state.call) return;
   const on = els.callMute.getAttribute("aria-pressed") !== "true";
@@ -3452,17 +3654,19 @@ els.newChat.addEventListener("click", newChat);
 els.openDrawer.addEventListener("click", openSidebar);
 els.closeDrawer.addEventListener("click", closeSidebar);
 els.scrim.addEventListener("click", () => { closeSidebar(); closeDrawers(); closeMenus(true); });
-els.letHerStart.addEventListener("click", () => { closeMenus(false); letHerStart(); });
+for (const b of [els.letHerStart, els.startChip]) if (b) b.addEventListener("click", onStartClick);
 // The scene sheet: Together goes to the place picker in it, Texting sets the scene.
 els.sceneTogether.addEventListener("click", () => {
   if (els.placesPop.classList.contains("hidden")) openPlaces();
   else els.placeInput.focus();
 });
-els.sceneApart.addEventListener("click", () => { closeMenus(true); setScene("apart", null); });
+for (const b of [els.sceneApart, els.modeTexting]) if (b) b.addEventListener("click", onTextingClick);
+// The bar's pill: Together opens the place sheet under it (the place line's toggle).
+if (els.modeTogether) els.modeTogether.addEventListener("click", () => onPlaceToggle(els.modeTogether));
 els.placeSet.addEventListener("click", () => { const where = els.placeInput.value.trim(); closeMenus(true); setScene("together", where || null); });
 els.placeCancel.addEventListener("click", () => closeMenus(true));
 els.placeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); els.placeSet.click(); } });
-if (els.placeLine) els.placeLine.addEventListener("click", () => (els.placesPop.classList.contains("hidden") ? openPlaces() : closeMenus(true)));
+if (els.placeLine) els.placeLine.addEventListener("click", () => onPlaceToggle());
 els.photosBtn.addEventListener("click", () => {
   closeMenus(false);
   if (els.photosDrawer.classList.contains("open")) closeDrawers();
@@ -3473,7 +3677,7 @@ els.whyClose.addEventListener("click", closeDrawers);
 document.addEventListener("visibilitychange", onVisible);
 window.addEventListener("avelie:player", onPlayerEvent);
 els.moreBtn.addEventListener("click", toggleMore);
-els.attachBtn.addEventListener("click", () => { closeMenus(false); els.fileInput.click(); });
+for (const b of photoButtons()) b.addEventListener("click", onPhotoClick);
 els.fileInput.addEventListener("change", () => addFiles(els.fileInput.files || []));
 els.timingToggle.addEventListener("change", () => {
   state.timing = els.timingToggle.checked ? "human" : "instant";
@@ -3510,7 +3714,7 @@ wireLightbox();
 wireBackdrop();
 document.addEventListener("click", (e) => {
   const t = e.target;
-  const inside = t && t.closest && (t.closest("#moreMenu") || t.closest("#placesPop") || t.closest("#moreBtn") || t.closest("#placeLine"));
+  const inside = t && t.closest && (t.closest("#moreMenu") || t.closest("#placesPop") || t.closest("#moreBtn") || t.closest("#placeLine") || t.closest("#modePill"));
   if (!inside) closeMenus(false);
 });
 document.addEventListener("keydown", (e) => {

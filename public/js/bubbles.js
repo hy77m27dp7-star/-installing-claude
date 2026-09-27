@@ -25,8 +25,11 @@ function bracketMask(text) {
   return mask;
 }
 
-function sentenceCuts(text) {
+// `spans` ([start, end) pairs) are masked as well: a cut never lands inside one (fix0927:
+// an emphasis span such as *no. way* stays whole).
+function sentenceCuts(text, spans) {
   const mask = bracketMask(text);
+  for (const [a, b] of spans || []) mask.fill(1, a, b);
   const cuts = [];
   SENTENCE_END.lastIndex = 0;
   let m;
@@ -40,8 +43,8 @@ function sentenceCuts(text) {
 
 // A paragraph over MAX_PARA characters becomes 2 or 3 bubbles cut at the sentence ends
 // nearest the even split points. No sentence end: it stays one bubble.
-function splitLong(text) {
-  const ends = sentenceCuts(text);
+function splitLong(text, spans) {
+  const ends = sentenceCuts(text, spans);
   if (!ends.length) return [text];
   const n = Math.min(3, Math.max(2, Math.ceil(text.length / MAX_PARA)));
   const chosen = [];
@@ -76,6 +79,139 @@ export function splitBubbles(text) {
   for (const p of paras) {
     if (p.length <= MAX_PARA) out.push(p);
     else out.push(...splitLong(p));
+  }
+  return out;
+}
+
+// ------------------------------------------------------------ her *actions* (fix0927 lane A)
+
+// Inside a paragraph an asterisk span is an ACTION when it sits at the paragraph's start or
+// end (after trimming; a span touching an action there counts too), when it fills a line of
+// its own, or when it holds ACTION_MIN_WORDS words or more. An action becomes its own stage
+// line in reading order and the words around it become speech bubbles. A shorter span in
+// the middle of speech ("i *really* mean it") is emphasis and stays inside its bubble. An
+// asterisk without a partner is plain text. Nothing of her words is dropped or reordered:
+// only the pair of asterisks around a span and the white space at a cut go.
+export const ACTION_MIN_WORDS = 3;
+
+// Every *span*, left to right: an asterisk pairs with the next asterisk when what sits
+// between them is on one line and not only space (the pairing the old /\*([^*\n]+)\*/g
+// made); a lone asterisk stays text.
+export function asteriskSpans(text) {
+  const s = String(text ?? "");
+  const spans = [];
+  let i = 0;
+  while (i < s.length) {
+    const open = s.indexOf("*", i);
+    if (open < 0) break;
+    const close = s.indexOf("*", open + 1);
+    if (close < 0) break;
+    const inner = s.slice(open + 1, close);
+    if (inner.includes("\n") || !inner.trim()) {
+      i = open + 1;
+      continue;
+    }
+    spans.push({ start: open, end: close + 1, inner: inner.trim() });
+    i = close + 1;
+  }
+  return spans;
+}
+
+function wordCount(s) {
+  return String(s).split(/\s+/).filter(Boolean).length;
+}
+
+function blank(s) {
+  return !s.trim();
+}
+
+// The runs of one speech bubble: plain text and *emphasis* (the asterisks gone), trimmed at
+// both ends. Every span inside a speech piece is emphasis (its actions were cut out first).
+export function speechRuns(text) {
+  const s = String(text ?? "");
+  const runs = [];
+  let pos = 0;
+  for (const sp of asteriskSpans(s)) {
+    if (sp.start > pos) runs.push({ em: false, text: s.slice(pos, sp.start) });
+    runs.push({ em: true, text: sp.inner });
+    pos = sp.end;
+  }
+  if (pos < s.length) runs.push({ em: false, text: s.slice(pos) });
+  if (runs.length && !runs[0].em) runs[0].text = runs[0].text.trimStart();
+  const last = runs[runs.length - 1];
+  if (last && !last.em) last.text = last.text.trimEnd();
+  return runs.filter((r) => r.text);
+}
+
+function speechPiece(text) {
+  return { kind: "speech", text, runs: speechRuns(text) };
+}
+
+// One paragraph (no blank line inside) as its pieces in reading order:
+// { kind: "action", text } and { kind: "speech", text, runs }.
+export function splitActions(paragraph) {
+  const p = String(paragraph ?? "").trim();
+  if (!p) return [];
+  const spans = asteriskSpans(p);
+  const n = spans.length;
+  const action = spans.map((sp) => {
+    if (wordCount(sp.inner) >= ACTION_MIN_WORDS) return true;
+    const lineStart = p.lastIndexOf("\n", sp.start - 1) + 1;
+    const nl = p.indexOf("\n", sp.end);
+    const lineEnd = nl < 0 ? p.length : nl;
+    return blank(p.slice(lineStart, sp.start)) && blank(p.slice(sp.end, lineEnd));
+  });
+  // The edges: a span with only space (or actions) between it and the paragraph's start or
+  // end is an action; repeated until nothing changes, so "*laughs* *covers her face* ok" and
+  // "ok *pulls you closer* *smiles*" read as two stage lines each.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let k = 0; k < n; k++) {
+      if (action[k]) continue;
+      const sp = spans[k];
+      const leads = k === 0 ? blank(p.slice(0, sp.start)) : action[k - 1] && blank(p.slice(spans[k - 1].end, sp.start));
+      const ends = k === n - 1 ? blank(p.slice(sp.end)) : action[k + 1] && blank(p.slice(sp.end, spans[k + 1].start));
+      if (leads || ends) {
+        action[k] = true;
+        changed = true;
+      }
+    }
+  }
+  const out = [];
+  let from = 0;
+  const flush = (to) => {
+    const t = p.slice(from, to).trim();
+    if (t) out.push(speechPiece(t));
+  };
+  for (let k = 0; k < n; k++) {
+    if (!action[k]) continue;
+    flush(spans[k].start);
+    out.push({ kind: "action", text: spans[k].inner });
+    from = spans[k].end;
+  }
+  flush(p.length);
+  return out;
+}
+
+// A whole reply as its pieces: blank lines separate paragraphs (as in splitBubbles), each
+// paragraph splits into actions and speech, and a speech piece over MAX_PARA characters is
+// cut at its sentence ends as before (never inside an emphasis span). { long: false } keeps
+// a long piece whole (his lines).
+export function splitReply(text, opts) {
+  const long = !(opts && opts.long === false);
+  const s = String(text ?? "").replace(/\r\n?/g, "\n").trim();
+  if (!s) return [];
+  const out = [];
+  for (const para of s.split(/\n[ \t]*\n+/).map((x) => x.trim()).filter(Boolean)) {
+    for (const piece of splitActions(para)) {
+      if (piece.kind !== "speech" || !long || piece.text.length <= MAX_PARA) {
+        out.push(piece);
+        continue;
+      }
+      const spans = asteriskSpans(piece.text).map((sp) => [sp.start, sp.end]);
+      for (const t of splitLong(piece.text, spans)) out.push(speechPiece(t));
+    }
   }
   return out;
 }
