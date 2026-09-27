@@ -34,3 +34,18 @@ test("pickPerformer: the intimate performer only in an intimate scene, on, named
   assert.deepEqual(pickPerformer(env, { ...s, intimateEnabled: false }, true), { provider: "anthropic", model: "claude-opus-5-5" });
   assert.deepEqual(pickPerformer(env, { ...s, intimateModel: "" }, true), { provider: "anthropic", model: "claude-opus-5-5" });
 });
+
+const { isModelRefusal, secondPersonActions } = await loadSrc("chat");
+
+test("isModelRefusal: the two live refusals and a disclaimer, never her own words", () => {
+  assert.equal(isModelRefusal("I can't help with that."), true);
+  assert.equal(isModelRefusal("I'm here to support information and tasks within my knowledge domain. However, I can't engage in explicit or NSFW conversations. If you have questions on other topics, feel free to ask."), true);
+  assert.equal(isModelRefusal("As an AI, I cannot continue this."), true);
+  assert.equal(isModelRefusal("*I arch my back* dont stop, i love it when you do that"), false);
+  assert.equal(isModelRefusal("i cant help it, you feel so good"), false);
+});
+
+test("secondPersonActions: him is you inside her actions only", () => {
+  assert.equal(secondPersonActions("*I kiss his neck, pulling him closer* dont stop"), "*I kiss your neck, pulling you closer* dont stop");
+  assert.equal(secondPersonActions("*I guide his head towards my chest* he said so"), "*I guide your head towards my chest* he said so");
+});
