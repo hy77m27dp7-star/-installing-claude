@@ -3849,6 +3849,23 @@ td .empty-label { padding: 16px 0; }
 }
 
 /* The one global switch, last in the file: no animation and no transition anywhere. */
+/* fix0927 hand pass: the controls the redesign hid, in plain sight. */
+.now-line {
+  display: block;
+  max-width: 100%;
+  margin-top: 1px;
+  color: var(--text-2);
+  font-size: 12px;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta .note-btn { opacity: 0.75; }
+.home-open { flex-direction: column; gap: 6px; height: auto; padding: 6px 0 10px; }
+.home-label { font-style: normal; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(236, 244, 255, 0.85); text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); }
+.home-open:hover .home-label { color: #fff; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

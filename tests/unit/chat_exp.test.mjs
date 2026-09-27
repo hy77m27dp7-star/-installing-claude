@@ -149,7 +149,9 @@ test("the phone slide-in and the hold-to-record handling are gone", () => {
   }
 });
 
-test("metaRow: why, note, keep and the flags only under state.operator (built and counted)", () => {
+// fix0927: the note under her reply is always shown (Justin could not find it); why, keep and
+// the flags stay under the workings switch.
+test("metaRow: the note always on her reply; why, keep and the flags only under state.operator (built and counted)", () => {
   const build = (operator) => {
     const state = { operator, chipsFor: new Map() };
     const metaRow = new Function("h", "state", "clockTime", "openWhy", "toggleNoteSheet", "markButton", "chip", "flagCodes",
@@ -157,8 +159,8 @@ test("metaRow: why, note, keep and the flags only under state.operator (built an
     return metaRow({ id: "m1", role: "assistant", channel: "story", created_at: "2026-09-26T01:04:00Z", flags_json: "[]" });
   };
   const off = build(false);
-  assert.equal(off.children.length, 1, "only the time");
-  assert.deepEqual(texts(off), ["9:04 PM"]);
+  assert.equal(off.children.length, 2, "the time and the note");
+  assert.deepEqual(texts(off), ["9:04 PM", "note"]);
   const on = texts(build(true));
   for (const t of ["why", "note", "keep", "written_joke"]) assert.ok(on.includes(t), t);
 });

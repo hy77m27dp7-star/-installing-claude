@@ -125,6 +125,7 @@ const els = {
   backdrop: $("backdrop"),
   whoAvatar: $("whoAvatar"),
   placeLine: $("placeLine"),
+  nowLine: $("nowLine"),
   chapterHead: $("chapterHead"),
   chapterEdit: $("chapterEdit"),
   chapterDate: $("chapterDate"),
@@ -1011,9 +1012,12 @@ function clockTime(iso) {
 // inline why, note, keep and drop and the flags show only while the workings are on.
 function metaRow(m) {
   const row = h("div", { class: "meta" }, h("span", { class: "time", text: clockTime(m.created_at) }));
-  if (state.operator && m.role === "assistant" && m.channel !== "operator" && m.id) {
+  const hers = m.role === "assistant" && m.channel !== "operator" && m.id;
+  // fix0927: the note under her reply is always there (Not her, Too clever, his own note);
+  // the redesign had hidden it behind a double-click or a long press.
+  if (hers) row.append(h("button", { type: "button", class: "note-btn", text: "note", "aria-label": "Note on this reply", onclick: () => toggleNoteSheet(m) }));
+  if (state.operator && hers) {
     row.append(h("button", { type: "button", class: "why", text: "why", onclick: () => openWhy(m) }));
-    row.append(h("button", { type: "button", class: "note-btn", text: "note", onclick: () => toggleNoteSheet(m) }));
     row.append(markButton(m));
     const extra = state.chipsFor.get(m.id);
     if (extra && extra.length) row.append(h("span", { class: "chips" }, extra));
@@ -2528,6 +2532,7 @@ async function letHerStart() {
     handleTurnResponse(r, id);
     touchConversation(id);
     refreshTitlesAfterTurn(id);
+    loadNow(false);
   } catch (e) {
     showError(e.code || "error", false);
   } finally {
@@ -2727,6 +2732,7 @@ async function loadScene() {
   }
   renderScene();
   applyPlaceBackground(undefined);
+  loadNow(true);
 }
 
 function renderScene() {
@@ -2738,6 +2744,35 @@ function renderScene() {
     const text = placeLineText(state.scene);
     els.placeLine.textContent = text;
     els.placeLine.classList.toggle("hidden", !text);
+  }
+}
+
+// fix0927: her mood and what she is wearing, one small line under the place line. The old
+// chat drawer showed both; the redesign had left them only on Studio > Record. Read from
+// GET /api/phone, at most once a minute, after load and after each of her replies.
+function nowLineText(p) {
+  if (!p || typeof p !== "object") return "";
+  const parts = [];
+  const mood = p.mood && typeof p.mood.mood === "string" ? p.mood.mood.replace(/\s+/g, " ").trim() : "";
+  if (mood) parts.push(mood);
+  const outfit = p.outfit && typeof p.outfit.text === "string" ? p.outfit.text.replace(/\s+/g, " ").trim().replace(/[.]+$/, "") : "";
+  if (outfit) parts.push("wearing " + outfit.charAt(0).toLowerCase() + outfit.slice(1));
+  return parts.join(" \u00b7 ");
+}
+
+let nowLoadedAt = 0;
+async function loadNow(force) {
+  if (!els.nowLine) return;
+  const t = Date.now();
+  if (!force && t - nowLoadedAt < 60000) return;
+  nowLoadedAt = t;
+  try {
+    const text = nowLineText(await api("GET", "/api/phone"));
+    els.nowLine.textContent = text;
+    els.nowLine.title = text;
+    els.nowLine.classList.toggle("hidden", !text);
+  } catch {
+    // the line is a nicety; the chat never waits on it
   }
 }
 
