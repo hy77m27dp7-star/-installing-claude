@@ -4122,7 +4122,7 @@ async function scenariosV5(report) {
     assert.ok(Array.isArray(probe.json.recent));
   });
 
-  await report.check("v5 clock: together with no place -> 400; at the harbour bench -> frozen at the version's created_at; a turn is held (provenance clock.frozen, storyNow = frozenAt; RIGHT NOW on the held weekday, no TIME SINCE); her first text stops on 'together'; apart -> resumed; a turn is not held", async () => {
+  await report.check("v5 clock: together with no place -> 400; at the harbour bench -> frozen at the version's created_at; a turn is held (provenance clock.frozen, storyNow = frozenAt plus the talk since, never past the real now; RIGHT NOW on the held weekday, no TIME SINCE); her first text stops on 'together'; apart -> resumed; a turn is not held", async () => {
     const apart = await putScene({ status: "apart", location: null, time: null }, "v5 apart, no place");
     assert.equal(apart.status, 200, apart.text);
     const bad = await putScene({ status: "together", location: null }, "v5 together, no place");
@@ -4140,7 +4140,11 @@ async function scenariosV5(report) {
     assert.equal(put.json.clock.open.location, "the harbour bench");
     const { ctx, stateText } = await turnWithContext(conversationId, "we sat down on the bench", "v5-held-turn");
     assert.equal(ctx.clock.frozen, true, JSON.stringify(ctx.clock));
-    assert.equal(Date.parse(ctx.clock.storyNow), Date.parse(frozenAt));
+    // fix0927 lane B: inside a held span the story clock moves with the conversation (each gap
+    // capped at five minutes) and never past the real now; seconds after the freeze it sits
+    // between frozenAt and now.
+    const moved = Date.parse(ctx.clock.storyNow) - Date.parse(frozenAt);
+    assert.ok(moved >= 0 && Date.parse(ctx.clock.storyNow) <= Date.now(), "storyNow moves only with the talk: " + JSON.stringify({ frozenAt, storyNow: ctx.clock.storyNow }));
     assert.ok(ctx.clock.spanId, "the span id");
     assert.ok(stateText.includes("RIGHT NOW"), "RIGHT NOW present");
     assert.ok(stateText.includes("It is " + nyWeekdayOf(frozenAt)), "the held weekday");
@@ -4759,6 +4763,10 @@ const EXP_PAGES = ["/us"];
 const EXP_SCRIPTS = ["/js/us.js", "/js/lockwords.js", "/js/months.js"];
 const EXP_FONT = "/fonts/fraunces-latin-full-normal.woff2";
 const EXP_VIEW_KEYS = ["displayTitle", "titleFrom", "firstAt", "lastAt", "preview"];
+// fix0927 lane B: her masters on the Her side (src/album.ts HER_MASTER_IDS; never master-00)
+// and their face crop (src/api.ts AVATAR_FOCUS, kept equal to src/lockscreen.ts MASTER_FOCUS).
+const EXP_HER_MASTER_IDS = ["master-01", "master-02", "master-03", "master-04", "master-05"];
+const EXP_MASTER_FOCUS = { "master-01": [48, 28], "master-02": [58, 24], "master-03": [50, 32], "master-04": [44, 27], "master-05": [50, 24] };
 
 async function scenariosExp(report) {
   const probe = await api("GET", "/api/wallpaper");
@@ -4772,14 +4780,18 @@ async function scenariosExp(report) {
   const tomorrow = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(Date.now() + 24 * 60 * 60 * 1000));
   const ids = { conv: null, herMessage: null, owner: null, second: null };
 
-  await report.check("exp: GET /api/wallpaper on an empty roll -> the avatar master (kind master, its file and focus, today's day)", async () => {
+  await report.check("exp: GET /api/wallpaper on an empty roll -> one of her masters 01 to 05 (kind master, its /images/masters/ file and focus, today's day)", async () => {
     assert.equal(probe.status, 200, probe.text);
-    const avatar = await api("GET", "/api/avatar");
-    assert.equal(avatar.status, 200, avatar.text);
+    const roll = await api("GET", "/api/roll");
+    assert.equal(roll.status, 200, roll.text);
+    assert.deepEqual(roll.json.items, [], "an empty roll");
+    assert.deepEqual(roll.json.masters.map((m) => m.id), EXP_HER_MASTER_IDS, "her five masters");
     assert.equal(probe.json.kind, "master");
-    assert.equal(probe.json.id, avatar.json.assetId);
-    assert.equal(probe.json.url, "/" + avatar.json.file.replace(/^\/+/, ""));
-    assert.deepEqual(probe.json.focus, avatar.json.focus);
+    const master = roll.json.masters.find((m) => m.id === probe.json.id);
+    assert.ok(master, "the wallpaper is one of her masters: " + probe.text);
+    assert.equal(probe.json.url, master.url);
+    assert.match(probe.json.url, /^\/images\/masters\//);
+    assert.deepEqual(probe.json.focus, EXP_MASTER_FOCUS[probe.json.id]);
     assert.match(probe.json.day, /^\d{4}-\d{2}-\d{2}$/);
   });
 
@@ -4852,7 +4864,7 @@ async function scenariosExp(report) {
     assert.equal(unknown.status, 404, unknown.text);
   });
 
-  await report.check("exp: an owner-fired picture, approved, is in GET /api/roll and not in GET /api/album; the wallpaper is that photo after one approval", async () => {
+  await report.check("exp: an owner-fired picture, approved, stays off the Her side (fix0927): not in GET /api/roll items, not in GET /api/album, never the wallpaper; the roll carries her five masters", async () => {
     const gen = await api("POST", "/api/images/generate", { conversationId: ids.conv, description: "integration exp: her window display, late light" });
     assert.equal(gen.status, 200, gen.text);
     assert.equal(gen.json.asset.message_id, null);
@@ -4861,14 +4873,17 @@ async function scenariosExp(report) {
     assert.equal(ok.status, 200, ok.text);
     const roll = await api("GET", "/api/roll");
     assert.equal(roll.status, 200, roll.text);
-    const item = roll.json.items.find((i) => i.id === ids.owner);
-    assert.ok(item, "in the roll: " + roll.text.slice(0, 300));
-    assert.deepEqual(Object.keys(item).sort(), ["at", "conversationId", "id", "kind", "messageId", "place", "poster", "url", "us"]);
-    assert.equal(item.kind, "photo");
-    assert.equal(item.url, "/media/" + ids.owner);
-    assert.equal(item.messageId, null);
-    assert.equal(item.place, null);
-    assert.equal(item.us, false);
+    assert.ok(!roll.json.items.some((i) => i.id === ids.owner), "never in the roll: " + roll.text.slice(0, 300));
+    assert.deepEqual(roll.json.masters.map((m) => m.id), EXP_HER_MASTER_IDS);
+    for (const m of roll.json.masters) {
+      assert.deepEqual(Object.keys(m).sort(), ["at", "conversationId", "id", "kind", "master", "messageId", "place", "poster", "url", "us"]);
+      assert.equal(m.kind, "photo");
+      assert.equal(m.master, true);
+      assert.match(m.url, /^\/images\/masters\//);
+      assert.equal(m.messageId, null);
+      assert.equal(m.place, null);
+      assert.equal(m.us, false);
+    }
     const album = await api("GET", "/api/album");
     assert.equal(album.status, 200, album.text);
     assert.ok(!album.json.items.some((i) => i.id === ids.owner), "never in the album");
@@ -4876,10 +4891,10 @@ async function scenariosExp(report) {
     assert.equal(bad.status, 400, bad.text);
     const wall = await api("GET", "/api/wallpaper");
     assert.equal(wall.status, 200, wall.text);
-    assert.equal(wall.json.kind, "photo");
-    assert.equal(wall.json.id, ids.owner);
-    assert.equal(wall.json.url, "/media/" + ids.owner);
-    assert.equal(wall.json.focus, null);
+    assert.notEqual(wall.json.id, ids.owner, "the owner-fired picture never dresses her phone");
+    assert.equal(wall.json.kind, "master");
+    assert.ok(EXP_HER_MASTER_IDS.includes(wall.json.id), wall.text);
+    assert.deepEqual(wall.json.focus, EXP_MASTER_FOCUS[wall.json.id]);
   });
 
   await report.check("exp: GET /api/phone/lock -> its keys, held while the scene is together; a Messages entry after his turn; a Calendar entry Tomorrow after a step made through POST /api/wants/:id/beats", async () => {
@@ -4895,7 +4910,8 @@ async function scenariosExp(report) {
     assert.ok(Date.parse(r.json.now) <= Date.now());
     assert.match(r.json.time, /^\d{1,2}:\d{2}$/);
     assert.match(r.json.dateLine, /^[A-Z][a-z]+day, [A-Z][a-z]+ \d{1,2}$/);
-    assert.equal(r.json.wallpaper.id, ids.owner);
+    assert.notEqual(r.json.wallpaper.id, ids.owner, "fix0927: an owner-fired picture never dresses her phone");
+    assert.ok(EXP_HER_MASTER_IDS.includes(r.json.wallpaper.id), JSON.stringify(r.json.wallpaper));
     const msg = r.json.notes.find((n) => n.app === "messages");
     assert.ok(msg, "a Messages entry: " + JSON.stringify(r.json.notes));
     assert.equal(msg.text, "hi. is this seat taken");
