@@ -2859,11 +2859,11 @@ async function sendVoice(blob, mime, opts) {
 // Justin: "there should be a watch game button". On: every turn of his carries the live game
 // (the server adds it and her game rules), the page checks the game every 20 s, and a big
 // play (a score, a turnover, halftime) gets her own reaction, out loud on the call. Off: none.
-const TV_POLL_MS = 10000;
+const TV_POLL_MS = 5000;
 const TV_REACT_GAP_MS = 45000;
 // ESPN's feed runs ahead of his TV (he said "shes ahead of me"): she sees the game as it
 // stood this long ago, the way his broadcast shows it.
-const TV_DELAY_MS = 65000; // 45 s left her about 20 s ahead of his TV (2026-09-27)
+const TV_DELAY_MS = 55000; // 45 s: about 20 s ahead of his TV; 65 s: about 20 s behind (2026-09-27)
 const TV_KEY = "avelie.tv";
 
 function tvPaint() {
@@ -2920,7 +2920,7 @@ async function tvPoll() {
   }
   if (!game || state.tv !== tv) return;
   tv.history.push({ t: Date.now(), game });
-  while (tv.history.length > 200) tv.history.shift();
+  while (tv.history.length > 400) tv.history.shift();
   const seen = tvHeld(tv);
   if (!seen) return;
   // Only a snapshot he has now seen on his TV counts, once.
