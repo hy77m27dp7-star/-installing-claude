@@ -2936,12 +2936,30 @@ async function tvPoll() {
     || (game.last && game.last !== prev.last && TV_BIG_RE.test(game.last))
     || (game.detail !== prev.detail && /halftime|end of|final/i.test(game.detail));
   if (!big || Date.now() - tv.lastReactAt < TV_REACT_GAP_MS) return;
-  tvReact(tv);
+  tvReact(tv, tvWhoScored(prev.score, game.score));
+}
+
+// "Detroit Lions 14, New York Jets 7" twice: which side's number went up.
+function tvWhoScored(before, after) {
+  const read = (s) => {
+    const out = {};
+    for (const part of String(s || "").split(",")) {
+      const m = part.trim().match(/^(.*\S)\s+(\d+)$/);
+      if (m) out[m[1]] = Number(m[2]);
+    }
+    return out;
+  };
+  const a = read(before);
+  const b = read(after);
+  for (const team of Object.keys(b)) {
+    if (a[team] !== undefined && b[team] > a[team]) return team === "Detroit Lions" ? "lions" : "other";
+  }
+  return "";
 }
 
 // Her own reaction. Never over him: not while he is typing a send, recording, or mid-sentence
 // on the call (that recording is dropped and the mic closed while she talks).
-async function tvReact(tv) {
+async function tvReact(tv, who) {
   if (state.inFlight || state.rec || state.tasting) return;
   const id = state.currentId;
   if (!id) return;
@@ -2956,7 +2974,7 @@ async function tvReact(tv) {
   setInFlight(true);
   try {
     const held = tv.held || null;
-    const r = await api("POST", "/api/conversations/" + encodeURIComponent(id) + "/open", { reason: "tv", speak: !!dt, ...(held ? { tvGame: held.text, tvLast: held.last || "" } : {}) });
+    const r = await api("POST", "/api/conversations/" + encodeURIComponent(id) + "/open", { reason: "tv", speak: !!dt, ...(who ? { tvWho: who } : {}), ...(held ? { tvGame: held.text, tvLast: held.last || "" } : {}) });
     handleTurnResponse(r, id);
     touchConversation(id);
     if (dt && !(r && r.spoken === true)) setTimeout(() => dtListen(state.dt), 1000);

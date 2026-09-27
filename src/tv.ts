@@ -70,8 +70,14 @@ export function tvSection(game: GameNow): string {
 }
 
 // Something big just happened on TV: her own move, with the play in it.
-export function tvReactNote(game: GameNow): string {
+export function tvReactNote(game: GameNow, who = ""): string {
+  // 2026-09-27: she kissed him for a Jets touchdown ("wait so i kissed you for the JETS??"):
+  // the page now says which side scored, and whether that is good or bad for the Lions.
+  const side = who === "lions" ? "The LIONS just scored: that is your team, celebrate. "
+    : who === "other" ? "The OTHER team just scored, not the Lions: that is bad for your team, react like it hurts. "
+      : "";
   return "Something just happened in the game on TV and you react to it right now, on your own, before he says anything: "
+    + side
     + (game.last ? "the play was: " + game.last + ". " : "")
     + "The game now: " + game.text.replace(/\n/g, " ") + " "
     + "React like someone who loves this: one or two short, loud, cute lines and maybe an action (grabbing him, jumping up, covering your eyes), in the moment. Never invent anything the play does not say.";

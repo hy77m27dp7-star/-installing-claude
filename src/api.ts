@@ -1127,7 +1127,8 @@ route("POST", "/api/conversations/:id/open", async (c) => {
     const game = heldText ? { state: "in", text: heldText, score: "", last: heldLast, detail: "" } : await fetchGame();
     if (!game) throw new ApiHttpError(503, "tv_unavailable", "the game could not be read", true);
     const speakTv = optBool(b as never, "speak") === true;
-    return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: tvReactNote(game), tv: true, ...(heldText ? { tvText: heldText } : {}), ...(speakTv ? { speak: true } : {}) }));
+    const who = b.tvWho === "lions" || b.tvWho === "other" ? String(b.tvWho) : "";
+    return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: tvReactNote(game, who), tv: true, ...(heldText ? { tvText: heldText } : {}), ...(speakTv ? { speak: true } : {}) }));
   }
   return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: note }));
 });
