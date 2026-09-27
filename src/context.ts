@@ -740,6 +740,7 @@ export async function assembleContext(
       userText: opener ? "" : pendingUserText,
       settings,
       canSee: performersCanSee(performers),
+      opener,
     }), false);
     const last = messages[messages.length - 1];
     if (show && last && last.role === "user") {

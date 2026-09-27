@@ -923,7 +923,10 @@ const OPENER_NOTE = FIRST_TEXT_NOTE;
 // retold a story she had already told him. Together, she makes the next move in the scene.
 const SCENE_OPENER_NOTE =
   "You are with him right now, in the scene as the record has it, and it is your move. Continue from exactly where the last messages left off: what you do or say next, in the moment, "
-  + "in present tense, the way the scene is going. Nothing about your day or work, no news, no story you have already told him, nothing that ignores what just happened between you. One or two bubbles.";
+  + "in present tense, the way the scene is going. Nothing about your day or work, no news, no story you have already told him, nothing that ignores what just happened between you. "
+  // fix0927: after "okay... keep me then" at the record store, Let her start answered
+  // "*pushes your sunglasses up onto your head so i can actually see you* hi".
+  + "You have been together this whole time: never a greeting (no hi, hey or hello), never as if he just walked up or you are seeing him for the first time today. One or two bubbles.";
 
 // The throwaway conversations of the drift check never show in the list. The experience
 // pass (8.2): each row is a chapter view (its computed title, its span, its last line).

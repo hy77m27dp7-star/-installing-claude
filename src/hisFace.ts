@@ -149,6 +149,10 @@ export interface ShowFaceArgs {
   // false when a performer on the call cannot see (performersCanSee: on a tasting turn both
   // sides must); the section then carries no attached-photos line.
   canSee?: boolean;
+  // fix0927: an opener turn (Let her start) is her move and carries no message of his; its
+  // final user turn is only the cue, so a photo there reads as him just walking up ("pushes
+  // your sunglasses up so i can actually see you ... hi"). Never on an opener.
+  opener?: boolean;
 }
 
 // The rule (SPEC_V3 JJ): never when a performer on the call cannot see; his first turn of a
@@ -157,6 +161,7 @@ export interface ShowFaceArgs {
 // hisFaceApartEvery-th turn (0 = never).
 export function shouldShowFace(args: ShowFaceArgs): boolean {
   if (args.canSee === false) return false;
+  if (args.opener === true) return false;
   const s = hisFaceSettings(args.settings as Record<string, unknown>);
   if (args.isFirstTurnOfConversation) return true;
   if (mentionsHisLooks(args.userText)) return true;
