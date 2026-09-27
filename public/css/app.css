@@ -3902,7 +3902,11 @@ td .empty-label { padding: 16px 0; }
 .tv-btn svg { width: 16px; height: 16px; }
 .tv-btn:hover { color: var(--text); }
 .tv-btn.on { background: linear-gradient(135deg, #0076b6, #22d3ee); color: #fff; border-color: transparent; box-shadow: 0 0 14px rgba(34, 211, 238, 0.35); }
-@media (max-width: 520px) { .tv-btn .tv-label { display: none; } .tv-btn { padding: 0 10px; } }
+/* On a phone it sits on the second row beside Together / Texting, label showing. */
+@media (max-width: 520px) {
+  .thread-bar .mode-pill { margin: 0 0 0 auto; }
+  .thread-bar .tv-btn { order: 11; margin: 0 auto 0 8px; min-height: 34px; padding: 0 12px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
