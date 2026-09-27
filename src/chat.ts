@@ -136,6 +136,9 @@ export interface TurnOptions {
   // photos ride only when both performers can see; otherwise neither side gets them and
   // the section carries no attached-photos line.
   tastingPerformer?: Performer;
+  // 2026-09-27: the turn came from the hands-free call: her reply is spoken in her voice
+  // (ElevenLabs), whatever the scene. The performer still follows the scene.
+  speak?: boolean;
 }
 
 // Dirty talk mode: whether the scene record says an intimate Together scene she chose is
@@ -1473,6 +1476,8 @@ export async function commitReply(
 const REPLY_TOGETHER = new WeakMap<TurnResponse, boolean>();
 // Dirty talk mode: whether the reply was written inside an intimate scene she chose.
 const REPLY_INTIMATE = new WeakMap<TurnResponse, boolean>();
+// A reply to a turn of the hands-free call: always spoken in her voice.
+const REPLY_SPEAK = new WeakMap<TurnResponse, boolean>();
 
 async function sceneIsTogether(db: D1Database): Promise<boolean> {
   try {
@@ -1497,10 +1502,12 @@ export function afterReply(env: Env, ctx: ExecutionContext, db: D1Database, sett
   // Dirty talk mode: in an intimate scene every line of hers is spoken in her own voice
   // (ElevenLabs only, never the generic voice), her actions narrated; the page waits for the
   // audio and plays it. This is not a voice note: voiceMode does not gate it.
-  const spokenLine = REPLY_INTIMATE.get(response) === true && settings.intimateVoice !== false && elevenLabsVoiceConfigured(env, settings);
+  const spokenLine = elevenLabsVoiceConfigured(env, settings)
+    && (REPLY_SPEAK.get(response) === true || (REPLY_INTIMATE.get(response) === true && settings.intimateVoice !== false));
   if (spokenLine) {
     const tags = /^eleven_v3/.test(String(settings.elevenLabsModel ?? ""));
-    const speech = spokenText(assistantRow.content, settings.intimateNarrate !== false, { tags });
+    // Narration of her actions: always in a bed scene (his ask), on a normal call too.
+    const speech = spokenText(assistantRow.content, settings.intimateNarrate !== false, { tags: tags && REPLY_INTIMATE.get(response) === true });
     if (speech) {
       response.spoken = true;
       ctx.waitUntil(
@@ -1611,6 +1618,7 @@ export async function runTurn(
     throw e;
   }
   const response = await commitReply(db, prepared, generated.draft, generated.runs);
+  if (opts?.speak === true) REPLY_SPEAK.set(response, true);
   afterReply(env, ctx, db, settings, response, generated.draft.voice, actor);
   return response;
 }

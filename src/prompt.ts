@@ -208,7 +208,10 @@ export function relationshipLine(rel: RelationshipState, now: Date = new Date(),
 // one paragraph in the middle of the rulebook. So when the scene record says she is already
 // in an intimate scene she chose, the rule rides again as the LAST section, in stronger
 // words. Off on every other turn, so the prompt bytes of a normal turn do not change.
-const INTIMATE_RE = /\b(?:kiss(?:ing|ed|es)?|making out|make out|undress(?:ing|ed)?|naked|bra|shirt (?:off|open|up)|under (?:my|her|his|your) shirt|in (?:my |her |his |the )?bed|on (?:my|her|his|your) lap|hot and heavy|breathing hard|straddl\w*|sex|fuck\w*|sleep(?:ing)? together|bedroom|hands? (?:on|under) (?:my|her|his|your))\b/i;
+// 2026-09-27: kissing, a lap, hands and breathing no longer count. "staying in the moment after
+// the kiss" at the record store routed every reply there to the explicit performer, spoke it,
+// and put IN BED in her prompt. Only undressing, a bed, sex and the like do.
+const INTIMATE_RE = /\b(?:undress(?:ing|ed)?|naked|nude|bra|shirt (?:off|open)|clothes (?:off|coming off)|under (?:my|her|his|your) shirt|in (?:my |her |his |the )?bed|hot and heavy|straddl\w*|sex|fuck\w*|sleep(?:ing)? together|bedroom)\b/i;
 
 // The scene record decides: an explicit `intimate` flag wins either way; otherwise a
 // Together scene whose summary, last beat or place reads as one.

@@ -50,3 +50,12 @@ test("secondPersonActions: him is you inside her actions only", () => {
   assert.equal(secondPersonActions("*I kiss his neck, pulling him closer* dont stop"), "*I kiss your neck, pulling you closer* dont stop");
   assert.equal(secondPersonActions("*I guide his head towards my chest* he said so"), "*I guide your head towards my chest* he said so");
 });
+
+const promptMod = await loadSrc("prompt");
+test("a kiss is not a bed scene; a bed or undressing is", () => {
+  const base = { status: "together", location: "the record store on Congress Street", summary: "They remain close together, staying in the moment after the kiss", last_beat: "after the kiss" };
+  assert.equal(promptMod.intimateScene(base), false);
+  assert.equal(promptMod.intimateScene({ ...base, location: "her apartment, in her bed" }), true);
+  assert.equal(promptMod.intimateScene({ ...base, summary: "clothes coming off on the couch" }), true);
+  assert.equal(promptMod.intimateScene({ ...base, intimate: true }), true);
+});

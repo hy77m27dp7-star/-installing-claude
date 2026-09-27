@@ -62,7 +62,8 @@ test("A1: chat.js renders splitReply's pieces: an action is a .bubble.action sta
 
 test("A1: renderMessage sends her line, his line and the tasting panels through lineEls; the operator row stays whole", () => {
   const render = fnSrc("renderMessage");
-  assert.match(render, /const parts = op \? \[bubbleEl\(m\.content \|\| ""\)\] : lineEls\(m\.content\);/);
+  // 2026-09-27: a line of hers with audio shows only her voice (spokenOnly: no bubbles).
+  assert.match(render, /const parts = op \? \[bubbleEl\(m\.content \|\| ""\)\] : spokenOnly \? \[\] : lineEls\(m\.content\);/);
   assert.match(render, /bubbles\.append\(\.\.\.lineEls\(m\.content, \{ long: false \}\)\)/, "his actions read the same way, his line never cut for length");
   assert.match(render, /for \(const b of parts\) \{\s*if \(reacts\) \{\s*b\.setAttribute\("tabindex", "0"\);/);
   assert.match(fnSrc("renderTasting"), /bubbles\.append\(\.\.\.lineEls\(c\.text\)\);/);
@@ -152,8 +153,8 @@ test("A3: one handler per action, bound to the menu row and its twin in sight", 
   assert.match(js, /const callButtons = \(\) => \[els\.callBtn, els\.barCall\]\.filter\(Boolean\);/);
   assert.match(js, /const micButtons = \(\) => \[els\.micBtn, els\.composerMic\]\.filter\(Boolean\);/);
   assert.match(js, /const photoButtons = \(\) => \[els\.attachBtn, els\.composerPhoto\]\.filter\(Boolean\);/);
-  // Dirty talk call (2026-09-27): in a bed scene the same handler runs the hands-free loop.
-  assert.match(js, /const onCallClick = \(\) => \{ closeMenus\(false\); if \(state\.dt \|\| sceneIsIntimate\(\)\) dtToggle\(\); else startCall\(\); \};\nconst onStartClick = \(\) => \{ closeMenus\(false\); letHerStart\(\); \};\nconst onPhotoClick = \(\) => \{ closeMenus\(false\); els\.fileInput\.click\(\); \};\n/);
+  // 2026-09-27: with her own voice set up, every call is the hands-free loop in her voice.
+  assert.match(js, /const onCallClick = \(\) => \{ closeMenus\(false\); if \(state\.dt \|\| herVoiceReady\(\)\) dtToggle\(\); else startCall\(\); \};\nconst onStartClick = \(\) => \{ closeMenus\(false\); letHerStart\(\); \};\nconst onPhotoClick = \(\) => \{ closeMenus\(false\); els\.fileInput\.click\(\); \};\n/);
   // fix0927 review: Texting while already apart writes nothing (no scene version, the place kept).
   assert.match(js, /const onTextingClick = \(\) => \{\n  closeMenus\(true\);\n  if \(state\.scene && state\.scene\.status === "apart"\) return;\n  setScene\("apart", null\);\n\};/);
   assert.match(js, /for \(const b of callButtons\(\)\) b\.addEventListener\("click", onCallClick\);/);

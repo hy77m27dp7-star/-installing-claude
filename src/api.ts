@@ -1149,7 +1149,9 @@ route("POST", "/api/conversations/:id/voice", async (c) => {
 
   let r: TurnResponse;
   try {
-    r = await runTurn(c.env, c.ctx, c.db, settings, id, transcript, idempotencyKey, c.actor);
+    // The hands-free call sends speak=1: her reply comes back spoken in her voice.
+    const speak = formString(form, "speak", 8, false) === "1";
+    r = await runTurn(c.env, c.ctx, c.db, settings, id, transcript, idempotencyKey, c.actor, speak ? { speak: true } : undefined);
   } catch (e) {
     await deleteKeys(c.env, [key]);
     throw e;

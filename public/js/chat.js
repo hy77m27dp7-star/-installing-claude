@@ -884,7 +884,10 @@ function renderMessage(m, errorCode, error) {
     }
   } else {
     // fix0927 lane A: her actions are their own stage lines wherever they sit in a paragraph.
-    const parts = op ? [bubbleEl(m.content || "")] : lineEls(m.content);
+    // 2026-09-27, Justin: "if she is doing audio i dont want to see the text": a line of hers
+    // with audio shows only her voice.
+    const spokenOnly = !op && !!m.audio_key;
+    const parts = op ? [bubbleEl(m.content || "")] : spokenOnly ? [] : lineEls(m.content);
     // exp 3.4 item 5: each bubble of a line of hers with an id opens the reaction bar.
     const reacts = !op && !!m.id;
     for (const b of parts) {
@@ -981,8 +984,10 @@ function voiceNote(messageId) {
     const other = state.voicePlaying;
     if (other && other !== audio && !other.paused) other.pause();
     state.voicePlaying = audio;
-    const p = audio.play();
-    if (p && typeof p.catch === "function") p.catch(() => playing(false));
+    if (audio.currentTime > 0) {
+      const p = audio.play();
+      if (p && typeof p.catch === "function") p.catch(() => playing(false));
+    } else playWoken(audio);
   });
   audio.addEventListener("loadedmetadata", paint);
   audio.addEventListener("durationchange", paint);
@@ -1716,11 +1721,47 @@ function handleTurnResponse(r, id) {
     // A tasting that voided itself came back as a plain reply; say so on the message.
     if (a.id && flagCodes(r.flags).includes("tasting_void")) state.chipsFor.set(a.id, [chip("tasting void", "amber")]);
     const deliverAt = a.deliver_at || a.deliverAt || r.deliverAt || null;
-    if (futureIso(deliverAt)) scheduleDelivery({ ...a, deliver_at: deliverAt }, seq);
+    if (r.spoken === true && a.id) {
+      // Her voice only: a pending voice row now, the player when the audio lands.
+      const el = renderMessage({ ...a, audio_key: "pending" });
+      const pend = el.querySelector(".voice-note");
+      if (pend) pend.replaceWith(pendingVoiceRow());
+      else el.append(pendingVoiceRow());
+      appendMessage(el, { rise: true });
+      noteRole(a);
+      waitForSpoken(a.id, id);
+    } else if (futureIso(deliverAt)) scheduleDelivery({ ...a, deliver_at: deliverAt }, seq);
     else arrive(a, seq);
-    if (r.spoken === true && a.id) waitForSpoken(a.id, id);
   }
   scrollBottom();
+}
+
+// While her voice is being made: three soft dots in the voice row's place.
+function pendingVoiceRow() {
+  return h("div", { class: "audio-note voice-note voice-pending", role: "status", "aria-label": "Voice coming" }, h("span", { class: "vp-dots", "aria-hidden": "true" }, h("span"), h("span"), h("span")));
+}
+
+// The output device (Bluetooth above all) wakes a beat late and eats her first word: play a
+// moment of silence first, then her line.
+function playWoken(audio) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) {
+      state.wakeCtx = state.wakeCtx || new AC();
+      const ctx = state.wakeCtx;
+      if (ctx.state === "suspended") ctx.resume();
+      const src = ctx.createBufferSource();
+      src.buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.45), ctx.sampleRate);
+      src.connect(ctx.destination);
+      src.start();
+    }
+  } catch {
+    // no wake: play anyway
+  }
+  setTimeout(() => {
+    const p = audio.play();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  }, 450);
 }
 
 // Dirty talk mode: her line is spoken in her own voice; the audio lands a few seconds after
@@ -1740,11 +1781,13 @@ async function waitForSpoken(messageId, conversationId) {
       ok = false;
     }
     if (!ok) continue;
-    let row = el.querySelector(".voice-note");
+    let row = el.querySelector(".voice-note:not(.voice-pending)");
     if (!row) {
       row = voiceNote(messageId);
+      const pend = el.querySelector(".voice-pending");
       const meta = el.querySelector(".meta");
-      if (meta) el.insertBefore(row, meta);
+      if (pend) pend.replaceWith(row);
+      else if (meta) el.insertBefore(row, meta);
       else el.append(row);
     }
     const audio = row.querySelector("audio");
@@ -1752,8 +1795,7 @@ async function waitForSpoken(messageId, conversationId) {
     const other = state.voicePlaying;
     if (other && other !== audio && !other.paused) other.pause();
     state.voicePlaying = audio;
-    const p = audio.play();
-    if (p && typeof p.catch === "function") p.catch(() => {});
+    playWoken(audio);
     dtHeard(audio);
     return;
   }
@@ -2739,7 +2781,7 @@ function resetRecording(rec) {
   hideRecBar();
 }
 
-async function sendVoice(blob, mime) {
+async function sendVoice(blob, mime, opts) {
   if (state.inFlight || state.tasting) return;
   setInFlight(true);
   hideError();
@@ -2749,6 +2791,7 @@ async function sendVoice(blob, mime) {
     const fd = new FormData();
     fd.append("audio", blob, "voice." + ext);
     fd.append("idempotencyKey", crypto.randomUUID());
+    if (opts && opts.speak) fd.append("speak", "1");
     const r = await apiForm("POST", "/api/conversations/" + encodeURIComponent(id) + "/voice", fd);
     handleTurnResponse(r, id);
     touchConversation(id);
@@ -2772,6 +2815,13 @@ async function sendVoice(blob, mime) {
 const DT_INTIMATE_RE = /\b(?:kiss(?:ing|ed|es)?|making out|make out|undress(?:ing|ed)?|naked|bra|shirt (?:off|open|up)|under (?:my|her|his|your) shirt|in (?:my |her |his |the )?bed|on (?:my|her|his|your) lap|hot and heavy|breathing hard|straddl\w*|sex|fuck\w*|sleep(?:ing)? together|bedroom|hands? (?:on|under) (?:my|her|his|your))\b/i;
 const DT_QUIET_MS = 1300;
 const DT_LEVEL = 0.035;
+
+// Her own ElevenLabs voice is set up: every call is the hands-free loop in her voice (the
+// realtime call's stock voice is the fallback only).
+function herVoiceReady() {
+  const s = state.settings;
+  return !!(s && s.voiceProvider === "elevenlabs" && typeof s.elevenLabsVoiceId === "string" && s.elevenLabsVoiceId.trim());
+}
 
 function sceneIsIntimate() {
   const s = state.scene;
@@ -2869,7 +2919,7 @@ function dtSend(dt) {
   if (!dt.heard || blob.size < 2000) { dtListen(dt); return; }
   if (blob.size > MAX_VOICE_BYTES) { dtListen(dt); return; }
   dtSay(dt, "...");
-  sendVoice(blob, mime);
+  sendVoice(blob, mime, { speak: true });
 }
 
 // Her spoken line started: say so; when it ends, listen again.
@@ -3876,7 +3926,7 @@ els.tasteBtn.addEventListener("click", () => { closeMenus(false); send({ tasting
 // fix0927 lane A: each of these acts the same from the menu and from its twin in sight.
 // Dirty talk call: in a bed scene the Call button runs the hands-free loop (dtToggle), never
 // the realtime call (OpenAI will not do explicit talk).
-const onCallClick = () => { closeMenus(false); if (state.dt || sceneIsIntimate()) dtToggle(); else startCall(); };
+const onCallClick = () => { closeMenus(false); if (state.dt || herVoiceReady()) dtToggle(); else startCall(); };
 const onStartClick = () => { closeMenus(false); letHerStart(); };
 const onPhotoClick = () => { closeMenus(false); els.fileInput.click(); };
 // fix0927 review: already texting, a tap writes nothing (no new scene version, no audit row,

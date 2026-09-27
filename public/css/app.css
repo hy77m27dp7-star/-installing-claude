@@ -3881,6 +3881,14 @@ td .empty-label { padding: 16px 0; }
 .dt-call .dt-status { flex: 1; color: var(--text-2); font-size: 13px; }
 .dt-call .dt-end { background: #b4232f; color: #fff; border-color: transparent; }
 
+/* 2026-09-27: her voice is on its way (the spoken reply before its audio lands). */
+.voice-pending { justify-content: flex-start; min-height: 40px; }
+.voice-pending .vp-dots { display: inline-flex; gap: 5px; padding: 0 10px; }
+.voice-pending .vp-dots span { width: 7px; height: 7px; border-radius: 50%; background: var(--text-2); opacity: 0.5; animation: vp-pulse 1.2s ease-in-out infinite; }
+.voice-pending .vp-dots span:nth-child(2) { animation-delay: 0.2s; }
+.voice-pending .vp-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes vp-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
