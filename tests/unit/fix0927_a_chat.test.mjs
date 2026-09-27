@@ -152,7 +152,8 @@ test("A3: one handler per action, bound to the menu row and its twin in sight", 
   assert.match(js, /const callButtons = \(\) => \[els\.callBtn, els\.barCall\]\.filter\(Boolean\);/);
   assert.match(js, /const micButtons = \(\) => \[els\.micBtn, els\.composerMic\]\.filter\(Boolean\);/);
   assert.match(js, /const photoButtons = \(\) => \[els\.attachBtn, els\.composerPhoto\]\.filter\(Boolean\);/);
-  assert.match(js, /const onCallClick = \(\) => \{ closeMenus\(false\); startCall\(\); \};\nconst onStartClick = \(\) => \{ closeMenus\(false\); letHerStart\(\); \};\nconst onPhotoClick = \(\) => \{ closeMenus\(false\); els\.fileInput\.click\(\); \};\n/);
+  // Dirty talk call (2026-09-27): in a bed scene the same handler runs the hands-free loop.
+  assert.match(js, /const onCallClick = \(\) => \{ closeMenus\(false\); if \(state\.dt \|\| sceneIsIntimate\(\)\) dtToggle\(\); else startCall\(\); \};\nconst onStartClick = \(\) => \{ closeMenus\(false\); letHerStart\(\); \};\nconst onPhotoClick = \(\) => \{ closeMenus\(false\); els\.fileInput\.click\(\); \};\n/);
   // fix0927 review: Texting while already apart writes nothing (no scene version, the place kept).
   assert.match(js, /const onTextingClick = \(\) => \{\n  closeMenus\(true\);\n  if \(state\.scene && state\.scene\.status === "apart"\) return;\n  setScene\("apart", null\);\n\};/);
   assert.match(js, /for \(const b of callButtons\(\)\) b\.addEventListener\("click", onCallClick\);/);

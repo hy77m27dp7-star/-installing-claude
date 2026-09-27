@@ -3874,6 +3874,13 @@ td .empty-label { padding: 16px 0; }
   .lock-date { font-size: 15px; }
 }
 
+/* Dirty talk call (2026-09-27): the bar above the box while the hands-free loop runs. */
+.dt-call { display: flex; align-items: center; gap: 10px; margin: 0 12px 8px; padding: 8px 12px; border-radius: 999px; }
+.dt-call .dt-face { width: 36px; height: 36px; flex: none; }
+.dt-call .dt-name { font-family: var(--display); color: var(--her-name); }
+.dt-call .dt-status { flex: 1; color: var(--text-2); font-size: 13px; }
+.dt-call .dt-end { background: #b4232f; color: #fff; border-color: transparent; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

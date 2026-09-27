@@ -1754,8 +1754,11 @@ async function waitForSpoken(messageId, conversationId) {
     state.voicePlaying = audio;
     const p = audio.play();
     if (p && typeof p.catch === "function") p.catch(() => {});
+    dtHeard(audio);
     return;
   }
+  // No audio came: a call hands the turn back to him.
+  if (state.dt && state.dt.on) dtListen(state.dt);
 }
 
 // ------------------------------------------------------------ tastings (v3 HH)
@@ -2750,11 +2753,146 @@ async function sendVoice(blob, mime) {
     handleTurnResponse(r, id);
     touchConversation(id);
     refreshTitlesAfterTurn(id);
+    // Dirty talk call: a reply that is not spoken hands the turn straight back to him.
+    if (state.dt && state.dt.on && !(r && r.spoken === true)) setTimeout(() => dtListen(state.dt), 1500);
   } catch (e) {
     showError(e.code || "error", false);
+    if (state.dt && state.dt.on) setTimeout(() => dtListen(state.dt), 1500);
   } finally {
     setInFlight(false);
   }
+}
+
+// ------------------------------------------------------------ dirty talk call (2026-09-27)
+
+// Justin: "i thought i was gonna do this on the call so we can talk to each other". In a bed
+// scene the Call button runs this hands-free loop: it listens, stops when he has gone quiet
+// for 1.3 s, sends what he said as a voice turn, her answer comes back spoken in her own voice
+// (waitForSpoken plays it), and when she finishes it listens again. Hang up ends it.
+const DT_INTIMATE_RE = /\b(?:kiss(?:ing|ed|es)?|making out|make out|undress(?:ing|ed)?|naked|bra|shirt (?:off|open|up)|under (?:my|her|his|your) shirt|in (?:my |her |his |the )?bed|on (?:my|her|his|your) lap|hot and heavy|breathing hard|straddl\w*|sex|fuck\w*|sleep(?:ing)? together|bedroom|hands? (?:on|under) (?:my|her|his|your))\b/i;
+const DT_QUIET_MS = 1300;
+const DT_LEVEL = 0.035;
+
+function sceneIsIntimate() {
+  const s = state.scene;
+  if (!s || typeof s !== "object") return false;
+  if (s.intimate === true) return true;
+  if (s.intimate === false || s.status !== "together") return false;
+  return DT_INTIMATE_RE.test([s.summary, s.last_beat, s.location].filter((x) => typeof x === "string").join(" "));
+}
+
+function dtToggle() {
+  if (state.dt) dtEnd();
+  else dtStart();
+}
+
+function dtBar(dt) {
+  const status = h("span", { class: "dt-status", role: "status", text: "connecting" });
+  const end = h("button", { type: "button", class: "btn small dt-end", text: "Hang up", onclick: () => dtEnd() });
+  const face = h("img", { class: "avatar ring dt-face", alt: "", width: "36", height: "36", "data-avatar": "her" });
+  const who = els.whoAvatar;
+  if (who && who.src) face.src = who.src;
+  const bar = h("div", { class: "dt-call glass strong" }, face, h("span", { class: "dt-name", text: "Avelie" }), status, end);
+  dt.bar = bar;
+  dt.status = status;
+  els.composer.parentNode.insertBefore(bar, els.composer);
+  for (const b of callButtons()) { b.classList.add("calling"); b.setAttribute("aria-pressed", "true"); }
+}
+
+function dtSay(dt, text) {
+  if (dt && dt.status) dt.status.textContent = text;
+}
+
+async function dtStart() {
+  if (state.dt || state.inFlight || state.tasting || (state.call && state.call.live)) return;
+  const dt = { on: true, stream: null, ctx: null, analyser: null, recorder: null, chunks: [], heard: false, quietSince: 0, startedAt: 0, poll: null, bar: null, status: null };
+  state.dt = dt;
+  dtBar(dt);
+  try {
+    dt.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch {
+    showError("microphone", false);
+    dtEnd();
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  dt.ctx = new AC();
+  const src = dt.ctx.createMediaStreamSource(dt.stream);
+  dt.analyser = dt.ctx.createAnalyser();
+  dt.analyser.fftSize = 1024;
+  src.connect(dt.analyser);
+  dtListen(dt);
+}
+
+function dtListen(dt) {
+  if (!dt || !dt.on || state.dt !== dt || !dt.stream) return;
+  if (dt.recorder && dt.recorder.state === "recording") return;
+  const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  try {
+    dt.recorder = new MediaRecorder(dt.stream, mime ? { mimeType: mime } : undefined);
+  } catch {
+    showError("microphone", false);
+    dtEnd();
+    return;
+  }
+  dt.chunks = [];
+  dt.heard = false;
+  dt.quietSince = 0;
+  dt.startedAt = Date.now();
+  dt.recorder.addEventListener("dataavailable", (e) => { if (e.data && e.data.size) dt.chunks.push(e.data); });
+  dt.recorder.addEventListener("stop", () => dtSend(dt));
+  dt.recorder.start();
+  dtSay(dt, "listening");
+  const buf = new Uint8Array(dt.analyser.fftSize);
+  clearInterval(dt.poll);
+  dt.poll = setInterval(() => {
+    if (!dt.on || !dt.recorder || dt.recorder.state !== "recording") { clearInterval(dt.poll); return; }
+    dt.analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (const v of buf) { const x = (v - 128) / 128; sum += x * x; }
+    const level = Math.sqrt(sum / buf.length);
+    const now = Date.now();
+    if (level > DT_LEVEL) { dt.heard = true; dt.quietSince = 0; }
+    else if (dt.heard && !dt.quietSince) dt.quietSince = now;
+    if ((dt.heard && dt.quietSince && now - dt.quietSince > DT_QUIET_MS) || now - dt.startedAt > MAX_VOICE_MS) {
+      clearInterval(dt.poll);
+      dt.recorder.stop();
+    }
+  }, 100);
+}
+
+function dtSend(dt) {
+  if (!dt.on || state.dt !== dt) return;
+  const mime = (dt.recorder && dt.recorder.mimeType) || "audio/webm";
+  const blob = new Blob(dt.chunks, { type: mime });
+  // Nothing said (or a click of noise): keep listening.
+  if (!dt.heard || blob.size < 2000) { dtListen(dt); return; }
+  if (blob.size > MAX_VOICE_BYTES) { dtListen(dt); return; }
+  dtSay(dt, "...");
+  sendVoice(blob, mime);
+}
+
+// Her spoken line started: say so; when it ends, listen again.
+function dtHeard(audio) {
+  const dt = state.dt;
+  if (!dt || !dt.on || !audio) return;
+  dtSay(dt, "she's talking");
+  const again = () => setTimeout(() => dtListen(state.dt), 250);
+  audio.addEventListener("ended", again, { once: true });
+  audio.addEventListener("error", again, { once: true });
+}
+
+function dtEnd() {
+  const dt = state.dt;
+  state.dt = null;
+  if (!dt) return;
+  dt.on = false;
+  clearInterval(dt.poll);
+  try { if (dt.recorder && dt.recorder.state !== "inactive") dt.recorder.stop(); } catch { /* already stopped */ }
+  if (dt.stream) dt.stream.getTracks().forEach((t) => t.stop());
+  if (dt.ctx) dt.ctx.close().catch(() => {});
+  if (dt.bar) dt.bar.remove();
+  for (const b of callButtons()) { b.classList.remove("calling"); b.setAttribute("aria-pressed", "false"); }
 }
 
 // ------------------------------------------------------------ scene, settings
@@ -3736,7 +3874,9 @@ els.retryBtn.addEventListener("click", () => send());
 // The tools sheet: every row closes the sheet, then acts.
 els.tasteBtn.addEventListener("click", () => { closeMenus(false); send({ tasting: true }); });
 // fix0927 lane A: each of these acts the same from the menu and from its twin in sight.
-const onCallClick = () => { closeMenus(false); startCall(); };
+// Dirty talk call: in a bed scene the Call button runs the hands-free loop (dtToggle), never
+// the realtime call (OpenAI will not do explicit talk).
+const onCallClick = () => { closeMenus(false); if (state.dt || sceneIsIntimate()) dtToggle(); else startCall(); };
 const onStartClick = () => { closeMenus(false); letHerStart(); };
 const onPhotoClick = () => { closeMenus(false); els.fileInput.click(); };
 // fix0927 review: already texting, a tap writes nothing (no new scene version, no audit row,
