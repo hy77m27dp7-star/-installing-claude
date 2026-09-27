@@ -3908,6 +3908,11 @@ td .empty-label { padding: 16px 0; }
   .thread-bar .tv-btn { order: 11; margin: 0 auto 0 8px; min-height: 34px; padding: 0 12px; }
 }
 
+/* 2026-09-27: the call bar's level dot and Done button. */
+.dt-call .dt-level { width: 10px; height: 10px; flex: none; border-radius: 50%; background: #22d3ee; box-shadow: 0 0 8px rgba(34, 211, 238, 0.6); transition: transform 90ms linear; }
+.dt-call .dt-done { flex: none; }
+@media (max-width: 520px) { .dt-call { gap: 8px; margin: 0 8px 8px; padding: 6px 10px; } .dt-call .dt-name { display: none; } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

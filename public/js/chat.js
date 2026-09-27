@@ -2949,10 +2949,15 @@ function dtToggle() {
 function dtBar(dt) {
   const status = h("span", { class: "dt-status", role: "status", text: "connecting" });
   const end = h("button", { type: "button", class: "btn small dt-end", text: "Hang up", onclick: () => dtEnd() });
+  // 2026-09-27: on his iPhone nothing was ever sent (the level never crossed the fixed line).
+  // Done ends his turn by hand; the dot moves with his voice so he can see the mic hears him.
+  const done = h("button", { type: "button", class: "btn small dt-done", text: "Done", onclick: () => dtDone() });
+  const dot = h("span", { class: "dt-level", "aria-hidden": "true" });
+  dt.dot = dot;
   const face = h("img", { class: "avatar ring dt-face", alt: "", width: "36", height: "36", "data-avatar": "her" });
   const who = els.whoAvatar;
   if (who && who.src) face.src = who.src;
-  const bar = h("div", { class: "dt-call glass strong" }, face, h("span", { class: "dt-name", text: "Avelie" }), status, end);
+  const bar = h("div", { class: "dt-call glass strong" }, face, h("span", { class: "dt-name", text: "Avelie" }), dot, status, done, end);
   dt.bar = bar;
   dt.status = status;
   els.composer.parentNode.insertBefore(bar, els.composer);
@@ -3009,6 +3014,7 @@ async function dtOpenMic(dt) {
   try { if (dt.src) dt.src.disconnect(); } catch { /* already gone */ }
   dt.src = dt.ctx.createMediaStreamSource(dt.stream);
   dt.src.connect(dt.analyser);
+  if (dt.ctx.state !== "running") { try { await dt.ctx.resume(); } catch { /* the Done button still works */ } }
   return true;
 }
 
@@ -3051,7 +3057,13 @@ async function dtListen(dt) {
     for (const v of buf) { const x = (v - 128) / 128; sum += x * x; }
     const level = Math.sqrt(sum / buf.length);
     const now = Date.now();
-    if (level > DT_LEVEL) {
+    // The room's own level, learned while he is quiet; speech is a clear step above it (an
+    // iPhone's mic runs far quieter than a Mac's, so a fixed line never fired there).
+    if (dt.noise === undefined) dt.noise = level;
+    const line = Math.min(DT_LEVEL, Math.max(0.006, dt.noise * 2.5 + 0.004));
+    if (level <= line) dt.noise = dt.noise * 0.95 + level * 0.05;
+    if (dt.dot) dt.dot.style.transform = "scale(" + (1 + Math.min(1.5, level / Math.max(line, 0.001))).toFixed(2) + ")";
+    if (level > line) {
       dt.voicedMs = (dt.voicedMs || 0) + 100;
       if (dt.voicedMs >= DT_VOICED_MS) dt.heard = true;
       dt.quietSince = 0;
@@ -3064,9 +3076,20 @@ async function dtListen(dt) {
   }, 100);
 }
 
+// Done: he says his turn is over; what was recorded goes, whatever the level said.
+function dtDone() {
+  const dt = state.dt;
+  if (!dt || !dt.on || !dt.recorder || dt.recorder.state !== "recording") return;
+  if (Date.now() - dt.startedAt < MIN_VOICE_MS) return;
+  dt.forced = true;
+  clearInterval(dt.poll);
+  dt.recorder.stop();
+}
+
 function dtSend(dt) {
   if (!dt.on || state.dt !== dt) return;
   if (dt.discard) { dt.discard = false; return; }
+  if (dt.forced) { dt.forced = false; dt.heard = true; }
   const mime = (dt.recorder && dt.recorder.mimeType) || "audio/webm";
   const blob = new Blob(dt.chunks, { type: mime });
   // His turn is over: the mic closes while she answers.
