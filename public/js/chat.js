@@ -2863,7 +2863,7 @@ const TV_POLL_MS = 5000;
 const TV_REACT_GAP_MS = 45000;
 // ESPN's feed runs ahead of his TV (he said "shes ahead of me"): she sees the game as it
 // stood this long ago, the way his broadcast shows it.
-const TV_DELAY_MS = 55000; // 45 s: about 20 s ahead of his TV; 65 s: about 20 s behind (2026-09-27)
+const TV_DELAY_MS = 45000; // his word after 55 s: "10 seconds less delayed" (2026-09-27)
 const TV_KEY = "avelie.tv";
 
 function tvPaint() {
