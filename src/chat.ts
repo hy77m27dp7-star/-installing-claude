@@ -1511,7 +1511,7 @@ export function afterReply(env: Env, ctx: ExecutionContext, db: D1Database, sett
     if (speech) {
       response.spoken = true;
       ctx.waitUntil(
-        attachVoiceNote(env, db, { ...settings, voiceProvider: "elevenlabs" }, { messageId: assistantRow.id, conversationId: response.conversationId, text: speech, actor })
+        attachVoiceNote(env, db, { ...settings, voiceProvider: "elevenlabs" }, { messageId: assistantRow.id, conversationId: response.conversationId, text: speech, actor, spoken: true })
           .catch((e: unknown) => console.warn("spoken line failed", errorClass(e))),
       );
     }

@@ -48,6 +48,10 @@ export const OPENAI_TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcript
 export const ELEVENLABS_TTS_MODEL: string = ELEVENLABS_DEFAULT_MODEL;
 
 export const VOICE_PREFIX = "voice/";
+// 2026-09-27: a line she says out loud (the hands-free call, a bed scene) is speech, not a
+// voice note she sent: its audio lives under spoken/, and her sent list never counts it
+// (it had listed four "voice notes", and face to face she decided he had "called" her).
+export const SPOKEN_PREFIX = "spoken/";
 // More than she would ever say in one note; ElevenLabs stops at 5000.
 export const MAX_SPEECH_CHARS = 2500;
 const STT_TIMEOUT_MS = 90_000;
@@ -329,6 +333,8 @@ export interface VoiceNoteArgs {
   conversationId: string | null;
   text: string;
   actor?: string;
+  // Said out loud, not sent: stored under SPOKEN_PREFIX.
+  spoken?: boolean;
 }
 
 // 2026-09-27: on the hands-free call, silence and room noise came back from Whisper as
@@ -399,7 +405,7 @@ export async function attachVoiceNote(env: Env, db: D1Database, settings: Settin
     model = r.model;
     const chars = provider === "elevenlabs" && typeof r.chars === "number" ? r.chars : 0;
     const costMicro = provider === "elevenlabs" ? elevenLabsNoteCostMicro(chars, elevenLabsSettingsOf(settings).ttsPricePer1kChars) : 0;
-    const key = VOICE_PREFIX + args.messageId + ".mp3";
+    const key = (args.spoken === true ? SPOKEN_PREFIX : VOICE_PREFIX) + args.messageId + ".mp3";
     const mp3 = padMp3Silence(r.mp3 as Uint8Array | ArrayBuffer);
     await env.MEDIA.put(key, mp3, { httpMetadata: { contentType: "audio/mpeg" } });
     // Only her message, and only once: a second note for the same message is dropped.

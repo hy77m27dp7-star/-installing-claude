@@ -238,7 +238,8 @@ export async function listSent(db: D1Database, args: { now: Date; windowDays: nu
           }
         }
       }
-      if (typeof m.audio_key === "string" && m.audio_key) {
+      // A line she said out loud (spoken/) is not something she sent.
+      if (typeof m.audio_key === "string" && m.audio_key && !m.audio_key.startsWith("spoken/")) {
         const label = saidLine(m.content ?? "", VOICE_LABEL);
         out.push({ ...base, kind: "voice", label, words: sentWords(label) });
       }

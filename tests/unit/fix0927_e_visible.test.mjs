@@ -22,6 +22,7 @@ test("the note button is outside the workings switch", () => {
   const src = slice("function metaRow(", "\n}\n");
   const note = src.indexOf('class: "note-btn"');
   const operator = src.indexOf("if (state.operator && hers)");
+  assert.match(src, /class: "meta-heart"/);
   assert.ok(note > 0 && operator > 0 && note < operator, "note is appended before the operator-only block");
   assert.match(src, /if \(hers\) row\.append\(h\("button", \{ type: "button", class: "note-btn"/);
   assert.match(src, /const hers = m\.role === "assistant" && m\.channel !== "operator" && m\.id;/);

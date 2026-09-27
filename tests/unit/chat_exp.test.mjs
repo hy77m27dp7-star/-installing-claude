@@ -151,16 +151,17 @@ test("the phone slide-in and the hold-to-record handling are gone", () => {
 
 // fix0927: the note under her reply is always shown (Justin could not find it); why, keep and
 // the flags stay under the workings switch.
-test("metaRow: the note always on her reply; why, keep and the flags only under state.operator (built and counted)", () => {
+test("metaRow: the note, the heart and why always on her reply; keep/drop and the flags only under state.operator (built and counted)", () => {
   const build = (operator) => {
     const state = { operator, chipsFor: new Map() };
-    const metaRow = new Function("h", "state", "clockTime", "openWhy", "toggleNoteSheet", "markButton", "chip", "flagCodes",
-      fnSrc("metaRow") + "\nreturn metaRow;")(fakeH, state, () => "9:04 PM", () => {}, () => {}, () => fakeH("button", { class: "mark", text: "keep" }), (t) => fakeH("span", { class: "chip", text: t }), () => ["written_joke"]);
+    const metaRow = new Function("h", "state", "clockTime", "openWhy", "toggleNoteSheet", "markButton", "chip", "flagCodes", "heartIcon", "toggleKeep", "markOf",
+      fnSrc("metaRow") + "\nreturn metaRow;")(fakeH, state, () => "9:04 PM", () => {}, () => {}, () => fakeH("button", { class: "mark", text: "keep" }), (t) => fakeH("span", { class: "chip", text: t }), () => ["written_joke"], () => fakeH("span", { class: "heart-icon" }), async () => {}, () => "none");
     return metaRow({ id: "m1", role: "assistant", channel: "story", created_at: "2026-09-26T01:04:00Z", flags_json: "[]" });
   };
   const off = build(false);
-  assert.equal(off.children.length, 2, "the time and the note");
-  assert.deepEqual(texts(off), ["9:04 PM", "note"]);
+  // 2026-09-27: the heart and why beside the note, always.
+  assert.equal(off.children.length, 4, "the time, the note, the heart and why");
+  assert.deepEqual(texts(off).filter(Boolean), ["9:04 PM", "note", "why"]);
   const on = texts(build(true));
   for (const t of ["why", "note", "keep", "written_joke"]) assert.ok(on.includes(t), t);
 });

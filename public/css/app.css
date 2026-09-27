@@ -3889,6 +3889,14 @@ td .empty-label { padding: 16px 0; }
 .voice-pending .vp-dots span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes vp-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
 
+/* 2026-09-27: the heart beside note and why under every line of hers. */
+.meta .meta-heart { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 0; border: 0; background: transparent; color: var(--text-2); opacity: 0.75; cursor: pointer; }
+.meta .meta-heart svg { width: 15px; height: 15px; }
+.meta .meta-heart:hover { opacity: 1; color: var(--text); }
+.meta .meta-heart[aria-pressed="true"] { opacity: 1; color: #ff5a7a; }
+.meta .meta-heart[aria-pressed="true"] svg { fill: currentColor; }
+.meta .why { opacity: 0.75; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

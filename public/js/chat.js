@@ -1022,8 +1022,21 @@ function metaRow(m) {
   // fix0927: the note under her reply is always there (Not her, Too clever, his own note);
   // the redesign had hidden it behind a double-click or a long press.
   if (hers) row.append(h("button", { type: "button", class: "note-btn", text: "note", "aria-label": "Note on this reply", onclick: () => toggleNoteSheet(m) }));
+  // 2026-09-27, Justin: "what fucking heart". The heart (keep this line) and why sit beside
+  // the note, always; before they lived only in the double-click bar.
+  if (hers) {
+    let heart = null;
+    heart = h("button", {
+      type: "button", class: "meta-heart", "aria-pressed": String(markOf(m) === "keep"), "aria-label": "Keep this line", title: "Keep this line",
+      onclick: async () => {
+        await toggleKeep(m, heart);
+        heart.setAttribute("aria-pressed", String(markOf(m) === "keep"));
+      },
+    }, heartIcon());
+    row.append(heart);
+    row.append(h("button", { type: "button", class: "why", text: "why", "aria-label": "Why she said this", onclick: () => openWhy(m) }));
+  }
   if (state.operator && hers) {
-    row.append(h("button", { type: "button", class: "why", text: "why", onclick: () => openWhy(m) }));
     row.append(markButton(m));
     const extra = state.chipsFor.get(m.id);
     if (extra && extra.length) row.append(h("span", { class: "chips" }, extra));
