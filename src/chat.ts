@@ -139,6 +139,9 @@ export interface TurnOptions {
   // 2026-09-27: the turn came from the hands-free call: her reply is spoken in her voice
   // (ElevenLabs), whatever the scene. The performer still follows the scene.
   speak?: boolean;
+  // 2026-09-27: a one-time note for this turn only (the hands-free call while apart: he is
+  // on the phone with her). Appended after the state sections like the opener's note.
+  turnNote?: string;
 }
 
 // Dirty talk mode: whether the scene record says an intimate Together scene she chose is
@@ -691,7 +694,12 @@ export async function prepareTurn(
     hisFace: opts?.hisFace,
     performers: sideB ? [performer, sideB] : [performer],
   });
-  const statePart = opener ? assembled.systemParts.state + SYSTEM_SEPARATOR + openerBlock(openerNote) : assembled.systemParts.state;
+  const turnNote = !opener && typeof opts?.turnNote === "string" && opts.turnNote.trim() ? opts.turnNote.trim() : "";
+  const statePart = opener
+    ? assembled.systemParts.state + SYSTEM_SEPARATOR + openerBlock(openerNote)
+    : turnNote
+      ? assembled.systemParts.state + SYSTEM_SEPARATOR + "ONE-TIME OPERATOR NOTE (not part of the story; he did not write this and never sees it)\n" + turnNote
+      : assembled.systemParts.state;
   const system = assembled.systemParts.prefix + SYSTEM_SEPARATOR + statePart;
   const inputChars = system.length + assembled.messages.reduce((n, m) => n + m.content.length, 0);
   let estimate = 0;

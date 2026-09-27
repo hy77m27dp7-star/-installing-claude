@@ -64,7 +64,7 @@ import { createGroundingRow, deleteGroundingRow, outfitNow, timeOfDay, todayRows
 import { geocode, getWeather } from "./weather";
 import { generatePortrait } from "./portraits";
 import { localParts } from "./life";
-import { endCall, getCall, listCallMessages, listCalls, startCall, tickCall } from "./calls";
+import { CALL_NOTE, endCall, getCall, listCallMessages, listCalls, startCall, tickCall } from "./calls";
 import { pollClip, startClip } from "./video";
 import {
   blindCandidates, expiresAtOf, getTasting, ledger as tastingLedger, listCandidates, pickTasting, promote as promoteTasting, reveal as revealTasting,
@@ -927,6 +927,13 @@ const OPENER_NOTE = FIRST_TEXT_NOTE;
 // 2026-09-26: "Let her start" pressed in the middle of a Together scene (right after their first
 // kiss at the record store) sent a first text about her work day, as if they were apart, and
 // retold a story she had already told him. Together, she makes the next move in the scene.
+// 2026-09-27, Justin: "fix it for textin mode obviously". The hands-free call while they are
+// apart is a phone call: she knows it, and she talks the way she does on the phone.
+const PHONE_TURN_NOTE =
+  "He called you and you picked up: you are on the phone with him right now, not texting. His last message is what he just said out loud on the call. "
+  + "Answer out loud, the way you talk on the phone: spoken sentences, no asterisk actions (he cannot see you), no bracket markers, nothing that only works on a screen. "
+  + CALL_NOTE.replace(/^ON THE PHONE \(now\)\n/, "");
+
 const SCENE_OPENER_NOTE =
   "You are with him right now, in the scene as the record has it, and it is your move. Continue from exactly where the last messages left off: what you do or say next, in the moment, "
   + "in present tense, the way the scene is going. Nothing about your day or work, no news, no story you have already told him, nothing that ignores what just happened between you. "
@@ -1149,9 +1156,17 @@ route("POST", "/api/conversations/:id/voice", async (c) => {
 
   let r: TurnResponse;
   try {
-    // The hands-free call sends speak=1: her reply comes back spoken in her voice.
+    // The hands-free call sends speak=1: her reply comes back spoken in her voice. Together,
+    // he is talking to her face to face (MODE says so). Apart, he called her: she is told.
     const speak = formString(form, "speak", 8, false) === "1";
-    r = await runTurn(c.env, c.ctx, c.db, settings, id, transcript, idempotencyKey, c.actor, speak ? { speak: true } : undefined);
+    let turnNote: string | undefined;
+    if (speak) {
+      try {
+        const scene = await getCurrentState<SceneState>(c.db, "scene");
+        if (sceneMode(scene.state.status) !== "together") turnNote = PHONE_TURN_NOTE;
+      } catch { /* no scene record: texting, so a phone call */ turnNote = PHONE_TURN_NOTE; }
+    }
+    r = await runTurn(c.env, c.ctx, c.db, settings, id, transcript, idempotencyKey, c.actor, speak ? { speak: true, ...(turnNote ? { turnNote } : {}) } : undefined);
   } catch (e) {
     await deleteKeys(c.env, [key]);
     throw e;

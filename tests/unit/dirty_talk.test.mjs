@@ -80,3 +80,12 @@ test("padMp3Silence: silent MPEG-1 Layer III frames after the ID3 tag, in the fi
   const junk = new Uint8Array([1, 2, 3, 4, 5]);
   assert.deepEqual(voiceMod.padMp3Silence(junk), junk, "not an mp3: unchanged");
 });
+
+import { readFileSync as rf } from "node:fs";
+test("the hands-free call while apart tells her she is on the phone; together it does not", () => {
+  const api = rf(new URL("../../src/api.ts", import.meta.url), "utf8");
+  const chat = rf(new URL("../../src/chat.ts", import.meta.url), "utf8");
+  assert.match(api, /const PHONE_TURN_NOTE =\s*"He called you and you picked up: you are on the phone with him right now, not texting\./);
+  assert.match(api, /if \(sceneMode\(scene\.state\.status\) !== "together"\) turnNote = PHONE_TURN_NOTE;/);
+  assert.match(chat, /turnNote\s*\? assembled\.systemParts\.state \+ SYSTEM_SEPARATOR \+ "ONE-TIME OPERATOR NOTE/);
+});
