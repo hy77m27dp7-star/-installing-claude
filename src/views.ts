@@ -220,6 +220,76 @@ export function parseViewOps(
   return out;
 }
 
+// Fix 2026-09-27 (the rerun duplicates): what a night files is settled against the reads she
+// already holds, so a forced rerun over the same window files nothing and a read is never
+// minted twice. Live case: "you asked before you kissed me" was confirmed three times in one
+// night from the SAME two messages, each rerun raising the confidence and writing a version,
+// the third leaving a second active row with the same subject.
+//   - confirm or weaken: dropped when every evidence id is already in the read's evidence
+//     (nothing new was seen; no evidence at all is nothing new either);
+//   - new: when its subject or its words (subjectNorm) match an active read's subject_norm or
+//     words, dropped unless it brings evidence the read lacks, and then it becomes a confirm
+//     of that read (her existing words kept);
+//   - one op per read, and one new per subject: a later op on the same read (or a second new
+//     of the same subject) folds its evidence into the first when it is the same op, and is
+//     dropped when it is another.
+export function settleViewOps(ops: ViewOpParsed[], reads: HerViewRow[]): ViewOpParsed[] {
+  const active = (Array.isArray(reads) ? reads : []).filter((r) => !!r && typeof r.id === "string" && r.status === "active");
+  const byId = new Map(active.map((r) => [r.id, r] as const));
+  const had = new Map(active.map((r) => [r.id, new Set(parseEvidence(r.evidence_json))] as const));
+  const readKeys = (r: HerViewRow): string[] => [r.subject_norm || subjectNorm(r.subject), subjectNorm(r.view)].filter(Boolean);
+  const opKeys = (o: ViewOpParsed): string[] => [subjectNorm(o.subject), subjectNorm(o.view)].filter(Boolean);
+  const out: ViewOpParsed[] = [];
+  const onRead = new Map<string, ViewOpParsed>();
+  const fold = (into: ViewOpParsed, from: ViewOpParsed): void => {
+    for (const id of from.evidence) if (!into.evidence.includes(id) && into.evidence.length < OP_EVIDENCE_MAX) into.evidence.push(id);
+    into.confidence = into.op === "weaken" ? Math.min(into.confidence, from.confidence) : Math.max(into.confidence, from.confidence);
+  };
+  const place = (o: ViewOpParsed): void => {
+    const vid = o.viewId;
+    if (!vid) {
+      out.push(o);
+      return;
+    }
+    const first = onRead.get(vid);
+    if (!first) {
+      onRead.set(vid, o);
+      out.push(o);
+      return;
+    }
+    if (first.op === o.op && o.op !== "wrong") fold(first, o);
+  };
+  for (const raw of Array.isArray(ops) ? ops : []) {
+    if (!raw) continue;
+    const o: ViewOpParsed = { ...raw, evidence: Array.isArray(raw.evidence) ? raw.evidence.slice() : [] };
+    if (o.op === "confirm" || o.op === "weaken") {
+      const seen = o.viewId ? had.get(o.viewId) : undefined;
+      if (seen && !o.evidence.some((id) => !seen.has(id))) continue;
+      place(o);
+      continue;
+    }
+    if (o.op === "new") {
+      const keys = opKeys(o);
+      const match = active.find((r) => readKeys(r).some((k) => keys.includes(k)));
+      if (match) {
+        const seen = had.get(match.id) ?? new Set<string>();
+        if (!o.evidence.some((id) => !seen.has(id))) continue;
+        place({ op: "confirm", viewId: match.id, subject: match.subject, view: cleanLine(match.view, VIEW_MAX) || o.view, confidence: o.confidence, evidence: o.evidence });
+        continue;
+      }
+      const twin = out.find((x) => x.op === "new" && opKeys(x).some((k) => keys.includes(k)));
+      if (twin) {
+        fold(twin, o);
+        continue;
+      }
+      out.push(o);
+      continue;
+    }
+    place(o);
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------ the store
 
 const STATUSES = ["active", "proven_wrong", "all"] as const;
@@ -288,12 +358,21 @@ async function supersedeView(
     created_at: t,
     updated_at: t,
   };
-  await db.batch([
+  const stmts: D1PreparedStatement[] = [
     db.prepare("UPDATE her_views SET status = 'superseded', updated_at = ?2 WHERE id = ?1 AND status = 'active'").bind(old.id, t),
-    insertViewStmt(db, row),
-    auditStmt(db, actor, action, "her_view", row.id, old, row),
-  ]);
+  ];
+  if (row.status === "active") stmts.push(supersedeSubjectStmt(db, row.subject_norm, row.id, t));
+  stmts.push(insertViewStmt(db, row), auditStmt(db, actor, action, "her_view", row.id, old, row));
+  await db.batch(stmts);
   return row.id;
+}
+
+// Fix 2026-09-27: whenever a new active row is written for a subject, every OTHER active row of
+// that subject is superseded in the same batch, so two active reads of one subject can never
+// exist (two confirms of one read racing each other both read it active; the second used to
+// leave a second active row behind).
+function supersedeSubjectStmt(db: D1Database, norm: string, keepId: string, t: string): D1PreparedStatement {
+  return db.prepare("UPDATE her_views SET status = 'superseded', updated_at = ?2 WHERE status = 'active' AND subject_norm = ?1 AND id != ?3").bind(norm, t, keepId);
 }
 
 async function requireActive(db: D1Database, id: unknown): Promise<HerViewRow> {
@@ -305,10 +384,15 @@ async function requireActive(db: D1Database, id: unknown): Promise<HerViewRow> {
 
 async function confirmView(db: D1Database, old: HerViewRow, payload: Record<string, unknown>, source: string, actor: string): Promise<string> {
   const view = payloadText(payload.view, VIEW_MAX) ?? old.view;
+  const had = parseEvidence(old.evidence_json);
+  const incoming = stringList(payload.evidence, 1000);
+  // Fix 2026-09-27: a confirm that saw nothing new (no evidence the read lacks) and keeps her
+  // words is the read she already holds: its id, no version written, no confidence raised.
+  if (!incoming.some((id) => !had.includes(id)) && view.trim() === String(old.view ?? "").trim()) return old.id;
   const c = payloadNumber(payload.confidence);
   const confidence = clampConfidence(Math.max(Number(old.confidence) || 0, c ?? 0));
   const union: string[] = [];
-  for (const id of [...parseEvidence(old.evidence_json), ...stringList(payload.evidence, 1000)]) if (!union.includes(id)) union.push(id);
+  for (const id of [...had, ...incoming]) if (!union.includes(id)) union.push(id);
   return supersedeView(db, old, { view, confidence, evidence: union.slice(-VIEW_EVIDENCE_MAX), status: "active" }, source, actor, "view.confirm");
 }
 
@@ -343,7 +427,7 @@ export async function applyViewProposal(db: D1Database, payload: Record<string, 
       created_at: t,
       updated_at: t,
     };
-    await db.batch([insertViewStmt(db, row), auditStmt(db, actor, "view.create", "her_view", row.id, null, row)]);
+    await db.batch([supersedeSubjectStmt(db, norm, row.id, t), insertViewStmt(db, row), auditStmt(db, actor, "view.create", "her_view", row.id, null, row)]);
     return row.id;
   }
   if (op === "confirm") {
@@ -466,7 +550,8 @@ export async function runViewPass(env: Env, db: D1Database, settings: Settings, 
     const stopped = call.reason === "nightly budget" || call.reason === "caps";
     return { step: "views", status: stopped ? "skipped" : "failed", reason: call.reason, proposalIds: [], detail: { messages: messages.length } };
   }
-  const ops = parseViewOps(call.text, known, messageIds, perNight, blocked);
+  const parsed = parseViewOps(call.text, known, messageIds, perNight, blocked);
+  const ops = settleViewOps(parsed, reads);
   const rows: NightlyProposal[] = ops.map((o) => {
     const oldView = o.viewId ? known.get(o.viewId)?.view ?? o.view : o.view;
     const text = o.op === "new"
@@ -493,6 +578,6 @@ export async function runViewPass(env: Env, db: D1Database, settings: Settings, 
     status: "done",
     reason: ops.length ? `${proposalIds.length} filed` : "nothing changed",
     proposalIds,
-    detail: { messages: messages.length, reads: reads.length, ops: ops.length, filed: proposalIds.length },
+    detail: { messages: messages.length, reads: reads.length, ops: ops.length, settled: parsed.length - ops.length, filed: proposalIds.length },
   };
 }

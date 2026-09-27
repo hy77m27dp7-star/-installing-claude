@@ -168,6 +168,15 @@ export interface LoadOptions {
   mentionTexts?: Array<{ hers: boolean; text: string }>;
 }
 
+// Fix 2026-09-27: whether the rhythm cue may offer her a voice note this turn. Never in a
+// Together scene (she is right there with him, and chat.ts makes no note there either); never
+// with voice notes off or no voice provider configured.
+export function voiceCueAllowed(settings: Settings, env: Env | undefined, mode: string): boolean {
+  if (mode === "together") return false;
+  if (settings.voiceMode === "off" || env === undefined) return false;
+  return voiceConfigured(env, settings);
+}
+
 // Threads the prompt may know about: live ones and finished ones (a done event is still
 // something she could mention); dropped and superseded rows are gone from her world.
 function livingThreads(threads: LifeThread[]): LifeThread[] {
@@ -402,7 +411,7 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
   // rolled against her last three replies and his message; the v3 shape cue is its mapping.
   let rhythm: Rhythm | null = null;
   if (opts.cues !== false) {
-    const voiceAllowed = settings.voiceMode !== "off" && opts.env !== undefined && attempt("voiceConfigured", () => voiceConfigured(opts.env as Env, settings), false);
+    const voiceAllowed = attempt("voiceCueAllowed", () => voiceCueAllowed(settings, opts.env, mode), false);
     const pendingText = opener ? "" : opts.hisText ?? "";
     rhythm = attempt("rhythmCue", () => rhythmCue(seed + ":cue:" + turnKey, (opts.recentAssistantTexts ?? []).slice(-RHYTHM_WINDOW), {
       enabled: settings.textureCuesEnabled !== false,

@@ -34,7 +34,7 @@
 // once and holds a held scene's first weather; the provenance carries the clock, the time
 // since, the rhythm and the ids of every v5 section that rode.
 import { assembleContext, keywords } from "./context";
-import { SYSTEM_SEPARATOR, isInferredFact, moodPhase } from "./prompt";
+import { SYSTEM_SEPARATOR, isInferredFact, moodPhase, sceneMode } from "./prompt";
 import { holdWeatherStmt, timeSinceSection } from "./clock";
 import { beatLines, beatLinesByWant } from "./arcs";
 import { sentForCheck } from "./honest";
@@ -61,7 +61,7 @@ import { broughtUpStmts } from "./wants";
 import { signature } from "./imperfection";
 import { faceShownStmt } from "./hisFace";
 import {
-  dayKey, findByIdempotencyKey, getConversation, insertAssetStmt, insertMessageStmt, insertModelRunStmt, newId, nextSeq, nowIso,
+  dayKey, findByIdempotencyKey, getConversation, getCurrentState, insertAssetStmt, insertMessageStmt, insertModelRunStmt, newId, nextSeq, nowIso,
   touchConversationStmt, usageStmt,
 } from "./db";
 import { ApiHttpError } from "./errors";
@@ -70,7 +70,7 @@ import { safeErrorMessage } from "./providers/types";
 import type { SongRef } from "./markers";
 import type {
   AssembledContext, ChatMessage, CheckContext, CheckResult, Env, Flag, GenerateRequest, GenerateResult, MessageRow, ModelRunRow,
-  PromptCallback, PromptState, ProviderName, RecallPick, Settings, TextProvider, TurnResponse, VisualAssetRow, VoiceLine,
+  PromptCallback, PromptState, ProviderName, RecallPick, SceneState, Settings, TextProvider, TurnResponse, VisualAssetRow, VoiceLine,
 } from "./types";
 
 const MICRO = 1_000_000;
@@ -1158,7 +1158,9 @@ export async function commitReply(
   const outputTokens = runs.reduce((n, r) => n + r.outputTokens, 0);
   const micro = runs.reduce((n, r) => n + r.micro, 0);
   const latencyMs = runs.reduce((n, r) => n + (r.run.latency_ms ?? 0), 0);
-  const wantsVoice = voiceWanted(settings, chosen.voice);
+  // Fix 2026-09-27: no voice note for a reply written inside a Together scene.
+  const together = assembled.state.mode === "together";
+  const wantsVoice = voiceWanted(settings, chosen.voice, together);
   const mediaId = chosen.mediaId ?? null;
   const flags = chosen.checks.flags;
   const tasting: Record<string, unknown> | null = extra.tasting ?? (extra.tastingId ? { id: extra.tastingId } : null);
@@ -1363,7 +1365,7 @@ export async function commitReply(
     assistantRow = await attachClip(prepared.env, db, settings, assistantRow, flags, clipWanted, prepared.actor);
   }
 
-  return {
+  const response: TurnResponse = {
     conversationId,
     userMessage: userRow,
     assistantMessage: assistantRow,
@@ -1381,6 +1383,23 @@ export async function commitReply(
     imagePending: photoRequest !== null,
     replayed: false,
   };
+  REPLY_TOGETHER.set(response, together);
+  return response;
+}
+
+// Fix 2026-09-27: whether each committed reply was written inside a Together scene, keyed by the
+// response commitReply returned, so afterReply (the turn and both tasting paths hand it that same
+// response) never makes a voice note for one. A response it does not know reads the current
+// scene before any note is made.
+const REPLY_TOGETHER = new WeakMap<TurnResponse, boolean>();
+
+async function sceneIsTogether(db: D1Database): Promise<boolean> {
+  try {
+    const scene = await getCurrentState<SceneState>(db, "scene");
+    return sceneMode(scene.state.status) === "together";
+  } catch {
+    return false;
+  }
 }
 
 // After the response: her voice note (SPEC_V2 section S) and the proposal pass, both best
@@ -1391,9 +1410,16 @@ export async function commitReply(
 export function afterReply(env: Env, ctx: ExecutionContext, db: D1Database, settings: Settings, response: TurnResponse, voice: boolean, actor: string): void {
   if (response.replayed) return;
   const assistantRow = response.assistantMessage;
-  if (voiceWanted(settings, voice)) {
+  // Fix 2026-09-27: never a voice note in a Together scene (her [voice] marker was already
+  // stripped from the text; only the note is not made).
+  const together = REPLY_TOGETHER.get(response);
+  if (together !== true && voiceWanted(settings, voice)) {
+    const known = together === false;
     ctx.waitUntil(
-      attachVoiceNote(env, db, settings, { messageId: assistantRow.id, conversationId: response.conversationId, text: assistantRow.content, actor })
+      (known ? Promise.resolve(false) : sceneIsTogether(db))
+        .then((inScene) => (voiceWanted(settings, voice, inScene)
+          ? attachVoiceNote(env, db, settings, { messageId: assistantRow.id, conversationId: response.conversationId, text: assistantRow.content, actor })
+          : null))
         .catch((e: unknown) => console.warn("voice note failed", errorClass(e))),
     );
   }
