@@ -11,7 +11,8 @@
 //   .tile.envelope                   an untold fact, closed: the subject and a "sealed" chip
 //   .mem-list / .mem-row             the fading and returned lists (.text, .age)
 //   .mem-timeline / .mem-node        the history line and its nodes (.title, .when)
-//   .kept-row                        kept automatically today (kind chip, .text, .when)
+//   .kept-row                        kept automatically today (.kicker kind words, .text, .when)
+//   .empty-label                     an empty list, a quiet label (experience pass 7.5)
 //   .view-row                        one read of him (.text, .progress meter, chips, "not true")
 //   .artist-row                      one artist on his list (name, Remove)
 //   .chip.guess                      an inferred fact (her guess, not his words)
@@ -26,6 +27,14 @@ const STATE_MEMORY = "/state#memory";
 const TEXT_MAX = 160;
 // The key the chat page reads to reopen a conversation (public/js/chat.js).
 const CONVERSATION_KEY = "avelie.conversation";
+// "Kept today" reads as words: the kind as a kicker in human words (the Record Inbox's).
+const KIND_WORDS = {
+  avelie_fact: "about her", justin_fact: "about him", relationship: "where you stand", scene: "scene",
+  history: "a moment", private_language: "private language", opinion_change: "her opinion", unknown: "a question",
+  life: "her life", life_update: "her life", want: "a want", want_update: "a want", ask: "an ask", ask_update: "an ask",
+  grounding: "her day", want_beat: "beat", beat_outcome: "beat outcome", her_view: "her read", fact_merge: "same fact",
+  fact_mark: "guess", world_fact: "world fact", known_artist: "his ears",
+};
 const VIEW_STATUS = { active: ["active", "ok"], proven_wrong: ["proven wrong", "amber"], retired: ["retired", ""] };
 
 // Guarded so the module can be imported under Node (a test) without a document.
@@ -58,14 +67,15 @@ function listOf(r, key) {
   return r && Array.isArray(r[key]) ? r[key] : [];
 }
 
-function none(el) {
-  el.append(h("div", { class: "list-row" }, chip("none")));
+// An empty list shows a quiet label, never a "none" chip.
+function emptyLabel(text) {
+  return h("div", { class: "empty-label", text: text || "Nothing yet" });
 }
 
-function fill(el, rows, render) {
+function fill(el, rows, render, emptyText) {
   if (!el) return;
   clear(el);
-  if (!rows.length) { none(el); return; }
+  if (!rows.length) { el.append(emptyLabel(emptyText)); return; }
   for (const r of rows) el.append(render(r));
 }
 
@@ -120,7 +130,7 @@ function renderFacts(facts) {
   const box = els.facts;
   if (!box) return;
   box.classList.add("memory-field");
-  fill(box, facts, tile);
+  fill(box, facts, tile, "Nothing yet");
 }
 
 // ------------------------------------------------------------ fading and returned
@@ -139,13 +149,13 @@ function factRow(f, extraChip) {
 function renderFading(facts) {
   if (els.fading) els.fading.classList.add("mem-list");
   const rows = facts.filter((f) => f.phase === "fading" || f.phase === "faded");
-  fill(els.fading, rows, (f) => factRow(f, null));
+  fill(els.fading, rows, (f) => factRow(f, null), "Nothing fading");
 }
 
 function renderReturned(facts) {
   if (els.returned) els.returned.classList.add("mem-list");
   const rows = facts.filter((f) => f.returned === true);
-  fill(els.returned, rows, (f) => factRow(f, chip("back", "back")));
+  fill(els.returned, rows, (f) => factRow(f, chip("back", "back")), "Nothing came back");
 }
 
 // ------------------------------------------------------------ the history timeline
@@ -163,7 +173,7 @@ function renderHistory(history) {
   if (!box) return;
   box.classList.add("mem-timeline");
   const rows = history.slice().sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0));
-  fill(box, rows, node);
+  fill(box, rows, node, "No moments");
 }
 
 // ------------------------------------------------------------ sealed
@@ -180,20 +190,22 @@ function renderSealed(sealed) {
   const box = els.sealed;
   if (!box) return;
   box.classList.add("memory-field");
-  fill(box, sealed, envelope);
+  fill(box, sealed, envelope, "Nothing untold");
 }
 
 // ------------------------------------------------------------ kept today
 
+// One thing kept today, as words: the kind as a kicker, what was kept, when.
 function keptRow(p) {
+  const kind = String(p.kind || "");
   return h("div", { class: "kept-row", "data-id": String(p.id || "") },
-    chip(String(p.kind || "").replace(/_/g, " "), "accent"),
+    h("span", { class: "kicker", text: KIND_WORDS[kind] || kind.replace(/_/g, " ") }),
     h("span", { class: "text", text: truncate(String(p.proposal || ""), 200) }),
     h("span", { class: "when", text: fmtTime(p.decidedAt) }));
 }
 
 function renderKept(kept) {
-  fill(els.kept, kept, keptRow);
+  fill(els.kept, kept, keptRow, "Nothing kept today");
 }
 
 // ------------------------------------------------------------ her read of him (v5 section 3)
@@ -260,7 +272,7 @@ function renderViews(views) {
   const rows = views.filter((v) => v && v.status !== "superseded");
   const order = { active: 0, proven_wrong: 1, retired: 2 };
   rows.sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || (Number(b.confidence) || 0) - (Number(a.confidence) || 0));
-  fill(els.views, rows, viewRow);
+  fill(els.views, rows, viewRow, "No reads yet");
 }
 
 // ------------------------------------------------------------ his ears (v5 section 9)
@@ -292,7 +304,7 @@ function renderArtists(k) {
   const disliked = k && Array.isArray(k.disliked) ? k.disliked : [];
   for (const [label, rows, kind] of [["known", known, "accent"], ["not for me", disliked, "amber"]]) {
     const list = h("div", { class: "artist-list" });
-    fill(list, rows, artistRow);
+    fill(list, rows, artistRow, "No artists");
     box.append(h("div", { class: "stack tight" }, h("div", { class: "chips" }, chip(label + " " + rows.length, kind)), list));
   }
 }

@@ -13,24 +13,21 @@
 <link rel="icon" href="/icons/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/css/app.css">
+<link rel="preload" href="/fonts/fraunces-latin-full-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-sans-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body class="page-memory">
 <header class="top">
   <a class="brand" href="/" aria-label="Avelie, home">
     <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
-    <span class="wordmark">AVELIE</span>
+    <span class="wordmark">Avelie</span>
   </a>
   <nav class="nav" aria-label="Sections"></nav>
 </header>
 
 <main class="page memory">
-  <div class="row between">
-    <div class="row">
-      <h2 class="section-title">What she remembers</h2>
-      <span class="chips" id="memoryStatus"></span>
-    </div>
-    <div class="memory-legend" id="memoryLegend" aria-label="Legend"></div>
-  </div>
+  <header class="page-head"><h1 class="display xl">Memory</h1><span class="chips" id="memoryStatus"></span></header>
+  <div class="memory-legend" id="memoryLegend" aria-label="Legend"></div>
 
   <section class="card stack" aria-label="About him">
     <h2 class="section-title">About him</h2>

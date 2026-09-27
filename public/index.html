@@ -13,79 +13,48 @@
 <link rel="icon" href="/icons/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/css/app.css">
+<link rel="preload" href="/fonts/fraunces-latin-full-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-sans-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body class="page-chat">
+<img class="backdrop" id="backdrop" alt="" aria-hidden="true" decoding="async" data-manual>
 <header class="top">
   <a class="brand" href="/" aria-label="Avelie, home">
     <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
-    <span class="wordmark">AVELIE</span>
+    <span class="wordmark">Avelie</span>
   </a>
   <nav class="nav" aria-label="Sections"></nav>
 </header>
 
 <main class="chat">
-  <aside class="sidebar" id="sidebar" aria-label="Conversations">
+  <aside class="sidebar chapters glass strong" id="sidebar" aria-label="Chapters">
     <div class="sidebar-head">
-      <button type="button" class="btn primary grow" id="newChat">New chat</button>
-      <button type="button" class="btn ghost phone-only" id="closeDrawer">Close</button>
+      <h2 class="display">Chapters</h2>
+      <button type="button" class="icon-btn" id="newChat" aria-label="New chapter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button type="button" class="icon-btn phone-only" id="closeDrawer" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
     <ul class="conv-list" id="convList"></ul>
   </aside>
 
   <section class="thread-wrap">
     <div class="thread-bar">
-      <button type="button" class="icon-btn phone-only" id="openDrawer" aria-controls="sidebar" aria-expanded="false" aria-label="Chats">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-      </button>
-      <span class="conv-title" id="convTitle"></span>
-      <div class="bar-tools">
-        <span class="chip accent hidden" id="clockChip" role="status"></span>
-        <div class="menu-wrap">
-          <div class="seg small" role="group" aria-label="Scene">
-            <button type="button" id="sceneTogether" aria-pressed="false">Together</button>
-            <button type="button" id="sceneApart" aria-pressed="false">Texting</button>
-          </div>
-          <div class="popover hidden" id="placesPop">
-            <div class="places" id="placesList"></div>
-            <input type="text" id="placeInput" placeholder="Where" maxlength="200" aria-label="Where">
-            <span class="chip amber hidden" id="placeNeeded" role="status">place needed</span>
-            <div class="row end">
-              <button type="button" class="btn small ghost" id="placeCancel">Cancel</button>
-              <button type="button" class="btn small primary" id="placeSet">Together</button>
-            </div>
-          </div>
-        </div>
-        <button type="button" class="btn small pill quiet hidden" id="letHerStart">Let her start</button>
-        <button type="button" class="icon-btn hidden" id="callBtn" aria-label="Call" aria-pressed="false">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6.2 6.2l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 1.9z"/></svg>
-        </button>
-        <button type="button" class="icon-btn" id="phoneBtn" aria-label="Phone" aria-controls="phoneDrawer" aria-expanded="false">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18h2"/></svg>
-        </button>
-        <button type="button" class="icon-btn" id="photosBtn" aria-label="Photos" aria-controls="photosDrawer" aria-expanded="false">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M4 16l5-5 4 4 3-3 4 4"/><path d="M15.5 9.5h.01"/></svg>
-        </button>
-        <div class="menu-wrap">
-          <button type="button" class="icon-btn" id="moreBtn" aria-label="More" aria-haspopup="true" aria-expanded="false" aria-controls="moreMenu">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg>
-          </button>
-          <div class="menu hidden" id="moreMenu">
-            <label class="switch" for="timingToggle">
-              <input type="checkbox" id="timingToggle" checked>
-              <span class="track"></span>
-              <span class="switch-label">Human timing</span>
-            </label>
-            <label class="switch warm" for="operatorToggle">
-              <input type="checkbox" id="operatorToggle">
-              <span class="track"></span>
-              <span class="switch-label">Operator</span>
-            </label>
-          </div>
+      <button type="button" class="icon-btn phone-only" id="openDrawer" aria-controls="sidebar" aria-expanded="false" aria-label="Chapters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
+      <div class="her-who">
+        <img class="avatar ring" id="whoAvatar" alt="" width="40" height="40" decoding="async" data-avatar="her">
+        <div class="her-who-text">
+          <span class="her-name">Avelie</span>
+          <button type="button" class="place-line" id="placeLine" aria-haspopup="dialog" aria-controls="placesPop" aria-expanded="false"></button>
         </div>
       </div>
+      <button type="button" class="icon-btn" id="moreBtn" aria-label="Tools" aria-haspopup="dialog" aria-expanded="false" aria-controls="moreMenu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></button>
     </div>
 
     <div class="thread" id="thread" aria-live="polite">
+      <header class="chapter-head" id="chapterHead" aria-live="off">
+        <button type="button" class="chapter-name" id="convTitle"></button>
+        <input type="text" class="chapter-edit hidden" id="chapterEdit" maxlength="80" aria-label="Chapter name">
+        <span class="chapter-date" id="chapterDate"></span>
+      </header>
       <div class="typing hidden" id="typing" aria-label="Typing"><span></span><span></span><span></span></div>
     </div>
 
@@ -114,23 +83,11 @@
         <span class="chip amber">Pick one first</span>
       </div>
       <div class="attach-strip hidden" id="attachStrip"></div>
+      <div class="rec-bar hidden" id="recBar" role="status"><span class="rec-dot" aria-hidden="true"></span><span class="rec-time" id="recTime">0:00</span><button type="button" class="btn small ghost" id="recCancel">Cancel</button><button type="button" class="btn small primary" id="recSend">Send</button></div>
       <div class="composer-box">
-        <button type="button" class="icon-btn" id="attachBtn" aria-label="Attach photo">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-        </button>
         <input type="file" id="fileInput" class="hidden" accept="image/jpeg,image/png,image/webp" multiple aria-label="Photos to send">
         <textarea id="input" rows="1" placeholder="Message" maxlength="4000" aria-label="Message"></textarea>
-        <div class="composer-tools">
-          <button type="button" class="icon-btn" id="micBtn" aria-label="Hold to record" aria-pressed="false">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 11v1a7 7 0 0 1-14 0v-1"/><path d="M12 19v3"/><path d="M8 22h8"/></svg>
-          </button>
-          <button type="button" class="icon-btn hidden" id="tasteBtn" aria-label="Taste">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-3 7a3 3 0 0 0 6 0z"/><path d="M19 7l-3 7a3 3 0 0 0 6 0z"/></svg>
-          </button>
-          <button type="submit" class="icon-btn primary" id="sendBtn" aria-label="Send">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-          </button>
-        </div>
+        <button type="submit" class="icon-btn send" id="sendBtn" aria-label="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
       </div>
     </form>
   </section>
@@ -138,13 +95,44 @@
 
 <div class="scrim hidden" id="scrim"></div>
 
-<aside class="drawer phone-drawer" id="phoneDrawer" aria-label="Phone" aria-hidden="true">
-  <div class="drawer-head">
-    <span class="title-row"><img class="avatar" alt="" width="28" height="28" decoding="async" data-avatar="her"><h2>Phone</h2></span>
-    <button type="button" class="btn small ghost" id="phoneClose">Close</button>
+<div class="sheet tools-sheet hidden" id="moreMenu" role="dialog" aria-label="Tools">
+  <button type="button" class="tool-row" id="callBtn" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16.5v3a2 2 0 0 1-2.2 2 19.5 19.5 0 0 1-8.5-3 19.2 19.2 0 0 1-6-6 19.5 19.5 0 0 1-3-8.5A2 2 0 0 1 3.3 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L7.2 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 1.8z"/></svg><span>Call her</span></button>
+  <button type="button" class="tool-row" id="letHerStart"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.3 6.3l2.5 2.5M15.2 15.2l2.5 2.5M6.3 17.7l2.5-2.5M15.2 8.8l2.5-2.5"/></svg><span>Let her start</span></button>
+  <button type="button" class="tool-row" id="attachBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM4 16l5-5 4 4 3-3 4 4M15.5 8.5h.01"/></svg><span>Send a photo</span></button>
+  <button type="button" class="tool-row" id="micBtn" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5a3 3 0 0 0-3 3v6.5a3 3 0 0 0 6 0V5.5a3 3 0 0 0-3-3zM18.5 11v1a6.5 6.5 0 0 1-13 0v-1M12 18.5v3"/></svg><span>Voice note</span></button>
+  <button type="button" class="tool-row" id="photosBtn" aria-controls="photosDrawer" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3.5h12a1.5 1.5 0 0 1 1.5 1.5v12M4.5 7h11A1.5 1.5 0 0 1 17 8.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 19.5v-11A1.5 1.5 0 0 1 4.5 7z"/></svg><span>Her pictures</span></button>
+  <div class="tool-sep" role="separator"></div>
+  <p class="kicker tool-kicker">Writer</p>
+  <button type="button" class="tool-row hidden" id="tasteBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3v7a2.5 2.5 0 0 0 5 0V3M9.5 12.5V21M17 3c-1.7 1.5-2.5 3.5-2.5 6s.8 3.3 2.5 3.5V21"/></svg><span>Taste two</span></button>
+  <label class="switch tool-switch" for="timingToggle"><input type="checkbox" id="timingToggle" checked><span class="track"></span><span class="switch-label">Human timing</span></label>
+  <label class="switch tool-switch" for="operatorToggle"><input type="checkbox" id="operatorToggle"><span class="track"></span><span class="switch-label">Show the workings</span></label>
+  <span class="tool-status hidden" id="clockChip" role="status"></span>
+  <a class="tool-row" id="toolStudio" href="/state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 4.5v5M9 14.5v5"/></svg><span>Studio</span></a>
+</div>
+
+<div class="sheet scene-sheet hidden" id="placesPop" role="dialog" aria-label="Where">
+  <div class="seg" role="group" aria-label="Scene">
+    <button type="button" id="sceneTogether" aria-pressed="false">Together</button>
+    <button type="button" id="sceneApart" aria-pressed="false">Texting</button>
   </div>
-  <div class="drawer-body" id="phoneDrawerBody"></div>
-</aside>
+  <div class="places" id="placesList"></div>
+  <input type="text" id="placeInput" placeholder="Where" maxlength="200" aria-label="Where">
+  <span class="tool-status hidden" id="placeNeeded" role="status">place needed</span>
+  <div class="row end">
+    <button type="button" class="btn small ghost" id="placeCancel">Cancel</button>
+    <button type="button" class="btn small primary" id="placeSet">Together</button>
+  </div>
+</div>
+
+<div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="Picture">
+  <button type="button" class="icon-btn lb-close" id="lbClose" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  <button type="button" class="icon-btn lb-prev" id="lbPrev" aria-label="Previous"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+  <figure class="lightbox-media" id="lbMedia"></figure>
+  <button type="button" class="icon-btn lb-next" id="lbNext" aria-label="Next"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></button>
+  <div class="lightbox-cap"><span class="cap-date" id="lbDate"></span><span class="cap-place" id="lbPlace"></span></div>
+  <div class="lightbox-actions"><a class="btn ghost" id="lbSave">Save</a><a class="btn ghost" id="lbOpen" target="_blank" rel="noopener">Full size</a></div>
+  <div class="lightbox-decide hidden" id="lbDecide"><button type="button" class="btn ghost" id="lbKeep">Keep</button><button type="button" class="btn ghost" id="lbReject">Not her</button><button type="button" class="btn ghost" id="lbAgain">Again</button></div>
+</div>
 
 <aside class="drawer" id="photosDrawer" aria-label="Photos" aria-hidden="true">
   <div class="drawer-head">

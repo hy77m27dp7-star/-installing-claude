@@ -310,7 +310,7 @@ function nicety<T>(name: string, p: Promise<T>, fallback: T): Promise<T> {
   });
 }
 
-async function weatherFor(env: Env, db: D1Database, settings: Settings, now: Date): Promise<WeatherNow | null> {
+export async function weatherFor(env: Env, db: D1Database, settings: Settings, now: Date): Promise<WeatherNow | null> {
   if (settings.weatherProvider === "off") return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), WEATHER_TIMEOUT_MS); });

@@ -1,721 +1,571 @@
-// Her phone (SPEC_V4 section 1 and 8's places; A1's player strip): renders PhoneState from
-// GET /api/phone into the panel's ids. Two homes: the Phone page (main.page.phone, full:
-// the map takes a tap, the places list with its controls) and the chat's slide-in drawer
-// (chat.js imports renderPhone; read-only there: the map draws, no tap, no places list).
+// Her phone (DESIGN_EXPERIENCE 4.1 to 4.6): you picked up her phone. Three views inside the
+// one device on phone.html, chosen by the hash (lockwords.appFromHash): the lock screen
+// (#lock, the default), her apps (#home) and one app full-screen (#maps, #notes, #music,
+// #photos) in #appScreen. A vertical drag of 80px up on the lock screen opens her apps, down
+// on her apps locks the phone again; the handle buttons do the same for taps and keys, and
+// every move is a hash, so Back works.
 //
-// Boot rule: the page code below runs only when main.page.phone exists, and nothing is
-// fetched at import time. Every run-time value goes through the CSSOM or a plain SVG
-// attribute; no style attribute is ever written (the CSP has no unsafe-inline). Labels
-// only, no prose.
-import { api, h, chip, clear, flash, ago } from "./api.js";
-import { drawMap } from "./map.js";
-// player.js (A1) answers the Play / Pause / Next events this panel dispatches; importing it
+// The lock screen reads GET /api/phone/lock every minute while the page is visible. Its
+// clock is HER clock: while the story clock runs (`frozen` false) the time and the date tick
+// here every 15 s from the offset measured at the read; while a together scene holds it
+// (`frozen` true) the tick stops and the screen shows exactly what the read answered.
+// Her apps read GET /api/phone (the map and her places, the song on her mind), GET /api/sent
+// (the songs she sent), GET /api/spotify (her playlist) and GET /api/roll (her pictures).
+// Nothing here writes: placing a place on her map is the writer's, in Studio.
+//
+// Every run-time value goes through the CSSOM (objectPosition, a progress width) or a plain
+// SVG attribute; no style attribute is ever written (the CSP has no unsafe-inline). Labels
+// only, no prose, and nothing empty is ever drawn: an empty list hides its element.
+import { api, h } from "./api.js";
+import { drawMap, pulsePlace } from "./map.js";
+import {
+  APP_NAMES, APP_TITLES, appFromHash, whenWords, weatherWords, tickOffset, clockWords, dateWords,
+  focusPosition, progressWidth, noteNext, drawableRoll, pinnedPlaces, songLines, playlistIdOf, listKey,
+} from "./lockwords.js";
+// player.js (A1) answers the play, pause and next events this page dispatches; importing it
 // only registers its listeners (no token is fetched until something plays).
 import "./player.js";
 
-const REFRESH_MS = 60 * 1000;
-const SPOTIFY_TTL_MS = 5 * 60 * 1000;
-const DIAL_SIZE = 48;
-const DIAL_R = 20;
-const PHASE_KIND = { fresh: "ok", fading: "amber", faint: "", gone: "" };
+const LOCK_MS = 60 * 1000;
+const TICK_MS = 15 * 1000;
+const FRESH_MS = 60 * 1000;
+const SWIPE_PX = 80;
+const STRIP_MAX = 6;
+const PHOTOS_MAX = 12;
 const SPOTIFY_EMBED = "https://open.spotify.com/embed/playlist/";
 const SPOTIFY_SEARCH = "https://open.spotify.com/search/";
-// Every slot the renderer fills, in drawer order: [id, kind, label]. The page carries the
-// same ids in its own markup (phone.html, with the design lane's classes); the drawer gets
-// them built here with the same classes. Kinds: chips, now (.phone-now), line (the .v of a
-// .phone-line with its label), dial (.dial-wrap), stack, listening (.listening), map, list.
-const SLOTS = [
-  ["phoneStatus", "chips", ""],
-  ["phoneNow", "now", ""],
-  ["phoneWhere", "line", "Where"],
-  ["phoneWeather", "line", "Weather"],
-  ["phoneOutfit", "line", "Wearing"],
-  ["phoneMood", "dial", ""],
-  ["phoneWants", "stack", ""],
-  ["phoneAsks", "stack", ""],
-  ["phoneToday", "stack", ""],
-  ["phoneListening", "listening", ""],
-  ["phonePlayer", "stack", ""],
-  ["phoneMap", "map", ""],
-  ["placesList", "list", ""],
-  ["placesStatus", "chips", ""],
-];
+const SVG_NS = "http://www.w3.org/2000/svg";
 
-// ------------------------------------------------------------------ small formatting
+// Line glyphs on a 24 grid (stroke currentColor, 1.7, round), and two filled ones.
+const GLYPH = {
+  messages: ["M4.5 5.5h15a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H10l-4.5 3.5v-3.5h-1a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z"],
+  music: ["M9 18V5.5l11-2V16", "M9 18a3 3 0 1 1-6 0a3 3 0 1 1 6 0z", "M20 16a3 3 0 1 1-6 0a3 3 0 1 1 6 0z"],
+  calendar: ["M4.5 6.5h15v13h-15z", "M4.5 10.5h15", "M8.5 4v4", "M15.5 4v4"],
+  pause: ["M8.5 5.5v13", "M15.5 5.5v13"],
+  next: ["M6 6l8.5 6L6 18z", "M18 6v12"],
+};
+const PLAY = ["M8 5.5v13l10.5-6.5z"];
 
-function clockIn(iso, tz) {
-  const d = new Date(iso || "");
-  if (Number.isNaN(d.getTime())) return "";
-  try {
-    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: tz || undefined }).toLowerCase().replace(/\s/g, "");
-  } catch {
-    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase().replace(/\s/g, "");
-  }
-}
+const S = {
+  lock: null,        // the last GET /api/phone/lock answer
+  offset: 0,         // story now minus wall now, at that read
+  frozen: false,
+  tz: "",
+  phone: null,       // GET /api/phone
+  sent: null,        // GET /api/sent items
+  spotify: null,     // GET /api/spotify
+  roll: null,        // GET /api/roll?limit=12 items
+  view: "lock",
+  appToken: 0,
+  lockTimer: null,
+  tickTimer: null,
+  stackKey: null,
+  stripKey: null,
+  playing: false,
+  card: null,
+};
+const cache = {};
 
-// "7:02pm" from an Open-Meteo wall-clock string ("2026-09-24T19:02").
-function wallClock(s) {
-  const m = /T(\d{1,2}):(\d{2})/.exec(String(s || ""));
-  if (!m) return "";
-  const h24 = Number(m[1]);
-  const min = m[2];
-  if (!Number.isInteger(h24) || h24 > 23) return "";
-  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-  return h12 + ":" + min + (h24 < 12 ? "am" : "pm");
-}
+// ------------------------------------------------------------------ small helpers
 
-function coordText(lat, lon) {
-  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return "";
-  return Number(lat).toFixed(4) + ", " + Number(lon).toFixed(4);
-}
+const $ = (id) => document.getElementById(id);
 
-function pct(v) {
-  return Math.max(0, Math.min(100, Number(v) || 0));
-}
-
-function muted(text) {
-  return h("div", { class: "now-line muted", text });
-}
-
-function progressBar(value) {
-  const v = pct(value);
-  const fill = h("span");
-  fill.style.width = v + "%";
-  return h("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(v) }, fill);
-}
-
-function encode(id) {
-  return encodeURIComponent(String(id));
-}
-
-// ------------------------------------------------------------------ slots
-
-// The class each slot carries (the design lane's, app.css): a "line" slot is the .v of a
-// .phone-line row with its label; the page's markup (phone.html) already has them, the
-// drawer's skeleton gets them here.
-const SLOT_CLASS = { chips: "chips", now: "phone-now", line: "v", dial: "dial-wrap", listening: "listening", stack: "stack", map: "map-wrap", list: "stack" };
-
-function slot(container, id, kind, label) {
-  let el = container.querySelector ? container.querySelector("#" + id) : null;
-  if (!el && container.id === id) el = container;
-  if (!el) {
-    el = h(kind === "line" ? "span" : "div", { id, class: SLOT_CLASS[kind] || "stack", "data-phone": id });
-    if (kind === "line") container.append(h("div", { class: "phone-line" }, h("span", { class: "k", text: label || "" }), el));
-    else container.append(el);
-    return el;
-  }
-  const cls = SLOT_CLASS[kind];
-  if (cls && !el.classList.contains(cls)) el.classList.add(cls);
-  if (kind === "line" && !el.closest(".phone-line")) {
-    const row = h("div", { class: "phone-line" }, h("span", { class: "k", text: label || "" }));
-    el.replaceWith(row);
-    row.append(el);
-  }
-  return el;
-}
-
-function fill(el, ...children) {
-  clear(el);
-  for (const c of children) if (c !== null && c !== undefined && c !== false) el.append(c);
-}
-
-function hideIfEmpty(el, show) {
-  el.classList.toggle("hidden", !show);
-}
-
-// ------------------------------------------------------------------ the pieces
-
-function renderStatus(el, state) {
-  fill(el,
-    chip(state.timeOfDay || "", "accent"),
-    state.scene && state.scene.status === "together" ? chip("together", "ok") : null,
-    state.where && state.where.busy ? chip("busy", "amber") : null,
-    state.weather ? null : chip("no weather"),
-  );
-}
-
-// .phone-now: the clock, the day, the time-of-day word.
-function renderNow(el, state) {
-  fill(el,
-    h("span", { class: "clock", text: state.localClock || "" }),
-    h("span", { class: "day", text: state.weekday || "" }),
-    h("span", { class: "tod", text: state.timeOfDay || "" }));
-}
-
-// The .v of a .phone-line: where she is (the scene place when together, else her day's
-// label and its "until"), with the state as chips.
-function renderWhere(el, state) {
-  const scene = state.scene || {};
-  const where = state.where || {};
-  if (scene.status === "together" && scene.location) {
-    fill(el, h("span", { text: scene.location }), h("span", { class: "chips" }, chip("with him", "ok")));
-    return;
-  }
-  if (where.label) {
-    const until = where.until ? clockIn(where.until, state.tz) : "";
-    fill(el,
-      h("span", { text: where.label }),
-      until ? h("span", { class: "sub", text: "until " + until }) : null,
-      where.busy ? h("span", { class: "chips" }, chip("busy", "amber")) : null);
-    return;
-  }
-  fill(el, h("span", { class: "muted", text: state.city || "" }), h("span", { class: "chips" }, chip("free")));
-}
-
-// .weather-line: the temperature, the words, the small line (feels like, wind, sunset).
-function renderWeather(el, state) {
-  const w = state.weather;
-  if (!w || !Number.isFinite(Number(w.temp))) {
-    fill(el, muted("--"));
-    return;
-  }
-  const unit = w.units === "celsius" ? "C" : "F";
-  const subs = [];
-  if (Number.isFinite(Number(w.feels)) && Math.round(w.feels) !== Math.round(w.temp)) subs.push("feels like " + Math.round(w.feels));
-  if (Number(w.windMph) >= 20) subs.push("windy");
-  const sun = w.isDay ? wallClock(w.sunset) : wallClock(w.sunrise);
-  if (sun) subs.push((w.isDay ? "sunset " : "sunrise ") + sun);
-  fill(el,
-    h("div", { class: "weather-line" },
-      h("span", { class: "temp", text: Math.round(w.temp) + unit }),
-      w.words ? h("span", { class: "words", text: w.words }) : null,
-      subs.length ? h("span", { class: "sub", text: subs.join(", ") }) : null),
-    h("div", { class: "chips" }, chip(w.isDay ? "day" : "night", "accent"), state.city ? chip(state.city) : null));
-}
-
-function renderOutfit(el, state) {
-  const o = state.outfit;
-  if (!o || !o.text) {
-    fill(el, muted("--"));
-    return;
-  }
-  fill(el, h("span", { text: o.text }),
-    h("div", { class: "chips" }, chip(o.from === "photo" ? "photo" : "noted", "accent"), o.at ? chip(clockIn(o.at, state.tz)) : null));
-}
-
-// The mood dial: an inline svg.dial with circle.dial-track under circle.dial-fill. The arc
-// is (1 - fraction) of the ring, set through stroke-dasharray as plain numbers on a
-// pathLength of 100; the colours come from the stylesheet's .dial-track and .dial-fill.
-export function moodDial(mood) {
-  const NS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(NS, "svg");
-  svg.setAttribute("class", "dial");
-  svg.setAttribute("viewBox", "0 0 " + DIAL_SIZE + " " + DIAL_SIZE);
-  svg.setAttribute("width", String(DIAL_SIZE));
-  svg.setAttribute("height", String(DIAL_SIZE));
-  svg.setAttribute("role", "img");
-  const fraction = mood ? Math.max(0, Math.min(1, Number(mood.fraction) || 0)) : 1;
-  const arc = Math.round((1 - fraction) * 1000) / 10;
-  svg.setAttribute("aria-label", mood ? "Mood " + mood.mood + ", " + mood.phase : "No mood");
-  svg.dataset.fraction = String(fraction);
-  const c = DIAL_SIZE / 2;
-  const track = document.createElementNS(NS, "circle");
-  track.setAttribute("class", "dial-track");
-  track.setAttribute("cx", String(c));
-  track.setAttribute("cy", String(c));
-  track.setAttribute("r", String(DIAL_R));
-  track.setAttribute("fill", "none");
-  const ring = document.createElementNS(NS, "circle");
-  ring.setAttribute("class", "dial-fill");
-  ring.setAttribute("cx", String(c));
-  ring.setAttribute("cy", String(c));
-  ring.setAttribute("r", String(DIAL_R));
-  ring.setAttribute("fill", "none");
-  ring.setAttribute("pathLength", "100");
-  ring.setAttribute("stroke-dasharray", arc + " 100");
-  ring.setAttribute("stroke-dashoffset", "0");
-  // The stylesheet's .dial rule turns the whole svg so the arc starts at the top.
-  svg.append(track, ring);
-  return svg;
-}
-
-// .dial-wrap (the slot itself): the dial beside .dial-text (the mood, its chips, its age).
-function renderMood(el, state) {
-  const m = state.mood;
-  if (!m) {
-    fill(el);
-    hideIfEmpty(el, false);
-    return;
-  }
-  hideIfEmpty(el, true);
-  fill(el,
-    moodDial(m),
-    h("div", { class: "dial-text" },
-      h("div", { class: "dial-mood", text: m.mood }),
-      h("div", { class: "chips" }, chip(m.phase, PHASE_KIND[m.phase] || ""), chip(m.days + "d")),
-      m.setAt ? h("div", { class: "dial-age", text: ago(m.setAt) }) : null));
-}
-
-// One .want-meter per want: the title, the progress bar, the small line (last moved, next).
-function renderWants(el, state) {
-  const wants = Array.isArray(state.wants) ? state.wants : [];
-  if (!wants.length) {
-    fill(el, muted("--"));
-    return;
-  }
-  fill(el, ...wants.map((w) => h("div", { class: "want-meter" },
-    h("div", { class: "row between" },
-      h("span", { class: "want-title", text: w.title }),
-      h("span", { class: "chips" }, chip(pct(w.progress) + "%", "accent"), w.status && w.status !== "active" ? chip(w.status) : null)),
-    progressBar(w.progress),
-    h("div", { class: "want-sub" },
-      h("span", { text: "last moved " + (w.lastMoved ? ago(w.lastMoved) : "--") }),
-      h("span", { text: "next " + (w.nextStep || "--") })))));
-}
-
-function renderAsks(el, state) {
-  const asks = Array.isArray(state.asks) ? state.asks : [];
-  if (!asks.length) {
-    fill(el, muted("--"));
-    return;
-  }
-  fill(el, ...asks.map((a) => h("div", { class: "ask-row" },
-    h("span", { class: "t", text: a.text }),
-    h("span", { class: "chips" }, chip(ago(a.askedAt)), Number(a.broughtUp) >= 1 ? chip("brought up", "amber") : null))));
-}
-
-function renderToday(el, state) {
-  const rows = Array.isArray(state.today) ? state.today : [];
-  if (!rows.length) {
-    fill(el, muted("--"));
-    return;
-  }
-  fill(el, ...rows.map((r) => h("div", { class: "today-row" },
-    chip(r.kind, "accent"),
-    h("span", { class: "when", text: clockIn(r.occurred, state.tz) }),
-    h("span", { text: r.note }),
-    h("span"))));
-}
-
-// The note glyph inside .listening .np-note (the stylesheet sizes it).
-function noteIcon() {
-  const NS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(NS, "svg");
+function icon(paths, filled) {
+  const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
-  const p = document.createElementNS(NS, "path");
-  p.setAttribute("d", "M9 18V6l10-2v12a3 3 0 1 1-2-2.83V7.5l-6 1.2V18a3 3 0 1 1-2-2.83z");
-  p.setAttribute("fill", "currentColor");
-  svg.append(p);
-  return svg;
-}
-
-// .listening (the slot itself): the note, .song-text (title, artist, her line), Open.
-function renderListening(el, state) {
-  const l = state.listening;
-  if (!l) {
-    fill(el);
-    hideIfEmpty(el, false);
-    return;
+  svg.setAttribute("focusable", "false");
+  svg.setAttribute("fill", filled ? "currentColor" : "transparent");
+  svg.setAttribute("stroke", filled ? "transparent" : "currentColor");
+  svg.setAttribute("stroke-width", "1.7");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  for (const d of paths) {
+    const p = document.createElementNS(SVG_NS, "path");
+    p.setAttribute("d", d);
+    svg.append(p);
   }
-  hideIfEmpty(el, true);
-  const href = SPOTIFY_SEARCH + encodeURIComponent((l.artist + " " + l.title).trim());
-  fill(el,
-    h("span", { class: "np-note" }, noteIcon()),
-    h("div", { class: "song-text" },
-      h("span", { class: "song-title", text: l.title }),
-      h("span", { class: "song-artist", text: l.artist }),
-      l.line ? h("span", { class: "song-line", text: l.line }) : null),
-    h("a", { class: "btn small", href, target: "_blank", rel: "noopener", text: "Open" }));
-}
-
-// ------------------------------------------------------------------ A1: the player strip
-
-let spotifyInfo = null;
-let spotifyAt = 0;
-let spotifyPending = null;
-let playerState = { state: "off", track: null, position: 0, duration: 0 };
-let playerListening = false;
-const playerSlots = new Set();
-
-async function ensureSpotify() {
-  if (spotifyInfo && Date.now() - spotifyAt < SPOTIFY_TTL_MS) return spotifyInfo;
-  if (spotifyPending) return spotifyPending;
-  spotifyPending = api("GET", "/api/spotify")
-    .then((info) => {
-      spotifyInfo = info && typeof info === "object" ? info : { connected: false, playlistId: "" };
-      spotifyAt = Date.now();
-      return spotifyInfo;
-    })
-    .catch(() => {
-      spotifyInfo = { connected: false, playlistId: "" };
-      spotifyAt = Date.now();
-      return spotifyInfo;
-    })
-    .finally(() => { spotifyPending = null; });
-  return spotifyPending;
+  return svg;
 }
 
 function emit(name, detail) {
   window.dispatchEvent(new CustomEvent(name, { detail: detail || {} }));
 }
 
-function listenPlayer() {
-  if (playerListening) return;
-  playerListening = true;
-  window.addEventListener("avelie:player", (ev) => {
-    const d = ev && ev.detail && typeof ev.detail === "object" ? ev.detail : {};
-    playerState = {
-      state: typeof d.state === "string" ? d.state : "off",
-      track: d.track && typeof d.track === "object" ? d.track : null,
-      position: Number(d.position) || 0,
-      duration: Number(d.duration) || 0,
-    };
-    for (const el of playerSlots) {
-      if (el.isConnected) renderNowPlaying(el);
-      else playerSlots.delete(el);
-    }
-  });
+function show(el, on) {
+  if (el) el.classList.toggle("hidden", !on);
 }
 
-function renderNowPlaying(el) {
-  const strip = el.querySelector(".now-playing");
+function encode(id) {
+  return encodeURIComponent(String(id));
+}
+
+function storyNowMs() {
+  if (S.frozen && S.lock) {
+    const held = Date.parse(S.lock.now);
+    if (Number.isFinite(held)) return held;
+  }
+  return Date.now() + S.offset;
+}
+
+// One GET per source, shared by whoever asks first; a fresh answer is reused for a minute.
+function load(key, path, pick) {
+  const c = cache[key];
+  if (c && c.pending) return c.pending;
+  if (c && Date.now() - c.at < FRESH_MS) return Promise.resolve(S[key]);
+  const pending = api("GET", path)
+    .then((r) => pick(r))
+    .catch(() => S[key])
+    .then((v) => {
+      S[key] = v === undefined ? null : v;
+      cache[key] = { at: Date.now(), pending: null };
+      updateIcons();
+      return S[key];
+    });
+  cache[key] = { at: c ? c.at : 0, pending };
+  return pending;
+}
+
+const asObject = (r) => (r && typeof r === "object" ? r : null);
+const asItems = (r) => (r && Array.isArray(r.items) ? r.items : []);
+const loadPhone = () => load("phone", "/api/phone", asObject);
+const loadSent = () => load("sent", "/api/sent", asItems);
+const loadSpotify = () => load("spotify", "/api/spotify", asObject);
+const loadRoll = () => load("roll", "/api/roll?limit=" + PHOTOS_MAX, asItems);
+
+// ------------------------------------------------------------------ what each app holds
+
+function wants() {
+  const list = S.lock && Array.isArray(S.lock.wants) ? S.lock.wants : [];
+  return list.filter((w) => w && typeof w.title === "string" && w.title.trim());
+}
+
+function sentSongs() {
+  const list = Array.isArray(S.sent) ? S.sent : [];
+  return list.filter((s) => s && s.kind === "song" && typeof s.label === "string" && s.label.trim());
+}
+
+function listening() {
+  const l = S.phone && S.phone.listening;
+  return l && typeof l === "object" && (l.title || l.artist) ? l : null;
+}
+
+function photos() {
+  return drawableRoll(S.roll, PHOTOS_MAX);
+}
+
+// An app with nothing in it is not on her home screen (Maps always is: the city is never
+// empty; Messages always is). Unknown yet counts as empty, so an icon never flashes away.
+function hasApp(name) {
+  switch (name) {
+    case "maps": return true;
+    case "notes": return wants().length > 0;
+    case "photos": return photos().length > 0;
+    case "music": return Boolean(listening()) || sentSongs().length > 0 || Boolean(playlistIdOf(S.spotify));
+    default: return true;
+  }
+}
+
+function updateIcons() {
+  for (const name of ["notes", "photos", "music"]) {
+    for (const a of document.querySelectorAll('.app[data-app="' + name + '"]')) show(a, hasApp(name));
+  }
+}
+
+// ------------------------------------------------------------------ the lock screen
+
+async function loadLock() {
+  let lock;
+  try {
+    lock = await api("GET", "/api/phone/lock");
+  } catch {
+    return;
+  }
+  if (!lock || typeof lock !== "object") return;
+  S.lock = lock;
+  S.offset = tickOffset(lock.now, Date.now());
+  S.frozen = lock.frozen === true;
+  S.tz = typeof lock.tz === "string" ? lock.tz : "";
+  renderLock();
+  updateIcons();
+  syncTick();
+  if (S.view === "notes") openApp("notes", false);
+}
+
+// The time and the date: exactly the answer while her clock is held, else ticked here.
+function renderClock() {
+  const timeEl = $("lockTime");
+  const dateEl = $("lockDate");
+  let time = "";
+  let date = "";
+  if (S.frozen && S.lock) {
+    time = String(S.lock.time || "") || clockWords(storyNowMs(), S.tz);
+    date = String(S.lock.dateLine || "") || dateWords(storyNowMs(), S.tz);
+  } else {
+    const ms = storyNowMs();
+    time = clockWords(ms, S.tz) || (S.lock ? String(S.lock.time || "") : "");
+    date = dateWords(ms, S.tz) || (S.lock ? String(S.lock.dateLine || "") : "");
+  }
+  if (timeEl && timeEl.textContent !== time) timeEl.textContent = time;
+  if (dateEl && dateEl.textContent !== date) dateEl.textContent = date;
+  for (const t of document.querySelectorAll("#lockStack time.notif-when")) {
+    const words = whenWords(t.getAttribute("datetime"), storyNowMs(), S.tz);
+    if (words && t.textContent !== words) t.textContent = words;
+  }
+}
+
+function stopTick() {
+  if (S.tickTimer) clearInterval(S.tickTimer);
+  S.tickTimer = null;
+}
+
+// A held clock does not move on her phone either: no tick until a read says it runs again.
+function syncTick() {
+  stopTick();
+  renderClock();
+  if (S.frozen) return;
+  if (typeof document !== "undefined" && document.hidden) return;
+  S.tickTimer = setInterval(renderClock, TICK_MS);
+}
+
+function setWallpaper(img, wp) {
+  if (!img || !wp || typeof wp.url !== "string" || !wp.url) return;
+  img.style.objectPosition = focusPosition(wp.focus);
+  if (img.getAttribute("src") !== wp.url) img.src = wp.url;
+}
+
+function renderLock() {
+  const lock = S.lock;
+  if (!lock) return;
+  setWallpaper($("wallpaper"), lock.wallpaper);
+  setWallpaper($("homeWallpaper"), lock.wallpaper);
+  const weather = $("lockWeather");
+  if (weather) {
+    const words = weatherWords(lock.weather);
+    weather.textContent = words;
+    show(weather, Boolean(words));
+  }
+  renderStack(lock.notes);
+  renderStrip(lock.roll);
+  renderClock();
+}
+
+function notifItem(n) {
+  const when = n.app === "calendar" ? "" : whenWords(n.at, storyNowMs(), S.tz);
+  return h("li", { class: "notif", "data-app": n.app },
+    h("div", { class: "notif-head" },
+      h("span", { class: "notif-app" }, icon(GLYPH[n.app]), APP_NAMES[n.app]),
+      when ? h("time", { class: "notif-when", datetime: String(n.at), text: when }) : null),
+    n.title ? h("div", { class: "notif-title", text: n.title }) : null,
+    h("div", { class: "notif-text", text: n.text }));
+}
+
+function renderStack(notes) {
+  const stack = $("lockStack");
+  if (!stack) return;
+  const list = (Array.isArray(notes) ? notes : [])
+    .filter((n) => n && Object.prototype.hasOwnProperty.call(APP_NAMES, n.app) && typeof n.text === "string" && n.text.trim())
+    .map((n) => ({ id: String(n.id || ""), app: n.app, title: typeof n.title === "string" ? n.title.trim() : "", text: n.text.trim(), at: String(n.at || "") }));
+  const key = listKey(list, ["id", "app", "title", "text", "at"]);
+  show(stack, list.length > 0);
+  // Unchanged: leave the rows (their arrival plays once), the tick keeps their times.
+  if (key === S.stackKey) return;
+  S.stackKey = key;
+  stack.replaceChildren(...list.map(notifItem));
+}
+
+function thumb(it, cls) {
+  return h("a", { class: cls + (it.clip ? " clip" : ""), href: "/album#" + encode(it.id), "aria-label": it.clip ? "Clip" : "Picture" },
+    h("img", { src: it.src, alt: "", loading: "lazy", decoding: "async" }),
+    it.clip ? icon(PLAY, true) : null);
+}
+
+function renderStrip(roll) {
+  const strip = $("rollStrip");
   if (!strip) return;
-  const s = playerState;
-  const on = s.state === "playing" || s.state === "paused";
-  strip.classList.toggle("hidden", !on);
-  if (!on) return;
-  const title = strip.querySelector(".np-title");
-  const artist = strip.querySelector(".np-artist");
-  const bar = strip.querySelector(".progress > span");
-  const state = strip.querySelector(".np-state");
-  if (title) title.textContent = s.track ? String(s.track.name || "") : "";
-  if (artist) artist.textContent = s.track ? String(s.track.artist || "") : "";
-  if (bar) bar.style.width = (s.duration > 0 ? pct((s.position / s.duration) * 100) : 0) + "%";
-  if (state) state.textContent = s.state;
+  const items = drawableRoll((Array.isArray(roll) ? roll : []).filter((it) => it && it.us !== true), STRIP_MAX);
+  const key = listKey(items, ["id", "src"]);
+  show(strip, items.length > 0);
+  if (key === S.stripKey) return;
+  S.stripKey = key;
+  strip.replaceChildren(...items.map((it) => thumb(it, "roll-thumb")));
 }
 
-function renderPlayer(el, state) {
-  playerSlots.add(el);
-  listenPlayer();
-  const info = spotifyInfo;
-  if (!info) {
-    fill(el);
-    hideIfEmpty(el, false);
-    ensureSpotify().then(() => { if (el.isConnected) renderPlayer(el, state); });
+// ------------------------------------------------------------------ what is playing
+
+function buildPlayingCard() {
+  const card = $("lockPlaying");
+  if (!card) return null;
+  const title = h("span", { class: "np-title" });
+  const artist = h("span", { class: "np-artist" });
+  const fill = h("span");
+  const progress = h("div", { class: "np-progress", role: "progressbar", "aria-label": "Played", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": "0" }, fill);
+  const toggle = h("button", { type: "button", class: "icon-btn", "aria-label": "Pause", onclick: () => emit(S.playing ? "avelie:pause" : "avelie:resume") }, icon(GLYPH.pause));
+  const next = h("button", { type: "button", class: "icon-btn", "aria-label": "Next", onclick: () => emit("avelie:next") }, icon(GLYPH.next));
+  card.replaceChildren(
+    h("span", { class: "np-note" }, icon(GLYPH.music)),
+    h("div", { class: "np-text" }, title, artist),
+    toggle,
+    next,
+    progress);
+  show(card, false);
+  return { card, title, artist, fill, progress, toggle };
+}
+
+function onPlayer(ev) {
+  const c = S.card;
+  if (!c) return;
+  const d = ev && ev.detail && typeof ev.detail === "object" ? ev.detail : {};
+  const on = d.state === "playing" || d.state === "paused";
+  const track = d.track && typeof d.track === "object" ? d.track : null;
+  show(c.card, on && Boolean(track));
+  if (!on || !track) return;
+  const playing = d.state === "playing";
+  c.title.textContent = String(track.name || "");
+  c.artist.textContent = String(track.artist || "");
+  const width = progressWidth(d.position, d.duration);
+  c.fill.style.width = width;
+  c.progress.setAttribute("aria-valuenow", String(parseFloat(width) || 0));
+  if (playing !== S.playing || !c.toggle.firstChild) {
+    c.toggle.replaceChildren(playing ? icon(GLYPH.pause) : icon(PLAY, true));
+    c.toggle.setAttribute("aria-label", playing ? "Pause" : "Play");
+  }
+  S.playing = playing;
+}
+
+// ------------------------------------------------------------------ her apps
+
+function clearExtras() {
+  for (const el of document.querySelectorAll("#appScreen [data-extra]")) el.remove();
+}
+
+function renderMaps(body) {
+  const phone = S.phone || {};
+  const pinned = pinnedPlaces(phone.places);
+  const holder = h("div");
+  let svg = null;
+  svg = drawMap(holder, { ...phone, places: pinned }, { onPlace: (id) => pulsePlace(svg, id) });
+  body.append(holder);
+  if (!pinned.length) return;
+  const list = h("ul", { class: "place-list", id: "placesList", "aria-label": "Places" });
+  for (const p of pinned) {
+    list.append(h("li", {},
+      h("button", { type: "button", class: "map-place", "data-id": String(p.id || ""), text: String(p.title).trim(), onclick: () => {
+        if (svg && typeof svg.scrollIntoView === "function") svg.scrollIntoView({ block: "nearest" });
+        pulsePlace(svg, p.id);
+      } })));
+  }
+  body.append(list);
+}
+
+function renderNotes(body) {
+  for (const w of wants()) {
+    const next = noteNext(w.next);
+    body.append(h("article", { class: "note-line" },
+      h("h3", { class: "note-title", text: w.title.trim() }),
+      next ? h("p", { class: "note-next", text: next }) : null));
+  }
+}
+
+function renderMusic(body) {
+  const l = listening();
+  if (l) {
+    const query = (String(l.artist || "") + " " + String(l.title || "")).trim();
+    body.append(h("section", { class: "listening" },
+      h("span", { class: "np-note" }, icon(GLYPH.music)),
+      h("div", { class: "song-text" },
+        l.line ? h("span", { class: "song-line", text: l.line }) : null,
+        l.title ? h("span", { class: "song-title", text: l.title }) : null,
+        l.artist ? h("span", { class: "song-artist", text: l.artist }) : null),
+      query ? h("a", { class: "icon-btn", href: SPOTIFY_SEARCH + encodeURIComponent(query), target: "_blank", rel: "noopener", "aria-label": "Play on Spotify" }, icon(PLAY, true)) : null));
+  }
+  const songs = sentSongs();
+  if (songs.length) {
+    const now = storyNowMs();
+    body.append(h("section", {},
+      h("h3", { class: "kicker", text: "Sent to you" }),
+      songs.map((s) => {
+        const { title, artist } = songLines(s.label);
+        const when = whenWords(s.at, now, S.tz);
+        return h("div", { class: "sent-song" },
+          h("div", { class: "song-text" },
+            h("span", { class: "song-title", text: title }),
+            artist ? h("span", { class: "song-artist", text: artist }) : null),
+          when ? h("time", { datetime: String(s.at), text: when }) : null);
+      })));
+  }
+  const playlistId = playlistIdOf(S.spotify);
+  if (playlistId) {
+    const name = typeof S.spotify.playlistName === "string" && S.spotify.playlistName.trim() ? S.spotify.playlistName.trim() : "Playlist";
+    body.append(h("section", {},
+      h("h3", { class: "kicker", text: name }),
+      h("button", { type: "button", class: "btn small", text: "Play", onclick: () => emit("avelie:play", { uri: "spotify:playlist:" + playlistId }) }),
+      h("iframe", {
+        class: "playlist-embed",
+        src: SPOTIFY_EMBED + playlistId + "?theme=0",
+        title: name,
+        height: "352",
+        loading: "lazy",
+        allow: "encrypted-media; clipboard-write",
+        referrerpolicy: "strict-origin-when-cross-origin",
+      })));
+  }
+}
+
+function renderPhotos(body) {
+  const bar = document.querySelector("#appScreen .app-bar");
+  if (bar) bar.append(h("a", { class: "btn small ghost", href: "/album", "data-extra": "1", text: "All" }));
+  body.append(h("div", { class: "photo-grid" }, photos().map((it) =>
+    h("a", { href: "/album#" + encode(it.id), "aria-label": it.clip ? "Clip" : "Picture" },
+      h("img", { src: it.src, alt: "", loading: "lazy", decoding: "async" }),
+      it.clip ? h("span", { class: "play-badge" }, icon(PLAY, true)) : null))));
+}
+
+function needs(view) {
+  switch (view) {
+    case "maps": return loadPhone();
+    case "music": return Promise.all([loadPhone(), loadSent(), loadSpotify()]);
+    case "photos": return loadRoll();
+    case "notes": return S.lockPromise || Promise.resolve();
+    default: return Promise.resolve();
+  }
+}
+
+async function openApp(view, focus) {
+  const token = ++S.appToken;
+  const title = $("appTitle");
+  const body = $("appBody");
+  if (title) title.textContent = APP_TITLES[view] || "";
+  await needs(view);
+  if (token !== S.appToken || S.view !== view) return;
+  if (!hasApp(view)) {
+    // Nothing in it: her home screen, never an empty app.
+    history.replaceState(null, "", "#home");
+    showView("home", focus);
     return;
   }
-  const playlistId = typeof info.playlistId === "string" && /^[A-Za-z0-9]{1,62}$/.test(info.playlistId) ? info.playlistId : "";
-  if (!info.connected || !playlistId) {
-    delete el.dataset.playlistId;
-    fill(el);
-    hideIfEmpty(el, false);
-    return;
+  clearExtras();
+  if (body) {
+    body.replaceChildren();
+    if (view === "maps") renderMaps(body);
+    else if (view === "notes") renderNotes(body);
+    else if (view === "music") renderMusic(body);
+    else if (view === "photos") renderPhotos(body);
   }
-  hideIfEmpty(el, true);
-  // The panel refreshes every minute: the same playlist keeps its iframe (a new one would
-  // stop the embed's playback and cost a reload each time).
-  if (el.dataset.playlistId === playlistId && el.querySelector("iframe.playlist-embed")) {
-    renderNowPlaying(el);
-    return;
+}
+
+// ------------------------------------------------------------------ the views
+
+function showView(view, focus) {
+  S.view = view;
+  const isApp = Object.prototype.hasOwnProperty.call(APP_TITLES, view);
+  show($("lock"), view === "lock");
+  show($("home"), view === "home");
+  show($("appScreen"), isApp);
+  if (!isApp) {
+    S.appToken++;
+    clearExtras();
   }
-  el.dataset.playlistId = playlistId;
-  const uri = "spotify:playlist:" + playlistId;
-  const frame = h("iframe", {
-    class: "playlist-embed",
-    src: SPOTIFY_EMBED + playlistId + "?theme=0",
-    title: info.playlistName || "Playlist",
-    width: "100%",
-    height: "352",
-    loading: "lazy",
-    allow: "encrypted-media; clipboard-write",
-    referrerpolicy: "strict-origin-when-cross-origin",
+  if (isApp) openApp(view, focus);
+  if (!focus) return;
+  let target = null;
+  if (view === "lock") target = $("openHome");
+  else if (view === "home") target = document.querySelector("#homeGrid .app:not(.hidden)") || document.querySelector("#homeDock .app:not(.hidden)");
+  else target = $("appBack");
+  if (target && typeof target.focus === "function") target.focus();
+}
+
+function go(view) {
+  const hash = "#" + view;
+  if (location.hash === hash || (view === "lock" && !location.hash)) showView(view, true);
+  else location.hash = hash;
+}
+
+// A vertical drag of SWIPE_PX or more in `dir` (-1 up, 1 down) on `el` calls `then`; the
+// click that ends such a drag is swallowed, so a drag that starts on a picture does not open it.
+function swipe(el, dir, then) {
+  if (!el) return;
+  let start = null;
+  let swallow = false;
+  el.addEventListener("pointerdown", (ev) => {
+    if (ev.pointerType === "mouse" && ev.button !== 0) return;
+    start = { x: ev.clientX, y: ev.clientY, id: ev.pointerId };
   });
-  const bar = progressBar(0);
-  const strip = h("div", { class: "now-playing hidden" },
-    h("div", { class: "row between" },
-      h("div", { class: "stack tight" }, h("strong", { class: "np-title" }), h("span", { class: "muted small np-artist" })),
-      chip("", "accent")),
-    bar);
-  const stateChip = strip.querySelector(".chip");
-  if (stateChip) stateChip.classList.add("np-state");
-  fill(el,
-    h("div", { class: "row between" },
-      h("span", { class: "now-line" }, h("span", { class: "k", text: "playlist" }), h("span", { text: info.playlistName || "" })),
-      h("div", { class: "row queue-control" },
-        h("button", { type: "button", class: "btn small", "aria-label": "Play", text: "Play", onclick: () => emit("avelie:play", { uri }) }),
-        h("button", { type: "button", class: "btn small", "aria-label": "Pause", text: "Pause", onclick: () => emit("avelie:pause") }),
-        h("button", { type: "button", class: "btn small", "aria-label": "Next", text: "Next", onclick: () => emit("avelie:next") }))),
-    strip,
-    frame);
-  renderNowPlaying(el);
-}
-
-// A places list he is working in: focus inside it, a pin typed and not saved, or an action
-// still running. The minute refresh leaves such a list alone; his own reload redraws it.
-function placesBusy(el) {
-  if (!el || typeof document === "undefined") return false;
-  const active = document.activeElement;
-  if (active && active !== document.body && el.contains(active)) return true;
-  return Boolean(el.querySelector(".place-row.busy, .place-row[data-dirty]"));
-}
-
-// ------------------------------------------------------------------ the map and the places
-
-let armedPlaceId = null;
-
-function renderMap(el, state, opts) {
-  const armed = opts.full && armedPlaceId ? armedPlaceId : null;
-  el.classList.toggle("armed", Boolean(armed));
-  drawMap(el, state, {
-    onTap: armed ? (lat, lon) => opts.onMapTap && opts.onMapTap(armed, lat, lon) : undefined,
-    onPlace: (id) => {
-      const card = document.getElementById("place-" + id);
-      if (card && typeof card.scrollIntoView === "function") {
-        card.scrollIntoView({ block: "nearest" });
-        const focus = card.querySelector("button, input");
-        if (focus) focus.focus();
-      }
-    },
+  el.addEventListener("pointerup", (ev) => {
+    if (!start || ev.pointerId !== start.id) return;
+    const dx = ev.clientX - start.x;
+    const dy = ev.clientY - start.y;
+    start = null;
+    if (Math.abs(dy) >= SWIPE_PX && Math.abs(dy) > Math.abs(dx) && Math.sign(dy) === dir) {
+      swallow = true;
+      setTimeout(() => { swallow = false; }, 400);
+      then();
+    }
   });
-  // The page's #mapFoot (the design lane's .map-foot): counts as chips, and the armed word.
-  const foot = el.parentElement ? el.parentElement.querySelector("#mapFoot") : null;
-  if (foot) {
-    const places = Array.isArray(state.places) ? state.places : [];
-    const pinned = places.filter((p) => Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon))).length;
-    fill(foot,
-      chip(pinned + " pinned"),
-      places.length - pinned > 0 ? chip((places.length - pinned) + " no pin", "amber") : null,
-      armed ? chip("tap the map", "accent") : null);
-  }
-}
-
-function seasonChip(p) {
-  return p.pictureSeason ? chip(p.pictureSeason) : null;
-}
-
-// The thumbnail column of a .place-row: the picture (a link to it full size) or the empty box.
-function placeThumb(p) {
-  if (!p.picture) return h("span", { class: "place-thumb empty", text: "--", "aria-hidden": "true" });
-  const src = "/media/place/" + encode(p.id);
-  return h("a", { href: src, target: "_blank", rel: "noopener", "aria-label": "Open the picture of " + p.title },
-    h("img", { class: "place-thumb", src: src + "?v=" + encode(p.pictureMadeAt || ""), alt: p.title, loading: "lazy", width: "56", height: "56" }));
-}
-
-// One place as the stylesheet's .place-row: the thumb, .place-text (title, detail, coords,
-// chips) and two .place-actions rows (the pin, the picture) with the status chips.
-function placeCard(p, state, opts) {
-  const statusSlot = h("span", { class: "chips" });
-  const busy = (on) => { card.classList.toggle("busy", on); for (const b of card.querySelectorAll("button")) b.disabled = on; };
-  const act = async (label, fn) => {
-    busy(true);
-    flash(statusSlot, label, "accent");
-    try {
-      await fn();
-      await opts.reload();
-    } catch (e) {
-      flash(statusSlot, e && e.message ? e.message : "error", "danger wrap");
-      busy(false);
-    }
-  };
-  const markDirty = () => { card.dataset.dirty = "1"; };
-  const latIn = h("input", { type: "number", step: "any", min: "-90", max: "90", inputmode: "decimal", placeholder: "lat", "aria-label": "Latitude", value: Number.isFinite(Number(p.lat)) ? String(p.lat) : "", oninput: markDirty });
-  const lonIn = h("input", { type: "number", step: "any", min: "-180", max: "180", inputmode: "decimal", placeholder: "lon", "aria-label": "Longitude", value: Number.isFinite(Number(p.lon)) ? String(p.lon) : "", oninput: markDirty });
-  const pinned = Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon));
-  const armed = armedPlaceId === p.id;
-  const card = h("div", { class: "place-row" + (p.here ? " here" : "") + (p.active === false ? " inactive" : ""), id: "place-" + p.id, "data-id": p.id },
-    placeThumb(p),
-    h("div", { class: "place-text" },
-      h("span", { class: "place-title", text: p.title }),
-      p.detail ? h("span", { class: "place-detail", text: p.detail }) : null,
-      h("span", { class: "place-coords", text: pinned ? coordText(p.lat, p.lon) : "no pin" }),
-      h("div", { class: "chips" },
-        p.here ? chip("here", "ok") : null,
-        p.active === false ? chip("gone") : null,
-        pinned ? null : chip("no pin", "amber"),
-        p.geocodedBy ? chip(p.geocodedBy) : null,
-        p.picture && p.pictureLight ? chip(p.pictureLight, "accent") : null,
-        p.picture ? seasonChip(p) : null,
-        p.lastUsedAt ? chip("used " + ago(p.lastUsedAt)) : null)),
-    h("div", { class: "place-actions" },
-      latIn, lonIn,
-      h("button", { type: "button", class: "btn small", text: "Save pin", onclick: () => act("saving", async () => {
-        const lat = latIn.value.trim();
-        const lon = lonIn.value.trim();
-        await api("PUT", "/api/places/" + encode(p.id), { lat: lat === "" ? null : Number(lat), lon: lon === "" ? null : Number(lon), geocodedBy: "owner" });
-      }) }),
-      h("button", { type: "button", class: "btn small" + (armed ? " primary" : ""), "aria-pressed": armed ? "true" : "false", text: armed ? "Tap the map" : "Set on map", onclick: () => {
-        armedPlaceId = armed ? null : p.id;
-        opts.rerender();
-      } }),
-      h("button", { type: "button", class: "btn small", text: "Geocode", onclick: () => act("geocoding", () => api("POST", "/api/places/" + encode(p.id) + "/geocode")) })),
-    h("div", { class: "place-actions" },
-      p.picture
-        ? h("button", { type: "button", class: "btn small", text: "Remake", onclick: () => act("making", () => api("POST", "/api/places/" + encode(p.id) + "/picture", { remake: true })) })
-        : h("button", { type: "button", class: "btn small primary", text: "Make picture", onclick: () => act("making", () => api("POST", "/api/places/" + encode(p.id) + "/picture", {})) }),
-      p.picture ? h("button", { type: "button", class: "btn small ghost", text: "Remove picture", onclick: () => act("removing", () => api("DELETE", "/api/places/" + encode(p.id) + "/picture")) }) : null,
-      statusSlot));
-  return card;
-}
-
-function renderPlaces(el, state, opts) {
-  const places = Array.isArray(state.places) ? state.places : [];
-  const rows = places.map((p) => placeCard(p, state, opts));
-  if (!rows.length) rows.push(h("div", { class: "chips" }, chip("none")));
-  // The Phone page carries its own add form (phone.html); a shell without one gets a row here.
-  if (typeof document !== "undefined" && document.getElementById("placeAdd")) {
-    fill(el, ...rows);
-    return;
-  }
-  const titleIn = h("input", { type: "text", class: "grow", maxlength: "300", placeholder: "Place", "aria-label": "Place" });
-  const addStatus = h("span", { class: "chips" });
-  const addRow = h("div", { class: "place-add" },
-    h("div", { class: "row" },
-      titleIn,
-      h("button", { type: "button", class: "btn primary", text: "Add", onclick: async () => {
-        const title = titleIn.value.trim();
-        if (!title) { flash(addStatus, "title", "danger"); return; }
-        try {
-          await api("POST", "/api/places", { title });
-          titleIn.value = "";
-          await opts.reload();
-        } catch (e) {
-          flash(addStatus, e && e.message ? e.message : "error", "danger wrap");
-        }
-      } }),
-      addStatus));
-  fill(el, ...rows, addRow);
-}
-
-// ------------------------------------------------------------------ the renderer
-
-// Full detail (the picture's light and season, the geocode source, last use) comes from
-// GET /api/places; GET /api/phone carries the panel's own shape. The page merges the two
-// so the places list can show both; the drawer renders the panel alone.
-function mergePlaces(state, rows) {
-  if (!Array.isArray(rows) || !rows.length) return state;
-  const byId = new Map(rows.map((r) => [r.id, r]));
-  return {
-    ...state,
-    places: (state.places || []).map((p) => {
-      const r = byId.get(p.id);
-      return r ? { ...p, geocodedBy: r.geocoded_by || null, pictureLight: r.picture_light || null, pictureSeason: r.picture_season || null, pictureMadeAt: r.picture_made_at || null, lastUsedAt: r.last_used_at || null } : p;
-    }),
-  };
-}
-
-// renderPhone(container, state[, opts]): fills the panel. `full` (the Phone page) adds the
-// places list and the map's tap; the drawer gets the panel alone. Never fetches at import
-// time; the player strip asks GET /api/spotify once per five minutes when it renders.
-export function renderPhone(container, state, opts) {
-  if (!container || !state) return;
-  const options = opts && typeof opts === "object" ? opts : {};
-  // The drawer (chat.js) says { places: false, tap: false, readOnly: true }; the page says
-  // { full: true }; anything else is decided by where the container sits.
-  const readOnly = options.readOnly === true || options.places === false || options.tap === false;
-  const full = typeof options.full === "boolean" ? options.full : !readOnly && Boolean(container.closest && (container.closest("main.page.phone") || container.matches("main.page.phone")));
-  const ctx = {
-    full,
-    reload: typeof options.reload === "function" ? options.reload : async () => renderPhone(container, state, { ...options, refresh: false }),
-    rerender: () => renderPhone(container, state, { ...options, refresh: false }),
-    onMapTap: async (id, lat, lon) => {
-      const status = slot(container, "placesStatus", "chips");
-      flash(status, "pinning", "accent");
-      try {
-        await api("PUT", "/api/places/" + encode(id), { lat: Math.round(lat * 1e6) / 1e6, lon: Math.round(lon * 1e6) / 1e6, geocodedBy: "map" });
-        armedPlaceId = null;
-        await ctx.reload();
-        flash(status, "pinned", "ok");
-      } catch (e) {
-        flash(status, e && e.message ? e.message : "error", "danger wrap");
-      }
-    },
-  };
-  for (const [id, kind, label] of SLOTS) {
-    if (!full && (id === "placesList" || id === "placesStatus")) continue;
-    const el = slot(container, id, kind, label);
-    switch (id) {
-      case "phoneStatus": renderStatus(el, state); break;
-      case "phoneNow": renderNow(el, state); break;
-      case "phoneWhere": renderWhere(el, state); break;
-      case "phoneWeather": renderWeather(el, state); break;
-      case "phoneOutfit": renderOutfit(el, state); break;
-      case "phoneMood": renderMood(el, state); break;
-      case "phoneWants": renderWants(el, state); break;
-      case "phoneAsks": renderAsks(el, state); break;
-      case "phoneToday": renderToday(el, state); break;
-      case "phoneListening": renderListening(el, state); break;
-      case "phonePlayer": renderPlayer(el, state); break;
-      case "phoneMap": renderMap(el, state, ctx); break;
-      case "placesList": if (!(options.refresh === true && placesBusy(el))) renderPlaces(el, state, ctx); break;
-      default: break;
-    }
-  }
+  el.addEventListener("pointercancel", () => { start = null; });
+  el.addEventListener("dragstart", (ev) => ev.preventDefault());
+  el.addEventListener("click", (ev) => {
+    if (!swallow) return;
+    swallow = false;
+    ev.preventDefault();
+    ev.stopPropagation();
+  }, true);
 }
 
 // ------------------------------------------------------------------ the page
 
-function bootPhonePage(main) {
-  const statusEl = slot(main, "placesStatus", "chips");
-  let timer = null;
-  let loading = false;
-  let last = null;
+function stopLock() {
+  if (S.lockTimer) clearInterval(S.lockTimer);
+  S.lockTimer = null;
+}
 
-  // `periodic`: the minute refresh (or a return to the tab), which leaves a places list he is
-  // working in alone; every other call (the first load, his own actions) redraws it all.
-  async function load(periodic) {
-    if (loading) return;
-    loading = true;
-    try {
-      const [state, places] = await Promise.all([
-        api("GET", "/api/phone"),
-        api("GET", "/api/places").then((r) => (r && Array.isArray(r.places) ? r.places : [])).catch(() => []),
-      ]);
-      last = mergePlaces(state, places);
-      renderPhone(main, last, { full: true, reload: () => load(false), refresh: periodic === true });
-    } catch (e) {
-      flash(statusEl, e && e.message ? e.message : "error", "danger wrap");
-    } finally {
-      loading = false;
-    }
-  }
+function startLock() {
+  stopLock();
+  S.lockTimer = setInterval(() => { if (!document.hidden) S.lockPromise = loadLock(); }, LOCK_MS);
+}
 
-  function start() {
-    stop();
-    timer = setInterval(() => { if (!document.hidden) load(true); }, REFRESH_MS);
-  }
+function boot() {
+  S.card = buildPlayingCard();
+  window.addEventListener("avelie:player", onPlayer);
 
-  function stop() {
-    if (timer) clearInterval(timer);
-    timer = null;
-  }
+  const openHome = $("openHome");
+  const closeHome = $("closeHome");
+  const back = $("appBack");
+  if (openHome) openHome.addEventListener("click", () => go("home"));
+  if (closeHome) closeHome.addEventListener("click", () => go("lock"));
+  if (back) back.addEventListener("click", () => go("home"));
+  swipe($("lock"), -1, () => go("home"));
+  swipe($("home"), 1, () => go("lock"));
 
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) stop();
-    else { load(true); start(); }
+  window.addEventListener("hashchange", () => showView(appFromHash(location.hash), true));
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape" || ev.defaultPrevented) return;
+    if (Object.prototype.hasOwnProperty.call(APP_TITLES, S.view)) go("home");
+    else if (S.view === "home") go("lock");
   });
 
-  // The page's own add form (phone.html: #placeTitle, #placeDetail, #placeAdd, #placeAddStatus).
-  const addBtn = document.getElementById("placeAdd");
-  if (addBtn) {
-    addBtn.addEventListener("click", async () => {
-      const titleIn = document.getElementById("placeTitle");
-      const detailIn = document.getElementById("placeDetail");
-      const status = document.getElementById("placeAddStatus");
-      const title = titleIn ? titleIn.value.trim() : "";
-      const detail = detailIn ? detailIn.value.trim() : "";
-      if (!title) { flash(status, "title", "danger"); return; }
-      addBtn.disabled = true;
-      try {
-        await api("POST", "/api/places", detail ? { title, detail } : { title });
-        if (titleIn) titleIn.value = "";
-        if (detailIn) detailIn.value = "";
-        flash(status, "added", "ok");
-        await load(false);
-      } catch (e) {
-        flash(status, e && e.message ? e.message : "error", "danger wrap");
-      } finally {
-        addBtn.disabled = false;
-      }
-    });
-  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopLock();
+      stopTick();
+    } else {
+      S.lockPromise = loadLock();
+      startLock();
+      syncTick();
+    }
+  });
 
-
-  load();
-  start();
+  // The device's own clock until the first read lands, so the time is never blank.
+  updateIcons();
+  renderClock();
+  S.lockPromise = loadLock();
+  showView(appFromHash(location.hash), false);
+  loadPhone();
+  loadSent();
+  loadSpotify();
+  loadRoll();
+  startLock();
+  syncTick();
 }
 
-if (typeof document !== "undefined") {
-  const main = document.querySelector("main.page.phone");
-  if (main) bootPhonePage(main);
-}
+if (typeof document !== "undefined" && $("lock") && $("home")) boot();

@@ -1,5 +1,5 @@
-// The drawn map (SPEC_V4 section 1): one inline SVG of her city from a fixed outline and
-// the places' stored coordinates. No tile server, nothing fetched, nothing new in the
+// The drawn map (SPEC_V4 section 1; her Maps app, DESIGN_EXPERIENCE 4.5): one inline SVG of
+// her city from a fixed outline and the places' stored coordinates. No tile server, nothing fetched, nothing new in the
 // content security policy. Every colour, stroke and font size comes from the stylesheet
 // (.map, .map-water, .map-land, .map-dot, .map-dot.here, .map-label); this file never
 // writes a style attribute (the CSP has no unsafe-inline) and SVG presentation
@@ -167,4 +167,29 @@ export function drawMap(container, state, opts) {
     container.replaceChildren(svg);
   }
   return svg;
+}
+
+// pulsePlace(svg, id): her Maps app's list row names a dot; the dot swells twice so the eye
+// finds it. The Web Animations API carries the motion (no style attribute, nothing for the
+// CSP to refuse); with reduced motion asked for, nothing moves. Answers the place's group,
+// or null when the map has no dot for that id.
+export function pulsePlace(svg, id) {
+  if (!svg || typeof svg.querySelectorAll !== "function") return null;
+  const want = String(id ?? "");
+  let group = null;
+  for (const g of svg.querySelectorAll("g.map-place")) {
+    if (g.getAttribute("data-id") === want) { group = g; break; }
+  }
+  if (!group) return null;
+  const dot = group.querySelector(".map-dot");
+  let still = false;
+  try {
+    still = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    still = false;
+  }
+  if (dot && !still && typeof dot.animate === "function") {
+    dot.animate([{ transform: "scale(1)" }, { transform: "scale(1.9)" }, { transform: "scale(1)" }], { duration: 700, iterations: 2, easing: "ease-in-out" });
+  }
+  return group;
 }

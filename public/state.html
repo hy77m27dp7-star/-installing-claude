@@ -5,36 +5,35 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#060a13">
-<title>Avelie State</title>
+<title>Avelie Record</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icons/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/css/app.css">
+<link rel="preload" href="/fonts/fraunces-latin-full-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-sans-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body class="page-state">
 <header class="top">
   <a class="brand" href="/" aria-label="Avelie, home">
     <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
-    <span class="wordmark">AVELIE</span>
+    <span class="wordmark">Avelie</span>
   </a>
   <nav class="nav" aria-label="Sections"></nav>
 </header>
 
 <main class="page">
-  <div class="tabs" role="tablist">
-    <button type="button" role="tab" data-tab="now">Now</button>
-    <button type="button" role="tab" data-tab="life">Life</button>
-    <button type="button" role="tab" data-tab="wants">Wants</button>
-    <button type="button" role="tab" data-tab="history">History</button>
-    <button type="button" role="tab" data-tab="facts">Facts</button>
-    <button type="button" role="tab" data-tab="memory">Memory</button>
-    <button type="button" role="tab" data-tab="voice">Voice</button>
-    <button type="button" role="tab" data-tab="notes">Notes</button>
-    <button type="button" role="tab" data-tab="unknowns">Unknowns</button>
-    <button type="button" role="tab" data-tab="inbox">Inbox</button>
-    <button type="button" role="tab" data-tab="rulebook">Rulebook</button>
-    <button type="button" role="tab" data-tab="export">Export</button>
-  </div>
+  <header class="page-head"><h1 class="display xl">Record</h1></header>
+  <nav class="studio-tabs" aria-label="Record">
+  <div class="tab-group"><span class="tab-group-label">Her time</span><div class="tabs" role="tablist" aria-label="Her time">
+    <button type="button" role="tab" data-tab="now">Now</button><button type="button" role="tab" data-tab="life">Her days</button><button type="button" role="tab" data-tab="wants">Wants</button></div></div>
+  <div class="tab-group"><span class="tab-group-label">Her memory</span><div class="tabs" role="tablist" aria-label="Her memory">
+    <button type="button" role="tab" data-tab="facts">Facts</button><button type="button" role="tab" data-tab="history">Moments</button><button type="button" role="tab" data-tab="memory">Recall</button><button type="button" role="tab" data-tab="unknowns">Questions</button><button type="button" role="tab" data-tab="inbox">Inbox</button></div></div>
+  <div class="tab-group"><span class="tab-group-label">Her voice</span><div class="tabs" role="tablist" aria-label="Her voice">
+    <button type="button" role="tab" data-tab="voice">Voice</button><button type="button" role="tab" data-tab="notes">Notes</button><button type="button" role="tab" data-tab="rulebook">Rulebook</button></div></div>
+  <div class="tab-group"><span class="tab-group-label">Backup</span><div class="tabs" role="tablist" aria-label="Backup">
+    <button type="button" role="tab" data-tab="export">Export</button></div></div>
+  </nav>
 
   <section id="tab-now" class="stack hidden" role="tabpanel">
     <div class="chips" id="now-status"></div>
@@ -88,28 +87,40 @@
           <h2 class="section-title">Relationship</h2>
           <span class="chip accent" id="relVersion"></span>
         </div>
-        <textarea id="relJson" class="code" spellcheck="false" aria-label="Relationship JSON"></textarea>
+        <div class="human-fields" id="relFields"></div>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <div class="stack">
+            <textarea id="relJson" class="code" spellcheck="false" aria-label="Relationship JSON"></textarea>
+            <input type="text" id="relNote" placeholder="Note" aria-label="Note">
+            <h3 class="section-title">Versions</h3>
+            <div class="stack tight" id="relVersions"></div>
+          </div>
+        </details>
         <div class="row">
-          <input type="text" id="relNote" class="grow" placeholder="Note">
           <button type="button" class="btn primary" id="relSave">Save</button>
           <span class="chips" id="relStatus"></span>
         </div>
-        <h3 class="section-title">Versions</h3>
-        <div class="stack tight" id="relVersions"></div>
       </div>
       <div class="card stack">
         <div class="row between">
           <h2 class="section-title">Scene</h2>
           <span class="chip accent" id="sceneVersion"></span>
         </div>
-        <textarea id="sceneJson" class="code" spellcheck="false" aria-label="Scene JSON"></textarea>
+        <div class="human-fields" id="sceneFields"></div>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <div class="stack">
+            <textarea id="sceneJson" class="code" spellcheck="false" aria-label="Scene JSON"></textarea>
+            <input type="text" id="sceneNote" placeholder="Note" aria-label="Note">
+            <h3 class="section-title">Versions</h3>
+            <div class="stack tight" id="sceneVersions"></div>
+          </div>
+        </details>
         <div class="row">
-          <input type="text" id="sceneNote" class="grow" placeholder="Note">
           <button type="button" class="btn primary" id="sceneSave">Save</button>
           <span class="chips" id="sceneStatus"></span>
         </div>
-        <h3 class="section-title">Versions</h3>
-        <div class="stack tight" id="sceneVersions"></div>
       </div>
     </div>
     <div class="card stack tight">
@@ -203,7 +214,6 @@
       <div class="row">
         <button type="button" class="btn" id="himDescribe">Describe from photo</button>
         <button type="button" class="btn primary" id="himSave">Save</button>
-        <span class="muted small">She reads these words every turn; the photos ride along on the turns the Model page sets.</span>
       </div>
     </div>
     <div class="cols-3" id="factsColumns">

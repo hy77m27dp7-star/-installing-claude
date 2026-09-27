@@ -1,5 +1,5 @@
 // The shell's nav and her avatar (SPEC_V4 section 0): public/js/nav.js read as text (it
-// builds the nav at load, so it is never imported under Node), the eight links in order,
+// builds the nav at load, so it is never imported under Node), the four Her links and the five Studio links in order,
 // the focus table equal to the copy in src/api.ts, the crop through the CSSOM, and the
 // route and storage key the avatar reads.
 import { test } from "node:test";
@@ -10,7 +10,8 @@ import { BAD_TYPOGRAPHY } from "./helpers.mjs";
 const nav = readFileSync(new URL("../../public/js/nav.js", import.meta.url), "utf8");
 const api = readFileSync(new URL("../../src/api.ts", import.meta.url), "utf8");
 
-const LINKS = [["/", "Chat"], ["/phone", "Phone"], ["/album", "Album"], ["/memory", "Memory"], ["/state", "State"], ["/model", "Model"], ["/images", "Images"], ["/timeline", "Timeline"]];
+const LINKS = [["/", "Chat"], ["/phone", "Phone"], ["/album", "Album"], ["/us", "Us"]];
+const STUDIO_LINKS = [["/state", "Record"], ["/model", "Settings"], ["/images", "Pictures"], ["/timeline", "Timeline"], ["/memory", "Memory"]];
 const FOCUS = { "master-00": [50, 40], "master-01": [48, 28], "master-02": [58, 24], "master-03": [50, 32], "master-04": [44, 27], "master-05": [50, 24] };
 
 // The AVATAR_FOCUS literal of a source file, read as JSON: `"master-00": [50, 40], ...`.
@@ -22,11 +23,15 @@ function focusTableOf(source, label) {
   return out;
 }
 
-test("nav.js LINKS: the eight paths in the header's order, Chat first and Timeline last", () => {
+test("nav.js LINKS: the four Her paths; STUDIO_LINKS: the five Studio paths", () => {
   const m = /export const LINKS = \[([\s\S]*?)\];/.exec(nav);
   assert.ok(m, "LINKS exported");
   const pairs = Array.from(m[1].matchAll(/\["([^"]+)",\s*"([^"]+)"\]/g)).map((x) => [x[1], x[2]]);
   assert.deepEqual(pairs, LINKS);
+  const s = /export const STUDIO_LINKS = \[([\s\S]*?)\];/.exec(nav);
+  assert.ok(s, "STUDIO_LINKS exported");
+  const studio = Array.from(s[1].matchAll(/\["([^"]+)",\s*"([^"]+)"\]/g)).map((x) => [x[1], x[2]]);
+  assert.deepEqual(studio, STUDIO_LINKS);
 });
 
 test("nav.js AVATAR_FOCUS: the six masters with the values read off the masters on 2026-09-26", () => {

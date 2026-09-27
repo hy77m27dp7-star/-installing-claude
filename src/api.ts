@@ -96,6 +96,12 @@ import { listViews, retireView } from "./views";
 import { addWorldFact, renamePerson, retireWorldFact, worldView } from "./world";
 import { listSent } from "./honest";
 import { listKnownArtists, removeKnownArtist, setKnownArtist, songFeedback } from "./songs";
+// The experience pass (DESIGN_EXPERIENCE section 8): read routes for the Her pages and his
+// rename. None writes the story (the rename writes only conversations.title).
+import { listRoll } from "./roll";
+import { cleanTitle, conversationViews, renameConversation } from "./chapters";
+import { lockScreen, wallpaperNow } from "./lockscreen";
+import { usView } from "./us";
 import type {
   Channel, Env, FactScope, ImageProviderName, MessageRow, ProposalKind, ProposalRow, ProviderName, RelationshipState, Settings, TurnResponse, VisualAssetRow, SceneState } from "./types";
 
@@ -874,14 +880,29 @@ export function avatarFocus(assetId: unknown): [number, number] {
 }
 
 // The master the header and the thread show: the stored id when it names an approved
-// master, else master-05, else the first approved master on file.
-route("GET", "/api/avatar", async (c) => {
-  const settings = await loadSettings(c);
+// master, else master-05, else the first approved master on file (404 when none). The
+// experience pass's wallpaper falls back to the same master.
+async function avatarMaster(c: RouteCtx, settingsIn?: Settings): Promise<{ assetId: string; file: string; focus: [number, number] }> {
+  const settings = settingsIn ?? await loadSettings(c);
   const masters = (await listAssets(c.db, "approved")).filter((a) => a.role === "master");
   const wanted = typeof settings.avatarAssetId === "string" ? settings.avatarAssetId.trim() : "";
   const master = masters.find((a) => a.id === wanted) ?? masters.find((a) => a.id === AVATAR_FALLBACK_ID) ?? masters[0];
   if (!master) throw new ApiHttpError(404, "not_found", "no approved master on file");
-  return json({ assetId: master.id, file: master.file, focus: avatarFocus(master.id) });
+  return { assetId: master.id, file: master.file, focus: avatarFocus(master.id) };
+}
+
+route("GET", "/api/avatar", async (c) => json(await avatarMaster(c)));
+
+// The experience pass (8.4): her lock-screen and chat backdrop picture for today (her local
+// day on the real clock), a solo approved photo of hers or the avatar master.
+async function wallpaperFor(c: RouteCtx, settings: Settings, now: Date) {
+  const master = await avatarMaster(c, settings);
+  return wallpaperNow(c.db, settings, now, { id: master.assetId, file: master.file, focus: master.focus });
+}
+
+route("GET", "/api/wallpaper", async (c) => {
+  const settings = await loadSettings(c);
+  return json(await wallpaperFor(c, settings, new Date()));
 });
 
 // ------------------------------------------------------------------ conversations and turns
@@ -904,15 +925,33 @@ const SCENE_OPENER_NOTE =
   "You are with him right now, in the scene as the record has it, and it is your move. Continue from exactly where the last messages left off: what you do or say next, in the moment, "
   + "in present tense, the way the scene is going. Nothing about your day or work, no news, no story you have already told him, nothing that ignores what just happened between you. One or two bubbles.";
 
-// The throwaway conversations of the drift check never show in the list.
-route("GET", "/api/conversations", async (c) => json((await listConversations(c.db)).filter((r) => r.status !== "drift")));
+// The throwaway conversations of the drift check never show in the list. The experience
+// pass (8.2): each row is a chapter view (its computed title, its span, its last line).
+route("GET", "/api/conversations", async (c) => {
+  const settings = await loadSettings(c);
+  const rows = (await listConversations(c.db)).filter((r) => r.status !== "drift");
+  return json(await conversationViews(c.db, rows, herTz(settings), new Date()));
+});
 
 route("POST", "/api/conversations", async (c) => {
   const body = await readBody(c.request);
   const title = optString(body, "title", 200);
   const row = await createConversation(c.db, title && title.trim() ? title.trim() : null);
   await auditStmt(c.db, c.actor, "conversation.create", "conversation", row.id, null, row).run();
-  return json(row, 201);
+  const settings = await loadSettings(c);
+  const [view] = await conversationViews(c.db, [row], herTz(settings), new Date());
+  return json(view ?? row, 201);
+});
+
+// The experience pass (8.3): his rename. `title` null or blank returns the chapter to its
+// automatic title; smart punctuation is repaired; more than 80 characters is a 400.
+route("PUT", "/api/conversations/:id", async (c) => {
+  const id = idParam(c, "id");
+  const body = await readBody(c.request);
+  if (!Object.prototype.hasOwnProperty.call(body, "title")) throw invalid("title is required (a string, or null for the automatic title)");
+  const title = cleanTitle(body.title);
+  const settings = await loadSettings(c);
+  return json(await renameConversation(c.db, id, title, c.actor, herTz(settings)));
 });
 
 // Real-mode timing (SPEC_V2 section B): a reply whose deliver_at is still ahead is left
@@ -2545,6 +2584,13 @@ route("GET", "/api/phone", async (c) => {
   return json(await phoneState(c.env, c.db, settings, new Date()));
 });
 
+// The experience pass (8.5): her lock screen, one read. Three segments beside /api/phone.
+route("GET", "/api/phone/lock", async (c) => {
+  const settings = await loadSettings(c);
+  const realNow = new Date();
+  return json(await lockScreen(c.env, c.db, settings, realNow, await wallpaperFor(c, settings, realNow)));
+});
+
 // After syncPlaces (the active place threads get their rows); never the R2 key.
 route("GET", "/api/places", async (c) => {
   await syncPlaces(c.db, await listThreads(c.db, "active"));
@@ -2623,6 +2669,21 @@ route("GET", "/api/album", async (c) => {
   const groupRaw = c.url.searchParams.get("group");
   const group = groupRaw !== null && groupRaw !== "" ? oneOf(groupRaw, ALBUM_GROUPS, "group") : undefined;
   return json(await listAlbum(c.db, { limit, ...(before !== undefined ? { before } : {}), ...(group !== undefined ? { group } : {}) }));
+});
+
+// The experience pass (8.1): her camera roll, every approved picture and clip of hers,
+// bound to a message or not. A bad `before` is a 400 from listRoll.
+route("GET", "/api/roll", async (c) => {
+  const limit = intQuery(c.url, "limit", 60, 1, 200);
+  const beforeRaw = c.url.searchParams.get("before");
+  const before = beforeRaw && beforeRaw.trim() ? beforeRaw.trim().slice(0, 64) : undefined;
+  return json(await listRoll(c.db, { limit, ...(before !== undefined ? { before } : {}) }));
+});
+
+// The experience pass (8.7): the story of the two of them.
+route("GET", "/api/us", async (c) => {
+  const settings = await loadSettings(c);
+  return json(await usView(c.db, settings, new Date()));
 });
 
 // ------------------------------------------------------------------ the memory map (section 7)

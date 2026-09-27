@@ -1,16 +1,21 @@
 // The phone shell. Caches the pages and scripts so the app opens offline; never caches
 // /api or /media. Her master pictures under /images/masters/ are hash-pinned and never
 // change in place, so they are served cache-first (the 2 MB header avatar is paid once per
-// device, not on every page); a new master set ships with a new CACHE name. Push: fetch her
+// device, not on every page); a new master set ships with a new CACHE name. The fonts under
+// /fonts/ are the same: file names carry no version, so a font change ships with a new file
+// name and a new CACHE name, and until then they download once per device. Push: fetch her
 // latest line (a first text, or a reply she held; the server picks) and show it; a tap
 // opens the thread.
-const CACHE = "avelie-shell-v3";
+const CACHE = "avelie-shell-v4";
 const MASTERS = "/images/masters/";
+const FONTS = "/fonts/";
 const SHELL = [
-  "/", "/phone", "/album", "/memory",
+  "/", "/phone", "/album", "/us", "/memory",
   "/css/app.css",
   "/js/api.js", "/js/nav.js", "/js/chat.js", "/js/bubbles.js", "/js/call.js",
-  "/js/phone.js", "/js/map.js", "/js/album.js", "/js/memory.js", "/js/callface.js", "/js/player.js",
+  "/js/phone.js", "/js/map.js", "/js/lockwords.js", "/js/album.js", "/js/months.js", "/js/us.js",
+  "/js/memory.js", "/js/callface.js", "/js/player.js",
+  "/fonts/fraunces-latin-full-normal.woff2", "/fonts/instrument-sans-latin-wght-normal.woff2",
   "/manifest.webmanifest", "/icons/icon-192.png",
 ];
 
@@ -51,6 +56,18 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/media/")) return;
   if (url.pathname.startsWith(MASTERS)) {
+    event.respondWith(
+      caches.match(request, { ignoreSearch: true }).then((hit) => hit || fetch(request).then((response) => {
+        if (cacheable(request, response)) {
+          const copy = response.clone();
+          caches.open(CACHE).then((cache) => cache.put(request, copy)).catch(() => {});
+        }
+        return response;
+      })),
+    );
+    return;
+  }
+  if (url.pathname.startsWith(FONTS)) {
     event.respondWith(
       caches.match(request, { ignoreSearch: true }).then((hit) => hit || fetch(request).then((response) => {
         if (cacheable(request, response)) {

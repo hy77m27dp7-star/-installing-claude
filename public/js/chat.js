@@ -10,6 +10,10 @@
 // and the place picture behind the thread.
 // v5 (SPEC_V5 sections 1, 4, 9): the held-clock chip in the scene bar, the `place needed`
 // chip on the Together form, and the song card's "know it" / "not for me" buttons.
+// exp (DESIGN_EXPERIENCE 3.4 to 3.6): chapters with their own names and a rename at the
+// head of the thread, the place line under her name, one tools sheet, a heart that keeps
+// her line, the workings only behind their switch, pictures that open in the chat's own
+// lightbox, failures in words, day separators, and her photograph (or the place) behind it.
 import {
   api, apiForm, h, chip, clear, fmtDate, fmtTime, fmtDuration, flagCodes, parseJson, registerServiceWorker, storeGet, storeSet, svgIcon,
 } from "./api.js";
@@ -35,9 +39,11 @@ const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_VOICE_MS = 60000;
 const MAX_VOICE_BYTES = 4 * 1024 * 1024;
 const MIN_VOICE_MS = 600;
-// A press shorter than this is a tap: the recording keeps going until the next tap (2026-09-26:
-// the first hold always died when he let go to click Allow on the permission prompt).
-const TAP_MS = 350;
+// exp: a long press on her line opens the reaction bar; ten pixels of movement is a scroll.
+const LONG_PRESS_MS = 450;
+const MOVE_CANCEL_PX = 10;
+// At this width and under the sheets are bottom sheets over the scrim; over it, popovers.
+const PHONE_QUERY = "(max-width: 760px)";
 const DESC_CHARS = 60;
 // The Note sheet's kinds: label on screen, kind on the wire (the first maps to `ai`).
 const NOTE_KINDS = [
@@ -110,15 +116,36 @@ const els = {
   callMute: $("callMute"),
   callEnd: $("callEnd"),
   callAudio: $("callAudio"),
-  // v4 (markup by the design lane; every one optional so an older shell still runs)
-  phoneBtn: $("phoneBtn"),
-  phoneDrawer: $("phoneDrawer"),
-  phoneDrawerBody: $("phoneDrawerBody"),
-  phoneClose: $("phoneClose"),
+  // v4 (optional, so an older shell still runs)
   nowPlaying: $("nowPlaying"),
   // v5 (optional, so an older shell still runs)
   clockChip: $("clockChip"),
   placeNeeded: $("placeNeeded"),
+  // exp (DESIGN_EXPERIENCE 3.3; every one optional, so an older shell still runs)
+  backdrop: $("backdrop"),
+  whoAvatar: $("whoAvatar"),
+  placeLine: $("placeLine"),
+  chapterHead: $("chapterHead"),
+  chapterEdit: $("chapterEdit"),
+  chapterDate: $("chapterDate"),
+  recBar: $("recBar"),
+  recTime: $("recTime"),
+  recCancel: $("recCancel"),
+  recSend: $("recSend"),
+  toolStudio: $("toolStudio"),
+  lightbox: $("lightbox"),
+  lbClose: $("lbClose"),
+  lbPrev: $("lbPrev"),
+  lbNext: $("lbNext"),
+  lbMedia: $("lbMedia"),
+  lbDate: $("lbDate"),
+  lbPlace: $("lbPlace"),
+  lbSave: $("lbSave"),
+  lbOpen: $("lbOpen"),
+  lbDecide: $("lbDecide"),
+  lbKeep: $("lbKeep"),
+  lbReject: $("lbReject"),
+  lbAgain: $("lbAgain"),
 };
 
 const state = {
@@ -171,6 +198,24 @@ const state = {
   knownArtists: null,
   knownArtistsLoad: null,
   clockSeq: 0,
+  // exp
+  // Her story rows on screen, by message id (the reaction bar and the lightbox read them).
+  rows: new Map(),
+  // GET /api/wallpaper, read once per page: { url, focus } or null.
+  wallpaper: undefined,
+  backdropSrc: "",
+  backdropSeq: 0,
+  // The open reaction bar: { bar, bubble, m }.
+  react: null,
+  press: null,
+  // The open lightbox: { items, index }.
+  lightbox: null,
+  // Picture id -> place words, from GET /api/roll (read on the first open).
+  rollPlaces: null,
+  // The control that opened the open sheet; focus goes back to it.
+  sheetReturn: null,
+  renaming: false,
+  titleRefresh: false,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -178,8 +223,90 @@ const reducedMotion = () => window.matchMedia && window.matchMedia("(prefers-red
 
 // ------------------------------------------------------------ conversations
 
+// exp 3.4 item 1: a chapter's name is the server's displayTitle (his rename, else the place,
+// else the day), then the stored title, then the day in words.
 function convLabel(c) {
-  return c.title || "chat " + fmtDate(c.created_at);
+  if (!c) return dayTitle(new Date().toISOString());
+  const shown = typeof c.displayTitle === "string" ? c.displayTitle.trim() : "";
+  if (shown) return shown;
+  const stored = typeof c.title === "string" ? c.title.trim() : "";
+  return stored || dayTitle(c.firstAt || c.created_at);
+}
+
+function herTz() {
+  const tz = state.settings ? state.settings.timezone : null;
+  return typeof tz === "string" && tz ? tz : undefined;
+}
+
+// Intl parts in her timezone, or the browser's when the zone is unknown.
+function partsOf(d, opts, tz) {
+  try {
+    return new Intl.DateTimeFormat("en-US", { ...opts, timeZone: tz }).formatToParts(d);
+  } catch {
+    return new Intl.DateTimeFormat("en-US", opts).formatToParts(d);
+  }
+}
+
+// "Thursday night": the weekday and the part of her day (5 to 11 morning, 12 to 16
+// afternoon, 17 to 20 evening, else night), the words the server names a new chapter with.
+function dayTitle(iso) {
+  const d = new Date(iso || Date.now());
+  if (Number.isNaN(d.getTime())) return "";
+  const parts = partsOf(d, { weekday: "long", hour: "numeric", hour12: false }, herTz());
+  const get = (t) => (parts.find((p) => p.type === t) || {}).value || "";
+  const hour = Number(get("hour")) % 24;
+  const part = hour >= 5 && hour <= 11 ? "morning" : hour >= 12 && hour <= 16 ? "afternoon" : hour >= 17 && hour <= 20 ? "evening" : "night";
+  return (get("weekday") + " " + part).trim();
+}
+
+// "Saturday, Sep 26": the chapter's first day, under its name.
+function longDay(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+}
+
+// "Saturday, September 26": a picture's day in the lightbox.
+function fullDay(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+}
+
+// The local calendar day of an instant ("2026-09-26"), what the day separators compare.
+function dayKey(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+// "Today", "Yesterday", the weekday within six days, else "Sep 20".
+function dayWords(iso, now) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const base = now instanceof Date ? now : new Date();
+  const start = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((start(base) - start(d)) / 86400000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days > 1 && days <= 6) return d.toLocaleDateString("en-US", { weekday: "long" });
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// The rail's time: the hour today, else the day words.
+function chapterWhen(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const words = dayWords(iso);
+  return words === "Today" ? d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : words;
+}
+
+// The chapter's last line, one line (CSS clips it); his lines start "You: ".
+function previewLine(c) {
+  const p = c && c.preview && typeof c.preview === "object" ? c.preview : null;
+  const text = p && typeof p.text === "string" ? p.text.trim() : "";
+  if (!text) return "";
+  return (p.role === "user" ? "You: " : "") + text;
 }
 
 async function loadConversations() {
@@ -196,20 +323,112 @@ async function loadConversations() {
 function renderConversations() {
   clear(els.convList);
   for (const c of state.conversations) {
+    const active = c.id === state.currentId;
+    const preview = previewLine(c);
     const btn = h("button", {
       type: "button",
-      class: c.id === state.currentId ? "active" : "",
+      class: "chapter-open",
+      "aria-current": active ? "true" : null,
       onclick: () => { select(c.id); closeSidebar(); },
     },
-    h("span", { class: "conv-name", text: convLabel(c) }),
-    h("span", { class: "conv-date", text: fmtDate(c.last_message_at || c.created_at) }));
-    els.convList.append(h("li", null, btn));
+    h("span", { class: "chapter-title", text: convLabel(c) }),
+    h("span", { class: "chapter-when", text: chapterWhen(c.lastAt || c.last_message_at || c.created_at) }),
+    preview ? h("span", { class: "chapter-preview", text: preview }) : null);
+    els.convList.append(h("li", { class: "chapter-row" + (active ? " active" : "") }, btn));
   }
 }
 
+function currentConversation() {
+  return state.conversations.find((x) => x.id === state.currentId) || null;
+}
+
+// exp 3.4 item 2: the chapter head at the top of the thread: its name (a button, tap to
+// rename) and its first day in words. With no chapter yet, the day's name and today.
 function updateTitle() {
-  const c = state.conversations.find((x) => x.id === state.currentId);
-  els.convTitle.textContent = c ? convLabel(c) : "";
+  const c = currentConversation();
+  const title = convLabel(c);
+  if (els.convTitle) {
+    els.convTitle.textContent = title;
+    els.convTitle.setAttribute("aria-label", title + ", rename");
+  }
+  if (els.chapterDate) els.chapterDate.textContent = longDay(c ? c.firstAt || c.created_at : new Date().toISOString());
+}
+
+// The name he gave it, or empty when the name is automatic.
+function hisTitle(c) {
+  if (!c) return "";
+  if (c.titleFrom && c.titleFrom !== "his") return "";
+  return typeof c.title === "string" ? c.title.trim() : "";
+}
+
+function startRename() {
+  if (!els.chapterEdit || !els.convTitle || state.renaming) return;
+  const c = currentConversation();
+  state.renaming = true;
+  els.chapterEdit.value = hisTitle(c);
+  els.chapterEdit.placeholder = convLabel(c);
+  els.convTitle.classList.add("hidden");
+  els.chapterEdit.classList.remove("hidden");
+  els.chapterEdit.focus();
+  els.chapterEdit.select();
+}
+
+// The flag drops before the field hides, so the blur that hiding causes saves nothing.
+function endRename() {
+  state.renaming = false;
+  if (els.chapterEdit) els.chapterEdit.classList.add("hidden");
+  if (els.convTitle) els.convTitle.classList.remove("hidden");
+}
+
+function cancelRename() {
+  if (!state.renaming) return;
+  endRename();
+  if (els.convTitle) els.convTitle.focus();
+}
+
+// Enter or blur saves: PUT /api/conversations/:id { title }, an empty name sends null
+// (back to the automatic one). A name typed on an empty page makes the chapter first.
+async function saveRename() {
+  if (!state.renaming) return;
+  const raw = els.chapterEdit.value.replace(/\s+/g, " ").trim();
+  const c = currentConversation();
+  endRename();
+  if (raw === hisTitle(c)) return;
+  if (!c && !raw) return;
+  try {
+    const id = await ensureConversation();
+    const view = await api("PUT", "/api/conversations/" + encodeURIComponent(id), { title: raw || null });
+    if (view && typeof view === "object" && view.id) mergeConversation(view);
+  } catch (e) {
+    showError(e.code || "error", false);
+  }
+}
+
+// The head, the rail row and state.conversations take the server's answer.
+function mergeConversation(view) {
+  const i = state.conversations.findIndex((x) => x.id === view.id);
+  if (i >= 0) state.conversations[i] = { ...state.conversations[i], ...view };
+  else state.conversations.unshift(view);
+  renderConversations();
+  updateTitle();
+}
+
+// After a turn in a chapter whose name is not his, the list is read once more, so a new
+// chapter takes its place or day name as soon as the server has one. Quiet on failure.
+function refreshTitlesAfterTurn(id) {
+  const c = state.conversations.find((x) => x.id === id);
+  if (c && c.titleFrom === "his") return;
+  if (state.titleRefresh) return;
+  state.titleRefresh = true;
+  api("GET", "/api/conversations")
+    .then((rows) => {
+      if (!Array.isArray(rows)) return;
+      state.conversations = rows.filter((x) => x && x.status !== "drift");
+      renderConversations();
+      updateTitle();
+    })
+    .catch(() => { /* the names stay as they are */ })
+    .finally(() => { state.titleRefresh = false; });
 }
 
 function touchConversation(id) {
@@ -267,14 +486,16 @@ async function loadThread() {
   const seq = ++state.loadSeq;
   const id = state.currentId;
   clearDeliveries();
+  closeReactBar(false);
   state.dotsHold = false;
-  clear(els.thread);
-  els.thread.append(els.typing);
+  // The chapter head stays the thread's first child and the dots its last.
+  els.thread.replaceChildren(...(els.chapterHead ? [els.chapterHead] : []), els.typing);
+  state.rows = new Map();
   state.lastStoryRole = null;
   setTasting(null);
   refreshTyping();
   updateStartButton();
-  if (!id) return;
+  if (!id) { showEmptyHer(); return; }
   const query = state.operator ? "?includePending=1" : "?channel=story&includePending=1";
   let rows = [];
   try {
@@ -318,9 +539,19 @@ async function loadThread() {
   }
   flush();
   layoutRuns();
+  if (!els.thread.querySelector(":scope > [data-id]") && !state.deliveries.size) showEmptyHer();
   updateStartButton();
   scrollBottom();
   restoreTasting(id, seq);
+}
+
+// An empty chapter: under its head, her face in its ring, and nothing else.
+function showEmptyHer() {
+  if (els.thread.querySelector(":scope > .empty-her")) return;
+  const img = makeAvatar(96);
+  img.classList.remove("msg-avatar");
+  img.classList.add("ring");
+  els.thread.insertBefore(h("div", { class: "empty-her", "aria-hidden": "true" }, img), els.typing);
 }
 
 // The assets route answers lists by status; the thread wants one map by id.
@@ -383,9 +614,13 @@ function futureIso(iso) {
 }
 
 // A message already in the thread (a replayed turn after a reload) is not added twice.
-function appendMessage(el) {
+// A newly arrived one rises in (opts.rise); the empty chapter's face gives way to it.
+function appendMessage(el, opts) {
   const id = el.getAttribute("data-id");
   if (id && findMessageEl(id)) return;
+  const empty = els.thread.querySelector(":scope > .empty-her");
+  if (empty) empty.remove();
+  if (opts && opts.rise) el.classList.add("rise");
   els.thread.insertBefore(el, els.typing);
   layoutRuns();
 }
@@ -449,6 +684,33 @@ function layoutRuns() {
     if (time) time.classList.toggle("hidden", sameRun && i !== list.length - 1);
     prev = cur;
   });
+  layoutDays();
+}
+
+// exp 3.4 item 9: a separator between days, kept in place rather than rebuilt, so the
+// thread's polite region does not announce the same day twice.
+function layoutDays() {
+  const now = new Date();
+  const want = new Map();
+  let prev = "";
+  for (const el of els.thread.querySelectorAll(":scope > [data-at]")) {
+    const at = el.getAttribute("data-at") || "";
+    const key = dayKey(at);
+    if (!key) continue;
+    if (prev && key !== prev) want.set(el, [key, dayWords(at, now)]);
+    prev = key;
+  }
+  for (const sep of [...els.thread.querySelectorAll(":scope > .day-sep")]) {
+    const next = sep.nextElementSibling;
+    const w = next ? want.get(next) : null;
+    if (!w || sep.getAttribute("data-day") !== w[0]) sep.remove();
+    else if (sep.textContent !== w[1]) sep.textContent = w[1];
+  }
+  for (const [el, [key, words]] of want) {
+    const before = el.previousElementSibling;
+    if (before && before.classList.contains("day-sep") && before.getAttribute("data-day") === key) continue;
+    el.before(h("div", { class: "day-sep", "data-day": key, text: words }));
+  }
 }
 
 // The typing indicator carries the same avatar before its dots.
@@ -488,7 +750,20 @@ function renderMessage(m, errorCode, error) {
     bubbles.append(b);
   } else {
     const parts = op ? [m.content || ""] : splitBubbles(m.content);
-    for (const p of parts.length ? parts : [m.content || ""]) bubbles.append(bubbleEl(p));
+    // exp 3.4 item 5: each bubble of a line of hers with an id opens the reaction bar.
+    const reacts = !op && !!m.id;
+    for (const p of parts.length ? parts : [m.content || ""]) {
+      const b = bubbleEl(p);
+      if (reacts) {
+        b.setAttribute("tabindex", "0");
+        b.setAttribute("aria-haspopup", "menu");
+      }
+      bubbles.append(b);
+    }
+    if (reacts) {
+      state.rows.set(m.id, m);
+      if (markOf(m) === "keep") bubbles.append(keptMark());
+    }
   }
   el.append(bubbles);
   const extras = h("div", { class: "extras" });
@@ -514,20 +789,29 @@ function renderMessage(m, errorCode, error) {
   return el;
 }
 
+// exp 3.4 item 6: the default thread is only the conversation (and the kept hearts). The
+// inline why, note, keep and drop and the flags show only while the workings are on.
 function metaRow(m) {
   const row = h("div", { class: "meta" }, h("span", { class: "time", text: fmtTime(m.created_at) }));
-  if (m.role === "assistant" && m.channel !== "operator" && m.id) {
+  if (state.operator && m.role === "assistant" && m.channel !== "operator" && m.id) {
     row.append(h("button", { type: "button", class: "why", text: "why", onclick: () => openWhy(m) }));
     row.append(h("button", { type: "button", class: "note-btn", text: "note", onclick: () => toggleNoteSheet(m) }));
     row.append(markButton(m));
     const extra = state.chipsFor.get(m.id);
     if (extra && extra.length) row.append(h("span", { class: "chips" }, extra));
-    if (state.operator) {
-      const codes = flagCodes(m.flags_json);
-      if (codes.length) row.append(h("span", { class: "chips" }, codes.map((c) => chip(c, "flag"))));
-    }
+    const codes = flagCodes(m.flags_json);
+    if (codes.length) row.append(h("span", { class: "chips" }, codes.map((c) => chip(c, "flag"))));
   }
   return row;
+}
+
+// The meta row again after the heart changed a mark while the workings show it.
+function refreshMeta(m) {
+  const el = findMessageEl(m.id);
+  const meta = el ? el.querySelector(":scope > .meta") : null;
+  if (!meta) return;
+  meta.replaceWith(metaRow(m));
+  layoutRuns();
 }
 
 // His photos: images_json holds keys and sizes; the bytes come from /media/inbox/:id/:n.
@@ -562,8 +846,9 @@ function songCard(m) {
   const status = typeof m.spotify_status === "string" ? m.spotify_status : "";
   const slot = h("span", { class: "song-status chips" });
   const known = SONG_STATUS[status];
-  if (known) slot.append(chip(known[0], known[1]));
-  if (m.id && (status === "failed" || status === "not_found")) {
+  // The Spotify add's status and its Retry are the workings (exp 3.4 item 6).
+  if (known && state.operator) slot.append(chip(known[0], known[1]));
+  if (state.operator && m.id && (status === "failed" || status === "not_found")) {
     const retry = h("button", { type: "button", class: "btn small quiet song-retry", text: "Retry" });
     retry.addEventListener("click", async () => {
       retry.disabled = true;
@@ -576,7 +861,7 @@ function songCard(m) {
       } catch (e) {
         retry.disabled = false;
         clear(slot);
-        slot.append(chip(e.code || "error", "danger"), retry);
+        slot.append(chip(errorWords(e.code), "danger"), retry);
       }
     });
     slot.append(retry);
@@ -628,7 +913,7 @@ window.addEventListener("avelie:remote", (e) => {
     clear(note);
     if (d.ok) note.append(chip("on " + d.device, "ok"));
     else if (d.code === "no_device") note.append(chip("open Spotify on your phone or Mac first", "amber"));
-    else note.append(chip(d.code || "error", "danger"));
+    else note.append(chip(errorWords(d.code), "danger"));
   }
 });
 
@@ -715,7 +1000,7 @@ async function pressFeedback(messageId, norm, kind, group) {
     paintSongFeedback(norm);
   } catch (e) {
     const slot = group.querySelector(".feedback-chip");
-    if (slot) { clear(slot); slot.append(chip(e.code || "error", "danger")); }
+    if (slot) { clear(slot); slot.append(chip(errorWords(e.code), "danger")); }
   } finally {
     for (const b of buttons) b.disabled = false;
   }
@@ -1012,7 +1297,7 @@ function noteSheet(m) {
     } catch (e) {
       save.disabled = false;
       clear(slot);
-      slot.append(chip(e.code || "error", "danger"));
+      slot.append(chip(errorWords(e.code), "danger"));
     }
   });
   const sheet = h("div", { class: "note-sheet" },
@@ -1039,6 +1324,7 @@ function markButton(m) {
     btn.textContent = MARK_LABEL[mark];
     btn.className = "mark" + (mark === "none" ? "" : " " + mark);
     btn.setAttribute("aria-label", mark === "none" ? "Keep" : mark === "keep" ? "Kept" : "Dropped");
+    paintKept(m.id, mark);
   };
   paint(markOf(m));
   btn.addEventListener("click", async () => {
@@ -1065,6 +1351,7 @@ function refreshTyping() {
   for (const d of state.deliveries.values()) if (d.dots) waiting = true;
   const on = state.inFlight || state.dotsHold || waiting;
   els.typing.classList.toggle("hidden", !on);
+  document.body.classList.toggle("her-typing", on);
   if (on) scrollBottom();
 }
 
@@ -1088,7 +1375,7 @@ async function arrive(m, seq) {
   const el = renderMessage(m);
   const instant = state.timing === "instant" || m.role === "user" || m.channel === "operator" || !!m.call_id;
   if (instant) {
-    appendMessage(el);
+    appendMessage(el, { rise: true });
     scrollBottom();
     noteRole(m);
     return;
@@ -1097,7 +1384,7 @@ async function arrive(m, seq) {
   const tail = [...el.children].filter((c) => !c.classList.contains("bubbles") && !c.classList.contains("msg-avatar"));
   for (const b of bubbles) b.classList.add("hidden");
   for (const t of tail) t.classList.add("hidden");
-  appendMessage(el);
+  appendMessage(el, { rise: true });
   // Her avatar shows with her first bubble, not before it (the typing dots carry their own).
   const avatarSlot = () => el.querySelector(":scope > .msg-avatar");
   if (avatarSlot()) avatarSlot().classList.add("hidden");
@@ -1188,7 +1475,7 @@ function handleTurnResponse(r, id) {
   if (!r || state.currentId !== id || state.operator) return;
   const seq = state.loadSeq;
   if (r.userMessage) {
-    appendMessage(renderMessage(r.userMessage));
+    appendMessage(renderMessage(r.userMessage), { rise: true });
     noteRole(r.userMessage);
   }
   const a = r.assistantMessage;
@@ -1232,7 +1519,7 @@ function renderTasting(t, userMessage) {
   const seq = state.loadSeq;
   const conversationId = state.currentId;
   if (userMessage) {
-    appendMessage(renderMessage(userMessage));
+    appendMessage(renderMessage(userMessage), { rise: true });
     noteRole(userMessage);
   }
   const wrap = h("div", { class: "msg hers tasting", "data-id": "tasting:" + t.tastingId });
@@ -1271,7 +1558,7 @@ function renderTasting(t, userMessage) {
     try {
       r = await api("POST", "/api/tastings/" + encodeURIComponent(t.tastingId) + "/pick", { pick: choice });
     } catch (e) {
-      slot.append(chip(e.code || "error", "danger"));
+      slot.append(chip(errorWords(e.code), "danger"));
       if (e.status === 409 || e.status === 404) finishTasting(conversationId, wrap, null);
       else lock(false);
       return;
@@ -1292,6 +1579,7 @@ function renderTasting(t, userMessage) {
     if (a && a.id && winner) state.chipsFor.set(a.id, [chip(String(winner.provider || "") + " " + String(winner.model || ""), "accent")]);
     finishTasting(conversationId, wrap, a);
     touchConversation(conversationId);
+    refreshTitlesAfterTurn(conversationId);
   }
 }
 
@@ -1321,7 +1609,7 @@ function finishTasting(conversationId, wrap, assistantMessage) {
   if (state.currentId === conversationId) setTasting(null);
   wrap.remove();
   if (assistantMessage && state.currentId === conversationId) {
-    appendMessage(renderMessage(assistantMessage));
+    appendMessage(renderMessage(assistantMessage), { rise: true });
     noteRole(assistantMessage);
     scrollBottom();
   }
@@ -1391,7 +1679,7 @@ function renderCallCard(callId, rows) {
     list.classList.toggle("hidden", !open);
     line.setAttribute("aria-expanded", String(open));
   });
-  return h("div", { class: "call-card", "data-id": "call:" + callId }, line, list);
+  return h("div", { class: "call-card", "data-id": "call:" + callId, "data-at": first.created_at || "" }, line, list);
 }
 
 async function startCall() {
@@ -1455,36 +1743,94 @@ function renderPhoto(m, errorCode, error) {
   }
   if (status === "ready" && m.image_id) {
     if (state.rejected.has(m.image_id)) return null;
-    const url = "/media/" + encodeURIComponent(m.image_id);
     const asset = state.assets.get(m.image_id);
     const withHim = !!(asset && Number(asset.with_him) === 1);
-    // The picture opens at full size in its own tab; Save fetches the same bytes as a file.
+    // exp 3.4 item 7: the picture alone in its frame; a tap opens the chat's lightbox,
+    // where Save and Full size live. The workings add its chips and its decision row.
     const wrap = h("div", { class: "photo" + (withHim ? " with-him" : "") },
-      h("a", { href: url, target: "_blank", rel: "noopener", class: "photo-link", title: "Open full size" }, h("img", { src: url, alt: "" })),
-      h("div", { class: "photo-links" },
-        h("a", { href: url, target: "_blank", rel: "noopener" }, "Open full size"),
-        h("a", { href: url + "?download=1", download: "avelie-" + m.image_id + ".png" }, "Save"),
-        withHim ? chip("us", "us") : null));
-    if (!state.approved.has(m.image_id)) wrap.append(photoActions(m, m.image_id, wrap));
+      pictureButton(m, "photo", "/media/" + encodeURIComponent(m.image_id), ""));
+    const chips = workingsChips(m.image_id, withHim);
+    if (chips) wrap.append(chips);
+    if (state.operator && !isApproved(m.image_id)) wrap.append(photoActions(m, m.image_id, wrap));
     return wrap;
   }
-  if (status === "failed") {
-    const row = h("div", { class: "photo-actions" }, chip("photo failed"));
+  if (status === "failed") return failedPicture(m, errorCode, error, false);
+  return null;
+}
+
+function isApproved(imageId) {
+  const a = state.assets.get(imageId);
+  return state.approved.has(imageId) || !!(a && a.approval_status === "approved");
+}
+
+// The picture as a button (Enter or a tap opens the lightbox). A clip shows its poster (or
+// its first frame) with a play badge; it plays in the lightbox.
+function pictureButton(m, kind, src, poster) {
+  const btn = h("button", {
+    type: "button",
+    class: "photo-open",
+    "aria-label": "Open picture",
+    "data-image": m.image_id,
+    "data-kind": kind,
+    "data-msg": m.id || "",
+    "data-when": m.created_at || "",
+    "data-poster": poster || null,
+  });
+  if (kind === "clip") {
+    if (poster) btn.append(h("img", { src: poster, alt: "", loading: "lazy", decoding: "async" }));
+    else btn.append(h("video", { src, muted: true, playsinline: true, preload: "metadata", "aria-hidden": "true" }));
+    btn.append(h("span", { class: "play-badge", "aria-hidden": "true" }));
+  } else {
+    btn.append(h("img", { src, alt: "", loading: "lazy", decoding: "async" }));
+  }
+  btn.addEventListener("click", () => openLightbox(m.image_id));
+  return btn;
+}
+
+// The picture's status chips: the workings only.
+function workingsChips(imageId, withHim) {
+  if (!state.operator) return null;
+  const list = [];
+  if (withHim) list.push(chip("us", "us"));
+  if (!isApproved(imageId)) list.push(chip("candidate", "amber"));
+  return list.length ? h("div", { class: "chips" }, list) : null;
+}
+
+// exp 3.4 item 8: a picture that did not come through reads as words, with a retry icon
+// where a retry exists (a photo's generate call; a clip has none from the chat). The codes
+// show only with the workings on.
+function failedPicture(m, errorCode, error, clip) {
+  const line = h("div", { class: "pic-failed", role: "status" }, h("span", { text: "didn't come through" }));
+  const retryable = !clip && !(error && error.retryable === false) && !!(m.id && m.image_id);
+  if (retryable) {
+    const retry = h("button", { type: "button", class: "icon-btn", "aria-label": "Try again" }, retryIcon());
+    retry.addEventListener("click", () => {
+      retry.disabled = true;
+      replacePhoto({ ...m, image_status: "pending" });
+    });
+    line.append(retry);
+  }
+  const wrap = h("div", { class: clip ? "photo video-bubble failed" : "photo" }, line);
+  if (state.operator) {
+    const row = h("div", { class: "photo-actions" }, chip(clip ? "clip failed" : "photo failed"));
     if (errorCode) row.append(chip(errorCode, "danger"));
     const detail = error && typeof error.detail === "string" ? error.detail : "";
     if (detail && detail !== errorCode) row.append(chip(detail));
-    const retryable = !(error && error.retryable === false);
-    if (m.id && m.image_id && retryable) {
-      const retry = h("button", { type: "button", class: "btn small", text: "Retry" });
-      retry.addEventListener("click", () => {
-        retry.disabled = true;
-        replacePhoto({ ...m, image_status: "pending" });
-      });
-      row.append(retry);
-    }
-    return h("div", { class: "photo" }, row);
+    wrap.append(row);
   }
-  return null;
+  return wrap;
+}
+
+function retryIcon() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  for (const [k, v] of [["viewBox", "0 0 24 24"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "1.7"], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["aria-hidden", "true"]]) svg.setAttribute(k, v);
+  for (const d of ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"]) {
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("d", d);
+    svg.append(p);
+  }
+  return svg;
 }
 
 async function requestPhoto(m) {
@@ -1510,6 +1856,38 @@ async function requestPhoto(m) {
   }
 }
 
+// The two decisions and the re-ask, shared by the workings row and the lightbox: the same
+// routes the row has always called.
+async function decidePicture(imageId, decision) {
+  await api("POST", "/api/images/" + encodeURIComponent(imageId) + "/decide", { decision });
+  if (decision === "approve") state.approved.add(imageId);
+  else state.rejected.add(imageId);
+  const a = state.assets.get(imageId);
+  if (a) rememberAsset({ ...a, approval_status: decision === "approve" ? "approved" : "rejected" });
+  state.rollPlaces = null;
+}
+
+// Reject this one and ask again with the same description; the message follows the new picture.
+async function regeneratePicture(m, imageId) {
+  const r = await api("POST", "/api/images/" + encodeURIComponent(imageId) + "/regenerate", {});
+  state.rejected.add(imageId);
+  const asset = r && r.asset ? r.asset : null;
+  if (asset) rememberAsset(asset);
+  let fresh = null;
+  if (m.id) {
+    try { fresh = await api("GET", "/api/messages/" + encodeURIComponent(m.id)); } catch { fresh = null; }
+  }
+  if (fresh && fresh.image_id && fresh.image_id !== imageId) {
+    replacePhoto(fresh);
+  } else if (asset && asset.id) {
+    const status = asset.approval_status === "candidate" ? "ready" : asset.approval_status === "failed" ? "failed" : "pending";
+    replacePhoto({ ...m, image_id: asset.id, image_status: status });
+  } else {
+    replacePhoto({ ...m, image_status: "failed" }, "regenerate", { retryable: false });
+  }
+}
+
+// The workings' Approve / Reject / Regenerate row under a candidate picture.
 function photoActions(m, imageId, wrap) {
   const row = h("div", { class: "photo-actions" });
   const approve = h("button", { type: "button", class: "btn small", text: "Approve" });
@@ -1525,37 +1903,18 @@ function photoActions(m, imageId, wrap) {
   const act = async (decision) => {
     lock(true);
     try {
-      await api("POST", "/api/images/" + encodeURIComponent(imageId) + "/decide", { decision });
-      if (decision === "approve") {
-        state.approved.add(imageId);
-        row.remove();
-      } else {
-        state.rejected.add(imageId);
-        wrap.remove();
-      }
+      await decidePicture(imageId, decision);
+      if (decision === "approve") row.remove();
+      else wrap.remove();
+      replacePhoto({ ...m, image_id: imageId, image_status: "ready" });
     } catch (e) {
       fail(e);
     }
   };
-  // Reject this one and ask again with the same description; the message follows the new picture.
   const regenerate = async () => {
     lock(true);
     try {
-      const r = await api("POST", "/api/images/" + encodeURIComponent(imageId) + "/regenerate", {});
-      state.rejected.add(imageId);
-      const asset = r && r.asset ? r.asset : null;
-      let fresh = null;
-      if (m.id) {
-        try { fresh = await api("GET", "/api/messages/" + encodeURIComponent(m.id)); } catch { fresh = null; }
-      }
-      if (fresh && fresh.image_id && fresh.image_id !== imageId) {
-        replacePhoto(fresh);
-      } else if (asset && asset.id) {
-        const status = asset.approval_status === "candidate" ? "ready" : asset.approval_status === "failed" ? "failed" : "pending";
-        replacePhoto({ ...m, image_id: asset.id, image_status: status });
-      } else {
-        replacePhoto({ ...m, image_status: "failed" }, "regenerate", { retryable: false });
-      }
+      await regeneratePicture(m, imageId);
     } catch (e) {
       fail(e);
     }
@@ -1650,9 +2009,9 @@ function clipStatus(m) {
   return m.image_status === "ready" ? "ready" : m.image_status === "failed" ? "failed" : "pending";
 }
 
-// A video bubble: the source photo as its poster and a play control while the clip is
-// being made (polled until ready), then the player from /media/:id with the same Open
-// full size and Save links a photo has, and Approve / Reject until he decides.
+// A video bubble: the source photo as its poster while the clip is being made (polled until
+// ready), then the clip as a picture button that plays in the lightbox; the workings add
+// Approve / Reject until he decides.
 function renderClip(m, errorCode, error) {
   const id = m.image_id;
   if (!id) return null;
@@ -1670,21 +2029,13 @@ function renderClip(m, errorCode, error) {
     return h("div", { class: "photo video-bubble" }, frame);
   }
   if (status === "ready") {
-    const video = h("video", { controls: true, playsinline: true, preload: "metadata", src: url });
-    if (poster) video.setAttribute("poster", poster);
-    const wrap = h("div", { class: "photo video-bubble" },
-      video,
-      h("div", { class: "video-links photo-links" },
-        h("a", { href: url, target: "_blank", rel: "noopener" }, "Open full size"),
-        h("a", { href: url + "?download=1", download: "avelie-" + id + ".mp4" }, "Save")));
-    if (!state.approved.has(id) && !(asset && asset.approval_status === "approved")) wrap.append(clipActions(m, id, wrap));
+    const wrap = h("div", { class: "photo video-bubble" }, pictureButton(m, "clip", url, poster));
+    const chips = workingsChips(id, !!(asset && Number(asset.with_him) === 1));
+    if (chips) wrap.append(chips);
+    if (state.operator && !isApproved(id)) wrap.append(clipActions(m, id, wrap));
     return wrap;
   }
-  const row = h("div", { class: "photo-actions" }, chip("clip failed"));
-  if (errorCode) row.append(chip(errorCode, "danger"));
-  const detail = error && typeof error.detail === "string" ? error.detail : "";
-  if (detail && detail !== errorCode) row.append(chip(detail));
-  return h("div", { class: "photo video-bubble failed" }, row);
+  return failedPicture(m, errorCode, error, true);
 }
 
 function clipActions(m, id, wrap) {
@@ -1695,14 +2046,10 @@ function clipActions(m, id, wrap) {
     approve.disabled = true;
     reject.disabled = true;
     try {
-      await api("POST", "/api/images/" + encodeURIComponent(id) + "/decide", { decision });
-      if (decision === "approve") {
-        state.approved.add(id);
-        row.remove();
-      } else {
-        state.rejected.add(id);
-        wrap.remove();
-      }
+      await decidePicture(id, decision);
+      if (decision === "approve") row.remove();
+      else wrap.remove();
+      replacePhoto({ ...m, image_id: id, image_status: "ready" });
     } catch (e) {
       approve.disabled = false;
       reject.disabled = false;
@@ -1797,7 +2144,7 @@ function updateSendState() {
   els.attachBtn.disabled = busy || state.operator;
   // A tasting carries no photos (the multipart route runs a plain turn), so Taste waits
   // until the attachments are gone rather than silently spending one ordinary turn.
-  els.tasteBtn.disabled = busy || state.operator || state.attachments.length > 0;
+  els.tasteBtn.disabled = busy || state.operator || state.attachments.length > 0 || !els.input.value.trim();
   els.tasteBtn.classList.toggle("hidden", !(state.settings && state.settings.tastingEnabled === true) || state.operator);
   els.callBtn.classList.toggle("hidden", !callVisible() || state.operator);
   els.callBtn.disabled = onCall ? false : (state.inFlight || state.arriving > 0);
@@ -1809,8 +2156,32 @@ function setInFlight(on) {
   refreshTyping();
 }
 
+// exp 3.4 item 8: a failure reads as words, never a code. Pure (the unit test evaluates it):
+// the codes of the server map to four phrases, anything else that looks like a code
+// (lowercase with an underscore) to the failure phrase, and a label this page already
+// writes in words passes through unchanged.
+const ERROR_WORDS = [
+  [["budget_exceeded", "tasting_budget_exceeded", "price_unknown"], "Today's limit reached"],
+  [["in_progress", "idempotency_conflict", "tasting_pending"], "Still on the last one"],
+  [["provider_failed", "provider_refused", "provider_not_configured", "image_failed", "internal", "error", "timeout"], "Didn't come through"],
+  [["validation", "too_large", "unsupported_media_type"], "Couldn't send that"],
+  [["microphone"], "Microphone is off"],
+];
+
+function errorWords(code) {
+  const c = typeof code === "string" ? code.trim() : "";
+  if (!c) return "Didn't come through";
+  for (const [codes, words] of ERROR_WORDS) if (codes.includes(c)) return words;
+  if (/^[a-z0-9]+(_[a-z0-9]+)+$/.test(c)) return "Didn't come through";
+  return c;
+}
+
+// The words; with the workings on, the raw code follows them ("Didn't come through --
+// provider_failed").
 function showError(code, retry) {
-  els.errorChip.textContent = code || "error";
+  const raw = typeof code === "string" ? code.trim() : "";
+  const words = errorWords(code);
+  els.errorChip.textContent = state.operator && raw && raw !== words ? words + " -- " + raw : words;
   els.errorRow.classList.remove("hidden");
   els.retryBtn.classList.toggle("hidden", !retry);
 }
@@ -1841,8 +2212,8 @@ async function send(opts) {
       const r = await api("POST", "/api/operator", { content: text, conversationId: id });
       if (state.currentId === id && state.operator) {
         const now = new Date().toISOString();
-        appendMessage(renderMessage({ id: "", role: "user", channel: "operator", content: text, created_at: now }));
-        appendMessage(renderMessage({ id: "", role: "assistant", channel: "operator", content: String(r.reply || ""), created_at: now }));
+        appendMessage(renderMessage({ id: "", role: "user", channel: "operator", content: text, created_at: now }), { rise: true });
+        appendMessage(renderMessage({ id: "", role: "assistant", channel: "operator", content: String(r.reply || ""), created_at: now }), { rise: true });
         scrollBottom();
       }
     } else {
@@ -1885,6 +2256,7 @@ async function send(opts) {
       }
     }
     touchConversation(id);
+    if (!state.operator) refreshTitlesAfterTurn(id);
     els.input.value = "";
     grow();
   } catch (e) {
@@ -1911,6 +2283,7 @@ async function letHerStart() {
     const r = await api("POST", "/api/conversations/" + encodeURIComponent(id) + "/open", {});
     handleTurnResponse(r, id);
     touchConversation(id);
+    refreshTitlesAfterTurn(id);
   } catch (e) {
     showError(e.code || "error", false);
   } finally {
@@ -1948,49 +2321,57 @@ function renderAttachments() {
 
 // ------------------------------------------------------------ voice in
 
+// exp 3.4 item 4: a voice note starts from the tools sheet's row (a tap, not a hold). The
+// recording bar takes the composer's place: its time, Send (the existing sendVoice) and
+// Cancel; the 60 s cap stops and sends.
 function initMic() {
   const supported = navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function" && typeof MediaRecorder !== "undefined";
   if (!supported) {
     els.micBtn.classList.add("hidden");
     return;
   }
-  els.micBtn.addEventListener("pointerdown", (e) => {
-    if (e.button !== undefined && e.button !== 0) return;
-    e.preventDefault();
-    // A recording left running by a tap stops (and sends) on the next press.
-    if (state.rec) { stopRecording(); return; }
-    if (els.micBtn.setPointerCapture) {
-      try { els.micBtn.setPointerCapture(e.pointerId); } catch { /* not needed */ }
-    }
+  els.micBtn.addEventListener("click", () => {
+    closeMenus(false);
     startRecording();
   });
-  for (const ev of ["pointerup", "pointercancel"]) els.micBtn.addEventListener(ev, () => {
-    const rec = state.rec;
-    if (!rec) return;
-    // Let go while the permission prompt is up, or a short tap: keep recording until the next tap.
-    if (!rec.stream || Date.now() - rec.pressedAt < TAP_MS) {
-      rec.tap = true;
-      els.micBtn.setAttribute("aria-label", "Tap to stop");
-      return;
-    }
-    stopRecording();
-  });
-  els.micBtn.addEventListener("keydown", (e) => {
-    if (e.key === " " || e.key === "Enter") {
-      e.preventDefault();
-      if (state.rec) stopRecording();
-      else startRecording();
-    }
-  });
-  els.micBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+  if (els.recSend) els.recSend.addEventListener("click", () => stopRecording());
+  if (els.recCancel) els.recCancel.addEventListener("click", () => cancelRecording());
+}
+
+function composerBox() {
+  return els.composer.querySelector(".composer-box");
+}
+
+function showRecBar(rec) {
+  if (!els.recBar) return;
+  const box = composerBox();
+  if (box) box.classList.add("hidden");
+  els.recBar.classList.remove("hidden");
+  paintRecTime(rec);
+  rec.ticker = setInterval(() => paintRecTime(rec), 250);
+  if (els.recSend) els.recSend.focus();
+}
+
+function hideRecBar() {
+  if (!els.recBar) return;
+  const hadFocus = els.recBar.contains(document.activeElement);
+  els.recBar.classList.add("hidden");
+  const box = composerBox();
+  if (box) box.classList.remove("hidden");
+  if (hadFocus) els.input.focus();
+}
+
+function paintRecTime(rec) {
+  if (els.recTime) els.recTime.textContent = fmtDuration(Math.max(0, Date.now() - rec.startedAt) / 1000);
 }
 
 async function startRecording() {
   if (state.rec || state.inFlight || state.operator || state.tasting) return;
-  const rec = { stream: null, recorder: null, chunks: [], startedAt: Date.now(), pressedAt: Date.now(), released: false, tap: false, timer: null };
+  const rec = { stream: null, recorder: null, chunks: [], startedAt: Date.now(), released: false, cancelled: false, timer: null, ticker: null };
   state.rec = rec;
   els.micBtn.classList.add("recording");
   els.micBtn.setAttribute("aria-pressed", "true");
+  showRecBar(rec);
   try {
     rec.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch {
@@ -1998,8 +2379,8 @@ async function startRecording() {
     resetRecording(rec);
     return;
   }
-  if (rec.released || state.rec !== rec) {
-    // The hold ended while the permission prompt was up.
+  if (rec.released || rec.cancelled || state.rec !== rec) {
+    // Send or Cancel was pressed while the permission prompt was up: nothing was recorded.
     resetRecording(rec);
     return;
   }
@@ -2015,6 +2396,7 @@ async function startRecording() {
   rec.recorder.addEventListener("stop", () => finishRecording(rec));
   rec.recorder.start();
   rec.startedAt = Date.now();
+  paintRecTime(rec);
   rec.timer = setTimeout(() => stopRecording(), MAX_VOICE_MS);
 }
 
@@ -2025,11 +2407,21 @@ function stopRecording() {
   if (rec.recorder && rec.recorder.state !== "inactive") rec.recorder.stop();
 }
 
+function cancelRecording() {
+  const rec = state.rec;
+  if (!rec) return;
+  rec.cancelled = true;
+  rec.released = true;
+  if (rec.recorder && rec.recorder.state !== "inactive") rec.recorder.stop();
+  else resetRecording(rec);
+}
+
 function finishRecording(rec) {
   const mime = (rec.recorder && rec.recorder.mimeType) || "audio/webm";
   const blob = new Blob(rec.chunks, { type: mime });
   const ms = Date.now() - rec.startedAt;
   resetRecording(rec);
+  if (rec.cancelled) return;
   if (ms < MIN_VOICE_MS || !blob.size) return;
   if (blob.size > MAX_VOICE_BYTES) { showError("4 MB max", false); return; }
   sendVoice(blob, mime);
@@ -2039,11 +2431,12 @@ function resetRecording(rec) {
   if (state.rec === rec) state.rec = null;
   if (rec) {
     clearTimeout(rec.timer);
+    clearInterval(rec.ticker);
     if (rec.stream) rec.stream.getTracks().forEach((t) => t.stop());
   }
   els.micBtn.classList.remove("recording");
   els.micBtn.setAttribute("aria-pressed", "false");
-  els.micBtn.setAttribute("aria-label", "Hold to record");
+  hideRecBar();
 }
 
 async function sendVoice(blob, mime) {
@@ -2059,6 +2452,7 @@ async function sendVoice(blob, mime) {
     const r = await apiForm("POST", "/api/conversations/" + encodeURIComponent(id) + "/voice", fd);
     handleTurnResponse(r, id);
     touchConversation(id);
+    refreshTitlesAfterTurn(id);
   } catch (e) {
     showError(e.code || "error", false);
   } finally {
@@ -2084,6 +2478,27 @@ function renderScene() {
   const s = state.scene ? state.scene.status : null;
   els.sceneTogether.setAttribute("aria-pressed", String(s === "together"));
   els.sceneApart.setAttribute("aria-pressed", String(s === "apart"));
+  if (els.placeLine) {
+    const text = placeLineText(state.scene);
+    els.placeLine.textContent = text;
+    els.placeLine.classList.toggle("hidden", !text);
+  }
+}
+
+// "the record store" from "at the record store": one leading "at " or "in " dropped.
+function placeWords(location) {
+  return String(location || "").replace(/\s+/g, " ").trim().replace(/^(at|in)\s+/i, "");
+}
+
+// exp 3.4 item 3: the one line under her name: where the two of you are.
+function placeLineText(scene) {
+  if (!scene || typeof scene !== "object") return "";
+  if (scene.status === "together") {
+    const where = placeWords(scene.location);
+    return where ? "together at " + where : "together";
+  }
+  if (scene.status === "apart") return "texting";
+  return "";
 }
 
 // v5 section 1: while a together scene holds her clock, the bar reads "held Tue 9:04pm".
@@ -2179,27 +2594,78 @@ async function loadPlaces(force) {
   return state.placeRows;
 }
 
-function setPlaceUrl(id) {
-  if (id) els.thread.style.setProperty("--place-url", "url(/media/place/" + encodeURIComponent(id) + ")");
-  else els.thread.style.removeProperty("--place-url");
-}
-
-// The picture of the scene's place behind the thread (the stylesheet paints .thread::before
-// from --place-url under the veil): set when the scene is together at a place that has a
-// picture, removed when apart, none, or the place has no picture. `known` is what the
-// scene PUT just answered ({ id, picture } or null); undefined means look it up.
-async function applyPlaceBackground(known) {
-  const s = state.scene;
-  if (!s || s.status !== "together" || !s.location) { setPlaceUrl(null); return; }
-  if (known !== undefined) {
-    setPlaceUrl(known && known.picture && known.id ? known.id : null);
+// exp 3.4 item 10: behind the thread, the place's picture when the two of you are together
+// at a place that has one, else her wallpaper of the day (GET /api/wallpaper). The source
+// is set by script, the crop through the CSSOM, and .ready fades it in once it loads.
+function setBackdrop(src, focus) {
+  const img = els.backdrop;
+  if (!img) return;
+  const pos = Array.isArray(focus) && focus.length === 2 && focus.every((n) => Number.isFinite(Number(n)))
+    ? Number(focus[0]) + "% " + Number(focus[1]) + "%" : "";
+  if (pos) img.style.objectPosition = pos;
+  else img.style.removeProperty("object-position");
+  if (!src) {
+    state.backdropSrc = "";
+    img.classList.remove("ready");
+    img.removeAttribute("src");
     return;
   }
-  const rows = await loadPlaces(false);
-  if (!state.scene || state.scene.status !== "together" || state.scene.location !== s.location) return;
-  const want = placeNorm(s.location);
-  const hit = (rows || []).find((p) => placeNorm(p.title) === want && p.picture);
-  setPlaceUrl(hit ? hit.id : null);
+  if (state.backdropSrc === src) return;
+  state.backdropSrc = src;
+  img.classList.remove("ready");
+  img.src = src;
+}
+
+function wireBackdrop() {
+  const img = els.backdrop;
+  if (!img) return;
+  img.addEventListener("load", () => { if (state.backdropSrc) img.classList.add("ready"); });
+  img.addEventListener("error", () => {
+    const failed = state.backdropSrc;
+    setBackdrop("", null);
+    // A place picture that will not load gives way to her wallpaper.
+    if (failed.startsWith("/media/place/") && state.wallpaper) setBackdrop(state.wallpaper.url, state.wallpaper.focus);
+  });
+}
+
+// Read once per page; null when the route is not there or answers nothing usable.
+async function loadWallpaper() {
+  if (state.wallpaper !== undefined) return state.wallpaper;
+  let w = null;
+  try {
+    const r = await api("GET", "/api/wallpaper");
+    if (r && typeof r.url === "string" && r.url.startsWith("/")) w = { url: r.url, focus: Array.isArray(r.focus) ? r.focus : null };
+  } catch {
+    w = null;
+  }
+  state.wallpaper = w;
+  return w;
+}
+
+// `known` is what the scene PUT just answered ({ id, picture } or null); undefined means
+// look the place up (today's lookup).
+async function applyPlaceBackground(known) {
+  const seq = ++state.backdropSeq;
+  const s = state.scene;
+  let placeId = null;
+  if (s && s.status === "together" && s.location) {
+    if (known !== undefined) {
+      placeId = known && known.picture && known.id ? known.id : null;
+    } else {
+      const rows = await loadPlaces(false);
+      if (seq !== state.backdropSeq) return;
+      const want = placeNorm(s.location);
+      const hit = (rows || []).find((p) => placeNorm(p.title) === want && p.picture);
+      placeId = hit ? hit.id : null;
+    }
+  }
+  if (placeId) {
+    setBackdrop("/media/place/" + encodeURIComponent(placeId), null);
+    return;
+  }
+  const w = await loadWallpaper();
+  if (seq !== state.backdropSeq) return;
+  setBackdrop(w ? w.url : "", w ? w.focus : null);
 }
 
 // The box is never empty when a place is known: the scene's own place when together,
@@ -2219,7 +2685,7 @@ async function prefillPlace() {
 }
 
 function placeButton(title, thumbId) {
-  const btn = h("button", { type: "button", class: "btn small quiet place-btn", onclick: () => { closeMenus(); setScene("together", title); } });
+  const btn = h("button", { type: "button", class: "btn small quiet place-btn", onclick: () => { closeMenus(true); setScene("together", title); } });
   if (thumbId) btn.append(h("img", { class: "place-thumb", src: "/media/place/" + encodeURIComponent(thumbId), alt: "", width: "40", height: "40", loading: "lazy" }));
   btn.append(document.createTextNode(title));
   return btn;
@@ -2248,10 +2714,12 @@ async function loadLife() {
   }
 }
 
+// The scene sheet opens from the place line (or, while that line is hidden, from the
+// tools button), with today's picker inside it.
 async function openPlaces() {
-  closeMenus();
+  const anchor = els.placeLine && !els.placeLine.classList.contains("hidden") ? els.placeLine : els.moreBtn;
+  openSheet(els.placesPop, anchor);
   showPlaceNeeded(false);
-  els.placesPop.classList.remove("hidden");
   els.placeInput.value = state.scene && state.scene.status === "together" && state.scene.location ? String(state.scene.location) : "";
   clear(els.placesList);
   const [where, rows] = await Promise.all([prefillPlace(), loadPlaces(true)]);
@@ -2291,7 +2759,7 @@ function openDrawer(drawer) {
 }
 
 function drawers() {
-  return [els.photosDrawer, els.whyDrawer, els.phoneDrawer].filter(Boolean);
+  return [els.photosDrawer, els.whyDrawer].filter(Boolean);
 }
 
 function closeDrawers() {
@@ -2300,74 +2768,88 @@ function closeDrawers() {
     d.setAttribute("aria-hidden", "true");
   }
   els.photosBtn.setAttribute("aria-expanded", "false");
-  if (els.phoneBtn) els.phoneBtn.setAttribute("aria-expanded", "false");
   syncScrim();
 }
 
+function isPhoneWidth() {
+  return !!(window.matchMedia && window.matchMedia(PHONE_QUERY).matches);
+}
+
+function openSheetEl() {
+  return [els.moreMenu, els.placesPop].find((s) => s && !s.classList.contains("hidden")) || null;
+}
+
+// The scrim sits under the sidebar and the drawers, and under a sheet at phone width (a
+// popover over 760 has none).
 function syncScrim() {
-  const open = els.sidebar.classList.contains("open") || drawers().some((d) => d.classList.contains("open"));
+  const sheet = !!openSheetEl() && isPhoneWidth();
+  const open = els.sidebar.classList.contains("open") || drawers().some((d) => d.classList.contains("open")) || sheet;
   els.scrim.classList.toggle("hidden", !open);
 }
 
-// ------------------------------------------------------------ her phone (v4 section 1)
-
-// The ids phone.js renders into (SPEC_V4 section 0), minus the places list: the drawer
-// is read-only, and the chat page's own #placesList is the scene picker.
-const PHONE_IDS = ["phoneStatus", "phoneNow", "phoneWhere", "phoneWeather", "phoneOutfit", "phoneMood", "phoneWants", "phoneAsks", "phoneToday", "phoneListening", "phoneMap"];
-
-// The slide-in shows the same panel the Phone page does, from the same route, rendered by
-// the same function (phone.js, loaded when the drawer opens, never at page load).
-async function openPhone() {
-  if (!els.phoneDrawer || !els.phoneDrawerBody) return;
-  openDrawer(els.phoneDrawer);
-  els.phoneBtn.setAttribute("aria-expanded", "true");
-  const body = els.phoneDrawerBody;
-  clear(body);
-  body.append(h("div", { class: "chips" }, chip("loading")));
-  let mod = null;
-  let phone = null;
-  try {
-    [mod, phone] = await Promise.all([import("./phone.js"), api("GET", "/api/phone")]);
-  } catch (e) {
-    clear(body);
-    body.append(h("div", { class: "chips" }, chip(e && e.code ? e.code : "phone", "danger")));
+// exp 3.3: at 760 and under a bottom sheet over the scrim (the stylesheet places it; any
+// inline position is cleared); over 760 a popover under its button, `top` its bottom + 8
+// and `right` the window's width minus its right, set through the CSSOM.
+function placeSheet(sheet, anchor) {
+  if (!sheet) return;
+  const rect = anchor && anchor.getClientRects().length ? anchor.getBoundingClientRect() : null;
+  if (isPhoneWidth() || !rect) {
+    sheet.style.removeProperty("top");
+    sheet.style.removeProperty("right");
     return;
   }
-  if (!els.phoneDrawer.classList.contains("open")) return;
-  clear(body);
-  const panel = h("div", { class: "phone-panel drawer-phone" });
-  for (const id of PHONE_IDS) {
-    if (!document.getElementById(id)) panel.append(h("div", { id, class: "phone-" + id.slice(5).toLowerCase() }));
-  }
-  body.append(panel);
-  try {
-    if (mod && typeof mod.renderPhone === "function") mod.renderPhone(panel, phone, { places: false, tap: false, readOnly: true });
-    else body.append(h("div", { class: "chips" }, chip("phone", "danger")));
-  } catch {
-    body.append(h("div", { class: "chips" }, chip("phone", "danger")));
-  }
-  // Read-only in the drawer: no places list, no status line for it, no tap on the map.
-  for (const id of ["placesList", "placesStatus"]) {
-    const stray = body.querySelector("#" + id);
-    if (stray) stray.remove();
-  }
-  const map = body.querySelector("svg.map");
-  if (map) map.classList.add("read-only");
+  sheet.style.top = Math.round(rect.bottom + 8) + "px";
+  sheet.style.right = Math.round(window.innerWidth - rect.right) + "px";
 }
 
-function closeMenus() {
+function openSheet(sheet, anchor) {
+  closeMenus(false);
+  closeReactBar(false);
+  sheet.classList.remove("hidden");
+  placeSheet(sheet, anchor);
+  if (anchor) anchor.setAttribute("aria-expanded", "true");
+  state.sheetReturn = anchor || null;
+  syncScrim();
+}
+
+// Closes both sheets; `returnFocus` gives the focus back to the control that opened one.
+function closeMenus(returnFocus) {
+  const open = openSheetEl();
   els.moreMenu.classList.add("hidden");
   els.moreBtn.setAttribute("aria-expanded", "false");
   els.placesPop.classList.add("hidden");
+  if (els.placeLine) els.placeLine.setAttribute("aria-expanded", "false");
+  const back = state.sheetReturn;
+  state.sheetReturn = null;
+  syncScrim();
+  if (returnFocus && open && back && typeof back.focus === "function") back.focus();
 }
 
 function toggleMore() {
-  const open = els.moreMenu.classList.contains("hidden");
-  closeMenus();
-  if (open) {
-    els.moreMenu.classList.remove("hidden");
-    els.moreBtn.setAttribute("aria-expanded", "true");
+  if (!els.moreMenu.classList.contains("hidden")) {
+    closeMenus(true);
+    return;
   }
+  openSheet(els.moreMenu, els.moreBtn);
+  const first = focusables(els.moreMenu)[0];
+  if (first) first.focus();
+}
+
+// What Tab may reach inside a sheet, the reaction bar or the lightbox.
+function focusables(root) {
+  const sel = 'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), video[controls], [tabindex]:not([tabindex="-1"])';
+  return [...root.querySelectorAll(sel)].filter((el) => !el.closest(".hidden") && el.getClientRects().length > 0);
+}
+
+// Tab and Shift+Tab stay inside `root`.
+function trapTab(e, root) {
+  const list = focusables(root);
+  if (!list.length) { e.preventDefault(); return; }
+  const first = list[0];
+  const last = list[list.length - 1];
+  const inside = root.contains(document.activeElement);
+  if (e.shiftKey && (!inside || document.activeElement === first)) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (!inside || document.activeElement === last)) { e.preventDefault(); first.focus(); }
 }
 
 async function openPhotos() {
@@ -2378,12 +2860,12 @@ async function openPhotos() {
     const assets = await api("GET", "/api/assets");
     scenes = Array.isArray(assets.scenes) ? assets.scenes.slice() : [];
   } catch (e) {
-    els.photosList.append(chip(e.code || "error", "danger"));
+    els.photosList.append(chip(errorWords(e.code), "danger"));
     return;
   }
   scenes.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
   if (!scenes.length) {
-    els.photosList.append(h("div", { class: "chips" }, chip("none")));
+    els.photosList.append(h("p", { class: "empty-label", text: "No pictures yet" }));
     return;
   }
   for (const a of scenes) {
@@ -2469,7 +2951,7 @@ async function openWhy(m) {
   try {
     [ctx] = await Promise.all([api("GET", "/api/messages/" + encodeURIComponent(m.id) + "/context"), ensureCaches()]);
   } catch (e) {
-    els.whyBody.append(h("div", { class: "chips" }, chip(e.code || "error", "danger")));
+    els.whyBody.append(h("div", { class: "chips" }, chip(errorWords(e.code), "danger")));
     return;
   }
   if (!ctx || typeof ctx !== "object") {
@@ -2541,6 +3023,350 @@ function asList(v) {
   return Array.isArray(v) ? v : [];
 }
 
+// ------------------------------------------------------------ keeping her line (exp 3.4 item 5)
+
+function heartIcon() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  for (const [k, v] of [["viewBox", "0 0 24 24"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "1.7"], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["aria-hidden", "true"]]) svg.setAttribute(k, v);
+  const p = document.createElementNS(NS, "path");
+  p.setAttribute("d", "M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z");
+  svg.append(p);
+  return svg;
+}
+
+// The small accent heart at the corner of a kept line, in both modes.
+function keptMark() {
+  return h("span", { class: "kept-mark", role: "img", "aria-label": "kept" }, heartIcon());
+}
+
+function paintKept(id, mark) {
+  const el = id ? findMessageEl(id) : null;
+  const box = el ? el.querySelector(":scope > .bubbles") : null;
+  if (!box) return;
+  const cur = box.querySelector(":scope > .kept-mark");
+  if (mark === "keep" && !cur) box.append(keptMark());
+  else if (mark !== "keep" && cur) cur.remove();
+}
+
+// The bubble of hers under an event, with its row.
+function herBubble(target) {
+  const b = target && target.closest ? target.closest(".bubble[aria-haspopup]") : null;
+  if (!b || !els.thread.contains(b)) return null;
+  const msg = b.closest(".msg.hers[data-id]");
+  const id = msg ? msg.getAttribute("data-id") : "";
+  const m = id ? state.rows.get(id) : null;
+  return m ? { bubble: b, m } : null;
+}
+
+// One bar at a time: the heart (Keep), note and why. Above the bubble, below it when there
+// is no room; placed through the CSSOM.
+function openReactBar(bubble, m) {
+  if (state.react && state.react.bubble === bubble) return;
+  closeReactBar(false);
+  closeMenus(false);
+  const heart = h("button", { type: "button", class: "react-btn react-keep", role: "menuitemcheckbox", "aria-checked": String(markOf(m) === "keep"), "aria-label": "Keep" }, heartIcon());
+  const note = h("button", { type: "button", class: "react-btn", role: "menuitem", text: "note" });
+  const why = h("button", { type: "button", class: "react-btn", role: "menuitem", text: "why" });
+  const bar = h("div", { class: "react-bar glass strong", role: "menu", "aria-label": "React" }, heart, note, why);
+  heart.addEventListener("click", () => toggleKeep(m, heart));
+  note.addEventListener("click", () => { closeReactBar(false); toggleNoteSheet(m); });
+  why.addEventListener("click", () => { closeReactBar(false); openWhy(m); });
+  bar.addEventListener("keydown", (e) => {
+    const items = [heart, note, why];
+    const i = items.indexOf(document.activeElement);
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeReactBar(true); }
+    else if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); items[(i + items.length - 1) % items.length].focus(); }
+    else if (e.key === "Tab") trapTab(e, bar);
+  });
+  document.body.append(bar);
+  placeReactBar(bar, bubble);
+  state.react = { bar, bubble, m };
+  heart.focus();
+}
+
+function placeReactBar(bar, bubble) {
+  bar.style.position = "fixed";
+  bar.style.zIndex = "60";
+  const r = bubble.getBoundingClientRect();
+  const floor = Math.max(8, els.thread.getBoundingClientRect().top);
+  let top = r.top - bar.offsetHeight - 8;
+  if (top < floor) top = r.bottom + 8;
+  const left = Math.min(Math.max(8, r.left), Math.max(8, window.innerWidth - bar.offsetWidth - 8));
+  bar.style.top = Math.round(top) + "px";
+  bar.style.left = Math.round(left) + "px";
+}
+
+function closeReactBar(returnFocus) {
+  const r = state.react;
+  if (!r) return;
+  state.react = null;
+  r.bar.remove();
+  if (returnFocus && r.bubble.isConnected) r.bubble.focus();
+}
+
+// The heart sets the mark `keep` on a line that is not kept and clears it on a kept one
+// (the routes the Keep control has always used); it never drops.
+async function toggleKeep(m, heart) {
+  const was = markOf(m);
+  const next = was === "keep" ? "none" : "keep";
+  heart.setAttribute("aria-checked", String(next === "keep"));
+  heart.disabled = true;
+  try {
+    if (next === "none") await api("DELETE", "/api/messages/" + encodeURIComponent(m.id) + "/mark");
+    else await api("POST", "/api/messages/" + encodeURIComponent(m.id) + "/mark", { mark: "keep" });
+    state.marks.set(m.id, next);
+    paintKept(m.id, next);
+    if (state.operator) refreshMeta(m);
+  } catch (e) {
+    heart.setAttribute("aria-checked", String(was === "keep"));
+    showError(e.code || "error", false);
+  } finally {
+    heart.disabled = false;
+  }
+  // The pressed heart pops before the bar goes.
+  await sleep(reducedMotion() ? 0 : 280);
+  if (state.react && state.react.bar.contains(heart)) closeReactBar(true);
+}
+
+// A double-click or double-tap, a long press (450 ms, cancelled by 10 px of movement), the
+// context menu, or Enter / Space on the focused bubble.
+function wireReactions() {
+  const thread = els.thread;
+  const cancelPress = () => {
+    if (state.press) clearTimeout(state.press.timer);
+    state.press = null;
+  };
+  thread.addEventListener("dblclick", (e) => {
+    const hit = herBubble(e.target);
+    if (!hit) return;
+    e.preventDefault();
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (sel && typeof sel.removeAllRanges === "function") sel.removeAllRanges();
+    openReactBar(hit.bubble, hit.m);
+  });
+  thread.addEventListener("contextmenu", (e) => {
+    const hit = herBubble(e.target);
+    if (!hit) return;
+    e.preventDefault();
+    cancelPress();
+    openReactBar(hit.bubble, hit.m);
+  });
+  thread.addEventListener("pointerdown", (e) => {
+    cancelPress();
+    if (e.button !== undefined && e.button !== 0) return;
+    const hit = herBubble(e.target);
+    if (!hit) return;
+    const press = { x: e.clientX, y: e.clientY, timer: null };
+    press.timer = setTimeout(() => {
+      if (state.press !== press) return;
+      state.press = null;
+      openReactBar(hit.bubble, hit.m);
+    }, LONG_PRESS_MS);
+    state.press = press;
+  });
+  thread.addEventListener("pointermove", (e) => {
+    const p = state.press;
+    if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > MOVE_CANCEL_PX) cancelPress();
+  });
+  for (const ev of ["pointerup", "pointercancel", "pointerleave"]) thread.addEventListener(ev, cancelPress);
+  thread.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const hit = herBubble(e.target);
+    if (!hit || e.target !== hit.bubble) return;
+    e.preventDefault();
+    openReactBar(hit.bubble, hit.m);
+  });
+  thread.addEventListener("scroll", () => { cancelPress(); closeReactBar(false); }, { passive: true });
+  // A tap anywhere outside the bar closes it.
+  document.addEventListener("pointerdown", (e) => {
+    const r = state.react;
+    if (r && !r.bar.contains(e.target) && !r.bubble.contains(e.target)) closeReactBar(false);
+  });
+}
+
+// ------------------------------------------------------------ the lightbox (exp 3.4 item 7)
+
+// The pictures of the open chapter, in thread order.
+function lightboxItems() {
+  return [...els.thread.querySelectorAll(".photo-open[data-image]")].map((b) => ({
+    id: b.getAttribute("data-image") || "",
+    kind: b.getAttribute("data-kind") === "clip" ? "clip" : "photo",
+    msg: b.getAttribute("data-msg") || "",
+    at: b.getAttribute("data-when") || "",
+    poster: b.getAttribute("data-poster") || "",
+  })).filter((x) => x.id);
+}
+
+// The place of each approved picture, as the Album shows it (GET /api/roll), read once.
+async function loadRollPlaces() {
+  if (state.rollPlaces) return state.rollPlaces;
+  const map = new Map();
+  try {
+    const r = await api("GET", "/api/roll?limit=200");
+    for (const it of r && Array.isArray(r.items) ? r.items : []) {
+      const where = it && typeof it.place === "string" ? placeWords(it.place) : "";
+      if (it && it.id && where) map.set(it.id, where);
+    }
+  } catch {
+    /* no place line */
+  }
+  state.rollPlaces = map;
+  return map;
+}
+
+function openLightbox(imageId) {
+  if (!els.lightbox || !els.lbMedia) {
+    window.open("/media/" + encodeURIComponent(imageId), "_blank", "noopener");
+    return;
+  }
+  const items = lightboxItems();
+  const index = items.findIndex((x) => x.id === imageId);
+  if (index < 0) return;
+  closeReactBar(false);
+  closeMenus(false);
+  state.lightbox = { items, index };
+  els.lightbox.classList.remove("hidden");
+  showLightboxItem();
+  loadRollPlaces().then(() => { if (state.lightbox) paintLightboxPlace(); });
+  (els.lbClose || els.lightbox).focus();
+}
+
+function showLightboxItem() {
+  const lb = state.lightbox;
+  if (!lb) return;
+  const it = lb.items[lb.index];
+  const url = "/media/" + encodeURIComponent(it.id);
+  const old = els.lbMedia.querySelector("video");
+  if (old) old.pause();
+  clear(els.lbMedia);
+  if (it.kind === "clip") {
+    const v = h("video", { src: url, controls: true, autoplay: true, playsinline: true, preload: "metadata" });
+    if (it.poster) v.setAttribute("poster", it.poster);
+    v.addEventListener("loadeddata", () => v.classList.add("loaded"));
+    els.lbMedia.append(v);
+  } else {
+    const img = h("img", { src: url, alt: "", decoding: "async" });
+    img.addEventListener("load", () => img.classList.add("loaded"));
+    els.lbMedia.append(img);
+  }
+  if (els.lbDate) els.lbDate.textContent = fullDay(it.at);
+  paintLightboxPlace();
+  if (els.lbSave) els.lbSave.setAttribute("href", url + "?download=1");
+  if (els.lbOpen) els.lbOpen.setAttribute("href", url);
+  const had = document.activeElement;
+  if (els.lbPrev) els.lbPrev.disabled = lb.index <= 0;
+  if (els.lbNext) els.lbNext.disabled = lb.index >= lb.items.length - 1;
+  // An arrow that just reached the end gives the focus to Close rather than to nothing.
+  if ((had === els.lbPrev || had === els.lbNext) && had.disabled && els.lbClose) els.lbClose.focus();
+  paintDecide(it);
+}
+
+function paintLightboxPlace() {
+  const lb = state.lightbox;
+  if (!lb || !els.lbPlace) return;
+  const it = lb.items[lb.index];
+  const where = state.rollPlaces ? state.rollPlaces.get(it.id) || "" : "";
+  els.lbPlace.textContent = where;
+  els.lbPlace.classList.toggle("hidden", !where);
+}
+
+// While the picture is not approved: Keep, Not her and Again (a clip has no Again).
+function paintDecide(it) {
+  if (!els.lbDecide) return;
+  const undecided = !isApproved(it.id) && !state.rejected.has(it.id);
+  els.lbDecide.classList.toggle("hidden", !undecided);
+  if (els.lbAgain) els.lbAgain.classList.toggle("hidden", it.kind === "clip");
+  for (const b of [els.lbKeep, els.lbReject, els.lbAgain]) if (b) b.disabled = false;
+  decideStatus("");
+}
+
+function decideStatus(text) {
+  if (!els.lbDecide) return;
+  let slot = els.lbDecide.querySelector(".tool-status");
+  if (!slot && !text) return;
+  if (!slot) {
+    slot = h("span", { class: "tool-status", role: "status" });
+    els.lbDecide.append(slot);
+  }
+  slot.textContent = text;
+  slot.classList.toggle("hidden", !text);
+}
+
+async function lightboxDecide(action) {
+  const lb = state.lightbox;
+  if (!lb) return;
+  const it = lb.items[lb.index];
+  const base = state.rows.get(it.msg) || { id: it.msg, conversation_id: state.currentId };
+  const m = { ...base, image_id: it.id, image_status: "ready" };
+  const buttons = [els.lbKeep, els.lbReject, els.lbAgain].filter(Boolean);
+  for (const b of buttons) b.disabled = true;
+  try {
+    if (action === "again") await regeneratePicture(m, it.id);
+    else {
+      await decidePicture(it.id, action);
+      replacePhoto(m);
+    }
+  } catch (e) {
+    for (const b of buttons) b.disabled = false;
+    const raw = typeof e.code === "string" ? e.code : "";
+    const words = errorWords(raw);
+    decideStatus(state.operator && raw && raw !== words ? words + " -- " + raw : words);
+    return;
+  }
+  if (action === "approve") {
+    els.lbDecide.classList.add("hidden");
+    if (els.lbClose) els.lbClose.focus();
+  } else {
+    // The picture left the thread (rejected, or replaced by a new one).
+    closeLightbox();
+  }
+}
+
+function stepLightbox(delta) {
+  const lb = state.lightbox;
+  if (!lb) return;
+  const next = lb.index + delta;
+  if (next < 0 || next >= lb.items.length) return;
+  lb.index = next;
+  showLightboxItem();
+}
+
+function closeLightbox() {
+  const lb = state.lightbox;
+  if (!lb || !els.lightbox) return;
+  state.lightbox = null;
+  const v = els.lbMedia.querySelector("video");
+  if (v) v.pause();
+  clear(els.lbMedia);
+  els.lightbox.classList.add("hidden");
+  const it = lb.items[lb.index];
+  const esc = (x) => (window.CSS && CSS.escape ? CSS.escape(x) : x.replace(/["\\]/g, "\\$&"));
+  const back = it ? els.thread.querySelector('.photo-open[data-image="' + esc(it.id) + '"]') : null;
+  if (back) back.focus();
+  else els.input.focus();
+}
+
+function lightboxKey(e) {
+  if (e.key === "Escape") { e.preventDefault(); closeLightbox(); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); stepLightbox(-1); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); stepLightbox(1); }
+  else if (e.key === "Tab") trapTab(e, els.lightbox);
+}
+
+function wireLightbox() {
+  if (!els.lightbox) return;
+  if (els.lbClose) els.lbClose.addEventListener("click", closeLightbox);
+  if (els.lbPrev) els.lbPrev.addEventListener("click", () => stepLightbox(-1));
+  if (els.lbNext) els.lbNext.addEventListener("click", () => stepLightbox(1));
+  if (els.lbKeep) els.lbKeep.addEventListener("click", () => lightboxDecide("approve"));
+  if (els.lbReject) els.lbReject.addEventListener("click", () => lightboxDecide("reject"));
+  if (els.lbAgain) els.lbAgain.addEventListener("click", () => lightboxDecide("again"));
+  // A tap on the dark around the picture closes it.
+  els.lightbox.addEventListener("click", (e) => { if (e.target === els.lightbox) closeLightbox(); });
+}
+
 // ------------------------------------------------------------ wiring
 
 els.composer.addEventListener("submit", (e) => { e.preventDefault(); send(); });
@@ -2553,10 +3379,12 @@ els.input.addEventListener("keydown", (e) => {
 els.input.addEventListener("input", () => {
   grow();
   if (state.pending && els.input.value.trim() !== state.pending.text) state.pending = null;
+  updateSendState();
 });
 els.retryBtn.addEventListener("click", () => send());
-els.tasteBtn.addEventListener("click", () => send({ tasting: true }));
-els.callBtn.addEventListener("click", startCall);
+// The tools sheet: every row closes the sheet, then acts.
+els.tasteBtn.addEventListener("click", () => { closeMenus(false); send({ tasting: true }); });
+els.callBtn.addEventListener("click", () => { closeMenus(false); startCall(); });
 els.callMute.addEventListener("click", () => {
   if (!state.call) return;
   const on = els.callMute.getAttribute("aria-pressed") !== "true";
@@ -2566,22 +3394,29 @@ els.callEnd.addEventListener("click", () => { if (state.call) state.call.end("ha
 els.newChat.addEventListener("click", newChat);
 els.openDrawer.addEventListener("click", openSidebar);
 els.closeDrawer.addEventListener("click", closeSidebar);
-els.scrim.addEventListener("click", () => { closeSidebar(); closeDrawers(); closeMenus(); });
-els.letHerStart.addEventListener("click", letHerStart);
-els.sceneTogether.addEventListener("click", openPlaces);
-els.sceneApart.addEventListener("click", () => { closeMenus(); setScene("apart", null); });
-els.placeSet.addEventListener("click", () => { const where = els.placeInput.value.trim(); closeMenus(); setScene("together", where || null); });
-els.placeCancel.addEventListener("click", closeMenus);
+els.scrim.addEventListener("click", () => { closeSidebar(); closeDrawers(); closeMenus(true); });
+els.letHerStart.addEventListener("click", () => { closeMenus(false); letHerStart(); });
+// The scene sheet: Together goes to the place picker in it, Texting sets the scene.
+els.sceneTogether.addEventListener("click", () => {
+  if (els.placesPop.classList.contains("hidden")) openPlaces();
+  else els.placeInput.focus();
+});
+els.sceneApart.addEventListener("click", () => { closeMenus(true); setScene("apart", null); });
+els.placeSet.addEventListener("click", () => { const where = els.placeInput.value.trim(); closeMenus(true); setScene("together", where || null); });
+els.placeCancel.addEventListener("click", () => closeMenus(true));
 els.placeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); els.placeSet.click(); } });
-els.photosBtn.addEventListener("click", () => (els.photosDrawer.classList.contains("open") ? closeDrawers() : openPhotos()));
+if (els.placeLine) els.placeLine.addEventListener("click", () => (els.placesPop.classList.contains("hidden") ? openPlaces() : closeMenus(true)));
+els.photosBtn.addEventListener("click", () => {
+  closeMenus(false);
+  if (els.photosDrawer.classList.contains("open")) closeDrawers();
+  else openPhotos();
+});
 els.photosClose.addEventListener("click", closeDrawers);
 els.whyClose.addEventListener("click", closeDrawers);
-if (els.phoneBtn) els.phoneBtn.addEventListener("click", () => (els.phoneDrawer && els.phoneDrawer.classList.contains("open") ? closeDrawers() : openPhone()));
-if (els.phoneClose) els.phoneClose.addEventListener("click", closeDrawers);
 document.addEventListener("visibilitychange", onVisible);
 window.addEventListener("avelie:player", onPlayerEvent);
 els.moreBtn.addEventListener("click", toggleMore);
-els.attachBtn.addEventListener("click", () => els.fileInput.click());
+els.attachBtn.addEventListener("click", () => { closeMenus(false); els.fileInput.click(); });
 els.fileInput.addEventListener("change", () => addFiles(els.fileInput.files || []));
 els.timingToggle.addEventListener("change", () => {
   state.timing = els.timingToggle.checked ? "human" : "instant";
@@ -2591,19 +3426,55 @@ els.operatorToggle.addEventListener("change", () => {
   state.operator = els.operatorToggle.checked;
   els.composer.classList.toggle("operator", state.operator);
   document.body.classList.toggle("backstage", state.operator);
+  closeReactBar(false);
   hideError();
   stopPollers();
   updateSendState();
   loadThread();
 });
+// The chapter head: a tap renames; Enter or blur saves, Escape cancels.
+if (els.convTitle) els.convTitle.addEventListener("click", startRename);
+if (els.chapterEdit) {
+  els.chapterEdit.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      saveRename();
+      if (els.convTitle) els.convTitle.focus();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelRename();
+    }
+  });
+  els.chapterEdit.addEventListener("blur", () => { saveRename(); });
+}
+wireReactions();
+wireLightbox();
+wireBackdrop();
 document.addEventListener("click", (e) => {
-  const inMenu = e.target.closest && (e.target.closest(".menu-wrap") || e.target.closest("#moreMenu") || e.target.closest("#placesPop"));
-  if (!inMenu) closeMenus();
+  const t = e.target;
+  const inside = t && t.closest && (t.closest("#moreMenu") || t.closest("#placesPop") || t.closest("#moreBtn") || t.closest("#placeLine"));
+  if (!inside) closeMenus(false);
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closeMenus(); closeDrawers(); closeSidebar(); }
+  if (state.lightbox) { lightboxKey(e); return; }
+  const sheet = openSheetEl();
+  if (e.key === "Escape") {
+    if (state.react) { closeReactBar(true); return; }
+    if (sheet) { closeMenus(true); return; }
+    closeDrawers();
+    closeSidebar();
+    return;
+  }
+  if (e.key === "Tab" && sheet) trapTab(e, sheet);
 });
-window.addEventListener("resize", grow);
+window.addEventListener("resize", () => {
+  grow();
+  closeReactBar(false);
+  const sheet = openSheetEl();
+  if (sheet) placeSheet(sheet, state.sheetReturn);
+  syncScrim();
+});
 
 async function init() {
   els.operatorToggle.checked = false;
@@ -2622,7 +3493,12 @@ async function init() {
   const stored = storeGet(STORE_KEY);
   const pick = state.conversations.find((c) => c.id === stored) || state.conversations[0];
   if (pick) await select(pick.id);
-  else updateStartButton();
+  else {
+    // No chapter yet: the head with the day's name, her face, and the first send makes it.
+    updateStartButton();
+    updateTitle();
+    showEmptyHer();
+  }
   grow();
 }
 

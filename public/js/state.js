@@ -9,11 +9,28 @@ const $ = (id) => document.getElementById(id);
 const TABS = ["now", "life", "wants", "history", "facts", "memory", "voice", "notes", "unknowns", "inbox", "rulebook", "export"];
 const KINDS = ["avelie_fact", "justin_fact", "relationship", "scene", "history", "private_language", "opinion_change", "unknown", "life", "life_update", "want", "want_update", "ask", "ask_update", "grounding",
   "want_beat", "beat_outcome", "her_view", "fact_merge", "fact_mark", "world_fact", "known_artist"];
-// The Inbox chip for a kind; a kind not listed reads as its own name.
+// The Inbox kicker for a kind, in words; a kind not listed reads as its own name, spaced.
 const KIND_LABEL = {
+  avelie_fact: "about her", justin_fact: "about him", relationship: "where you stand", scene: "scene",
+  history: "a moment", private_language: "private language", opinion_change: "her opinion", unknown: "a question",
+  life: "her life", life_update: "her life", want: "a want", want_update: "a want", ask: "an ask", ask_update: "an ask",
+  grounding: "her day",
   want_beat: "beat", beat_outcome: "beat outcome", her_view: "her read", fact_merge: "same fact",
   fact_mark: "guess", world_fact: "world fact", known_artist: "his ears",
 };
+// Experience pass 7.2: a proposal's payload as labelled lines; a key not listed reads as its
+// own name, spaced, with the first letter upper-cased.
+const PAYLOAD_LABEL = {
+  location: "Place", place: "Place", time: "Time", present: "Who is there", status: "Status", title: "Title",
+  subject: "Subject", fact: "Fact", scope: "About", his_name: "His name", nicknames: "Nicknames", trust: "Trust",
+  affection: "Affection", attraction: "Attraction", mood: "Mood", friction: "Friction", summary: "Summary",
+  note: "Note", when: "When", due: "Due", outcome: "Outcome", artist: "Artist", view: "Her read", kind: "Kind",
+};
+// A quiet label for an empty list (experience pass 7.5), never a "none" chip.
+const emptyLabel = (text) => h("div", { class: "empty-label", text });
+// A conversation by its name (experience pass 7.1): the computed displayTitle, then the
+// stored title, then its date.
+const convName = (c) => String((c && (c.displayTitle || c.title)) || "").trim() || fmtDate(c && c.created_at);
 // v5 section 2: the beat kinds and the outcomes each takes (src/arcs.ts STEP_OUTCOMES,
 // EVENT_OUTCOMES, HIS_PARTS).
 const BEAT_OUTCOMES = { step: ["did_it", "missed", "postponed"], event: ["went", "went_well", "went_badly", "chickened_out", "postponed"] };
@@ -107,10 +124,102 @@ window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
 
 // ------------------------------------------------------------ Now
 
-const EDITORS = [
-  { entity: "relationship", json: "relJson", version: "relVersion", note: "relNote", save: "relSave", status: "relStatus", versions: "relVersions" },
-  { entity: "scene", json: "sceneJson", version: "sceneVersion", note: "sceneNote", save: "sceneSave", status: "sceneStatus", versions: "sceneVersions" },
+// Experience pass 7.2: the human fields above each Advanced JSON box. Each field edits one key
+// of the parsed object; the JSON box stays the source of every key not listed and the two are
+// kept in sync both ways, so Save writes the merged object through the same PUT.
+const REL_FIELDS = [
+  { key: "status", label: "Where you stand" },
+  { key: "his_name", label: "His name", nullable: true },
+  { key: "nicknames", label: "Nicknames" },
+  { key: "trust", label: "Trust" },
+  { key: "affection", label: "Affection" },
+  { key: "attraction", label: "Attraction" },
+  { key: "private_language", label: "Private language" },
+  { key: "summary", label: "Summary", area: true },
 ];
+const SCENE_FIELDS = [
+  { key: "location", label: "Place", nullable: true },
+  { key: "time", label: "Time", nullable: true },
+  { key: "present", label: "Who is there", list: true },
+];
+const SCENE_STATUS = [["together", "Together"], ["apart", "Apart"]];
+
+const EDITORS = [
+  { entity: "relationship", json: "relJson", version: "relVersion", note: "relNote", save: "relSave", status: "relStatus", versions: "relVersions", fields: "relFields", spec: REL_FIELDS, statusPair: false },
+  { entity: "scene", json: "sceneJson", version: "sceneVersion", note: "sceneNote", save: "sceneSave", status: "sceneStatus", versions: "sceneVersions", fields: "sceneFields", spec: SCENE_FIELDS, statusPair: true },
+];
+
+function fieldText(v) {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return v.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(", ");
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function fieldValue(f, text) {
+  if (f.list) return text.split(",").map((x) => x.trim()).filter(Boolean);
+  const t = f.area ? text : text.trim();
+  if (f.nullable && !t.trim()) return null;
+  return t;
+}
+
+// The JSON box as an object, or null while it does not parse to one.
+function editorObject(ed) {
+  try {
+    const o = JSON.parse($(ed.json).value);
+    return o && typeof o === "object" && !Array.isArray(o) ? o : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeField(ed, key, value) {
+  const obj = editorObject(ed);
+  if (!obj) { flash($(ed.status), "invalid JSON", "danger"); return; }
+  obj[key] = value;
+  $(ed.json).value = JSON.stringify(obj, null, 2);
+  if (key === "status") syncStatusPair(ed, obj);
+}
+
+function syncStatusPair(ed, obj) {
+  if (!ed.pair) return;
+  for (const b of ed.pair.querySelectorAll("button")) b.setAttribute("aria-pressed", String(obj.status === b.dataset.status));
+}
+
+// JSON box -> fields. A field he is typing in is left alone unless force (a load or a save).
+function syncFields(ed, force) {
+  if (!ed.inputs) return;
+  const obj = editorObject(ed);
+  if (!obj) return;
+  for (const [key, input] of ed.inputs) {
+    if (!force && document.activeElement === input) continue;
+    input.value = fieldText(obj[key]);
+  }
+  syncStatusPair(ed, obj);
+}
+
+function buildFields(ed) {
+  const box = $(ed.fields);
+  if (!box || ed.inputs) return;
+  ed.inputs = new Map();
+  if (ed.statusPair) {
+    ed.pair = h("div", { class: "seg", role: "group", "aria-label": "Together or apart" },
+      SCENE_STATUS.map(([value, label]) => h("button", {
+        type: "button", "data-status": value, "aria-pressed": "false", text: label,
+        onclick: () => writeField(ed, "status", value),
+      })));
+    box.append(ed.pair);
+  }
+  for (const f of ed.spec) {
+    const input = f.area
+      ? h("textarea", { rows: "3", spellcheck: "true" })
+      : h("input", { type: "text", autocomplete: "off" });
+    input.addEventListener("input", () => writeField(ed, f.key, fieldValue(f, input.value)));
+    ed.inputs.set(f.key, input);
+    box.append(h("label", { class: "field" }, f.label, input));
+  }
+  $(ed.json).addEventListener("input", () => syncFields(ed, false));
+}
 
 let settingsCache = null;
 // GET /api/clock, read with the Now tab: the friction phase runs on story time.
@@ -141,7 +250,10 @@ function fillEditor(ed, cur) {
   const ta = $(ed.json);
   ta.value = JSON.stringify(cur.state, null, 2);
   ta.dataset.version = String(cur.version);
-  $(ed.version).textContent = "v" + cur.version;
+  const tag = $(ed.version);
+  if (tag) tag.textContent = "v" + cur.version;
+  buildFields(ed);
+  syncFields(ed, true);
 }
 
 async function loadVersions(ed) {
@@ -155,7 +267,7 @@ async function loadVersions(ed) {
     return;
   }
   const current = Number($(ed.json).dataset.version);
-  if (!rows.length) box.append(chip("none"));
+  if (!rows.length) box.append(emptyLabel("Nothing earlier"));
   for (const v of rows) {
     const restore = h("button", {
       type: "button",
@@ -392,9 +504,10 @@ async function loadChecks() {
   try {
     const convs = await api("GET", "/api/conversations");
     const c = (Array.isArray(convs) ? convs : []).find((x) => x.status === "active") || (Array.isArray(convs) ? convs[0] : null);
-    if (!c) { box.append(h("div", { class: "chips" }, chip("none"))); return; }
+    if (!c) { box.append(emptyLabel("No chats yet")); return; }
     const rows = await api("GET", "/api/conversations/" + encode(c.id) + "/messages?channel=story&limit=80");
     const flagged = (Array.isArray(rows) ? rows : []).filter((m) => m.role === "assistant" && flagCodes(m.flags_json).length).slice(-12).reverse();
+    box.append(h("div", { class: "kicker", text: convName(c) }));
     if (!flagged.length) { box.append(h("div", { class: "chips" }, chip("clean", "ok"))); return; }
     for (const m of flagged) {
       box.append(h("div", { class: "check-row" },
@@ -624,7 +737,7 @@ function lifeGroup(kind, label, rows) {
       list.prepend(h("div", { class: "thread-row" }, h("div", { class: "editor" }, threadEditor({ kind }, () => { add.disabled = false; loadLife(); }))));
     },
   });
-  if (!rows.length) list.append(h("div", { class: "chips" }, chip("none")));
+  if (!rows.length) list.append(emptyLabel("Nothing yet"));
   for (const t of rows) list.append(threadRow(t));
   return h("div", { class: "card stack tight" },
     h("div", { class: "row between" }, h("h2", { class: "section-title", text: label }), lifeStatus === "active" ? add : null),
@@ -877,7 +990,7 @@ function renderLog() {
   clear(box);
   const byId = new Map(lifeData.threads.map((t) => [t.id, t]));
   const rows = lifeData.log.slice().sort((a, b) => String(b.occurred || "").localeCompare(String(a.occurred || "")));
-  if (!rows.length) box.append(h("div", { class: "chips" }, chip("none")));
+  if (!rows.length) box.append(emptyLabel("Nothing logged"));
   for (const l of rows) {
     const t = l.thread_id ? byId.get(l.thread_id) : null;
     box.append(h("div", { class: "log-row" },
@@ -937,7 +1050,7 @@ async function loadToday() {
     if (outfit) now.append(chip("wearing: " + truncate(String(outfit), 60)));
   }
   const rows = listOf(g && g.today, ["rows", "items"]).slice().sort((a, b) => String(a.occurred || "").localeCompare(String(b.occurred || "")));
-  if (!rows.length) box.append(h("div", { class: "chips" }, chip("none")));
+  if (!rows.length) box.append(emptyLabel("Nothing today"));
   for (const r of rows) {
     const del = h("button", {
       type: "button", class: "btn small ghost del", text: "Delete",
@@ -1021,7 +1134,7 @@ async function loadWants() {
       beatsByWant.get(id).push(v);
     }
   }
-  if (!wantsData.wants.length) box.append(h("div", { class: "chips" }, chip("none")));
+  if (!wantsData.wants.length) box.append(emptyLabel("No wants"));
   for (const w of wantsData.wants) box.append(wantCard(w));
   renderAsks();
 }
@@ -1089,7 +1202,7 @@ function wantCard(w) {
       clear(logBox);
       try {
         const rows = listOf(await api("GET", "/api/wants/" + encode(w.id) + "/log"), ["rows", "log"]);
-        if (!rows.length) logBox.append(chip("none"));
+        if (!rows.length) logBox.append(emptyLabel("Nothing logged"));
         for (const l of rows.slice().sort((a, b) => String(b.occurred || "").localeCompare(String(a.occurred || "")))) {
           logBox.append(h("div", { class: "log-row" },
             h("span", { class: "when", text: fmtTime(l.occurred || l.created_at) }),
@@ -1370,7 +1483,7 @@ function renderAsks() {
   const box = $("asksList");
   clear(box);
   const rows = wantsData.asks.filter((a) => asksStatus === "all" || a.status === "open");
-  if (!rows.length) box.append(h("div", { class: "chips" }, chip("none")));
+  if (!rows.length) box.append(emptyLabel("No asks"));
   const wantsById = new Map(wantsData.wants.map((w) => [w.id, w]));
   for (const a of rows) {
     const slot = h("span", { class: "chips" });
@@ -1457,7 +1570,7 @@ async function loadHistory() {
     const [bundle, weights] = await Promise.all([api("GET", "/api/state"), loadWeightMap("history")]);
     historyWeights = weights;
     const rows = bundle.history || [];
-    if (!rows.length) box.append(h("div", { class: "chips" }, chip("none")));
+    if (!rows.length) box.append(emptyLabel("No moments"));
     for (const row of rows) box.append(historyCard(row));
     box.append(historyAddCard());
   } catch (e) {
@@ -1703,7 +1816,7 @@ $("himSave").addEventListener("click", async () => {
 
 function renderFactColumn(box, rows, scope) {
   clear(box);
-  if (!rows.length) box.append(h("div", { class: "chips" }, chip("none")));
+  if (!rows.length) box.append(emptyLabel("No facts"));
   for (const f of rows) box.append(scope ? factCard(f) : fixedFactCard(f));
   if (scope) box.append(factAddCard(scope));
 }
@@ -1713,7 +1826,7 @@ function renderOpinions(rows) {
   const box = $("factsOpinionsBox");
   clear(box);
   const ops = rows.filter((f) => OPINION_RE.test(String(f.subject || "")));
-  if (!ops.length) { box.append(h("div", { class: "chips" }, chip("none"))); return; }
+  if (!ops.length) { box.append(emptyLabel("No opinions")); return; }
   for (const f of ops) {
     const chain = h("div", { class: "chain" });
     const card = factCard(f);
@@ -1823,7 +1936,7 @@ async function toggleVersionList(kind, id, box, slot, reload, label) {
   clear(box);
   try {
     const rows = await api("GET", "/api/" + kind + "/" + encode(id) + "/versions");
-    if (!rows.length) box.append(chip("none"));
+    if (!rows.length) box.append(emptyLabel("Nothing earlier"));
     for (const v of rows) {
       const restore = h("button", {
         type: "button", class: "btn small", text: "Restore",
@@ -1909,7 +2022,7 @@ async function loadMemory() {
     return;
   }
   rows = rows.slice().sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0));
-  if (!rows.length) tbody.append(h("tr", null, h("td", { colspan: "7" }, chip("none"))));
+  if (!rows.length) tbody.append(h("tr", null, h("td", { colspan: "7" }, emptyLabel("Nothing to recall"))));
   for (const r of rows) tbody.append(memoryRow(r));
   loadRecalls();
 }
@@ -1956,7 +2069,7 @@ async function loadRecalls() {
     box.append(h("div", { class: "chips" }, chip(e.code, "danger")));
     return;
   }
-  if (!rows.length) { box.append(h("div", { class: "chips" }, chip("none"))); return; }
+  if (!rows.length) { box.append(emptyLabel("No recalls")); return; }
   for (const r of rows) {
     box.append(h("div", { class: "log-row" },
       h("span", { class: "when", text: fmtTime(r.created_at || r.at) }),
@@ -2006,7 +2119,7 @@ async function loadVoice() {
   $("voiceRejectSelected").classList.toggle("hidden", !deciding);
   $("voiceApproveTag").classList.toggle("hidden", !deciding);
   $("voiceApproveTag").disabled = !voiceTag;
-  if (!voiceLines.length) box.append(h("div", { class: "chips" }, chip("none")));
+  if (!voiceLines.length) box.append(emptyLabel("No lines"));
   for (const l of voiceLines) box.append(voiceRow(l));
   renderNewTags();
 }
@@ -2207,7 +2320,7 @@ async function loadNotes() {
     return;
   }
   rows = rows.slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
-  if (!rows.length) box.append(h("div", { class: "chips" }, chip("none")));
+  if (!rows.length) box.append(emptyLabel("No notes"));
   for (const c of rows) box.append(noteRow(c));
 }
 
@@ -2244,7 +2357,7 @@ async function loadUnknowns() {
   try {
     const bundle = await api("GET", "/api/state");
     const rows = bundle.unknowns || [];
-    if (!rows.length) box.append(h("div", { class: "chips" }, chip("none")));
+    if (!rows.length) box.append(emptyLabel("No questions"));
     for (const u of rows) box.append(unknownCard(u));
   } catch (e) {
     flash(status("unknowns"), e.code, "danger");
@@ -2305,7 +2418,7 @@ async function loadInbox() {
   clear(box);
   try {
     const rows = await api("GET", "/api/proposals?status=pending");
-    if (!rows.length) box.append(h("div", { class: "chips" }, chip("none")));
+    if (!rows.length) box.append(emptyLabel("Nothing waiting"));
     for (const p of rows) box.append(proposalCard(p));
   } catch (e) {
     flash(status("inbox"), e.code, "danger");
@@ -2347,27 +2460,45 @@ function proposalCard(p) {
   buttons.push(approve, edit, reject, saveEdit);
   editBox.append(editText, editKind, h("div", { class: "row" }, saveEdit, cancelEdit));
 
+  // Experience pass 7.2: words first. The kind as a kicker, the text, the payload as labelled
+  // lines ("Place: the record store"), the raw payload only under Advanced.
   const payload = parseJson(p.payload_json, null);
-  const payloadChips = [];
-  if (payload && typeof payload === "object") {
+  const payloadLines = [];
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
     for (const [k, v] of Object.entries(payload)) {
-      if (v === null || v === undefined || v === "") continue;
-      payloadChips.push(chip(k + " " + (typeof v === "object" ? JSON.stringify(v).slice(0, 40) : String(v).slice(0, 40))));
+      if (v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length)) continue;
+      payloadLines.push(h("div", { class: "small", text: payloadLabel(k) + ": " + truncate(payloadText(v), 160) }));
     }
   }
 
   return h("div", { class: "card stack" },
     h("div", { class: "row" },
-      chip(KIND_LABEL[p.kind] || p.kind, "accent"),
+      h("span", { class: "kicker grow", text: KIND_LABEL[p.kind] || words(p.kind) }),
       p.confidence ? chip(p.confidence, p.confidence === "high" ? "ok" : p.confidence === "low" ? "amber" : "") : null,
       p.scope ? chip(p.scope) : null,
       h("span", { class: "muted small", text: fmtTime(p.created_at) })),
     h("div", { class: "proposal-text", text: p.proposal }),
     p.evidence ? h("blockquote", { class: "evidence", text: p.evidence }) : null,
-    payloadChips.length ? h("div", { class: "chips" }, payloadChips) : null,
+    payloadLines.length ? h("div", { class: "stack tight" }, payloadLines) : null,
+    payload !== null && p.payload_json ? h("details", { class: "advanced" },
+      h("summary", { text: "Advanced" }),
+      h("pre", { class: "rule", text: JSON.stringify(payload, null, 2) })) : null,
     p.decision_note ? h("div", { class: "chips" }, chip(String(p.decision_note).slice(0, 80), "danger wrap")) : null,
     h("div", { class: "row" }, approve, edit, reject, slot),
     editBox);
+}
+
+function payloadLabel(key) {
+  if (PAYLOAD_LABEL[key]) return PAYLOAD_LABEL[key];
+  const w = words(key).trim();
+  return w ? w.charAt(0).toUpperCase() + w.slice(1) : key;
+}
+
+function payloadText(v) {
+  if (Array.isArray(v) && v.every((x) => x === null || typeof x !== "object")) return v.filter((x) => x !== null && x !== "").join(", ");
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
 }
 
 // ------------------------------------------------------------ Rulebook
@@ -2415,14 +2546,15 @@ async function loadExport() {
   clear(box);
   try {
     const convs = await api("GET", "/api/conversations");
-    if (!convs.length) box.append(chip("none"));
+    if (!convs.length) box.append(emptyLabel("No chats"));
     for (const c of convs) {
       const btn = h("button", {
         type: "button", class: "btn small", text: "Transcript",
         onclick: () => exportTranscript(c.id, btn),
       });
       box.append(h("div", { class: "row version-row" },
-        h("span", { class: "grow", text: (c.title || "chat") + " " + fmtDate(c.created_at) }),
+        h("span", { class: "grow", text: convName(c) }),
+        h("span", { class: "muted small", text: fmtDate(c.created_at) }),
         h("span", { class: "muted small mono", text: c.id }),
         btn));
     }

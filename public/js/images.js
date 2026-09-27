@@ -4,14 +4,17 @@
 // 2 and 3): the avatar picker (#avatarPick, a tap saves avatarAssetId), the Call face card
 // on the Clips tab (the source, Make her call face, three slots, the ready and provider
 // chips), and the `us` chip on a picture that has him in it (with_him 1).
-import { api, apiForm, h, chip, clear, flash, bytesLabel, fmtTime } from "./api.js";
+// Experience pass (DESIGN_EXPERIENCE 7.4): a fifth tab, Places (#placesAdmin and the add form
+// moved here from the v4 phone page), the places with no pin first under "Not on the map";
+// empty lists as a quiet label; the decide row under a candidate on glass.
+import { api, apiForm, h, chip, clear, flash, bytesLabel, fmtTime, ago } from "./api.js";
 import { callFaceKindOf, FACE_KINDS } from "./callface.js";
 // nav.js builds the nav on load and, in v4, exports the avatar focus table and mountAvatar;
 // a namespace import so a nav.js without them still loads this page.
 import * as nav from "./nav.js";
 
 const $ = (id) => document.getElementById(id);
-const TABS = ["photos", "clips", "portraits", "library"];
+const TABS = ["photos", "clips", "portraits", "library", "places"];
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
 // A pending clip is polled every 5 s for up to 10 minutes (SPEC_V3 FF).
 const CLIP_POLL_MS = 5000;
@@ -45,6 +48,11 @@ function encode(id) {
   return encodeURIComponent(String(id));
 }
 
+// A quiet label for an empty list (experience pass 7.5), never a "none" chip.
+function emptyLabel(text) {
+  return h("div", { class: "empty-label", text });
+}
+
 // Every row /api/assets carries, once, whatever list it sits in (the v3 roles portrait and
 // video may arrive in their own lists or inside the v1 ones).
 function allAssets(assets) {
@@ -66,7 +74,10 @@ function allAssets(assets) {
 
 function showTab(name) {
   if (!TABS.includes(name)) name = "photos";
-  for (const t of TABS) $("tab-" + t).classList.toggle("hidden", t !== name);
+  for (const t of TABS) {
+    const panel = $("tab-" + t);
+    if (panel) panel.classList.toggle("hidden", t !== name);
+  }
   document.querySelectorAll(".tabs button").forEach((b) => {
     const on = b.dataset.tab === name;
     b.classList.toggle("active", on);
@@ -76,6 +87,7 @@ function showTab(name) {
   if (name === "photos") load();
   else if (name === "clips") loadClips();
   else if (name === "portraits") loadPortraits();
+  else if (name === "places") loadPlaces();
   else loadLibrary();
 }
 
@@ -125,7 +137,7 @@ function masterCrop(m, size) {
 function renderMasterPicker(box, masters, current, size, label, pick) {
   clear(box);
   const rows = masters.filter((m) => m && m.id && MASTER_IDS.includes(String(m.id)) && m.approval_status !== "rejected").sort((a, b) => String(a.id).localeCompare(String(b.id)));
-  if (!rows.length) { box.append(chip("none")); return; }
+  if (!rows.length) { box.append(emptyLabel("No masters")); return; }
   for (const m of rows) {
     const on = m.id === current;
     const btn = h("button", { type: "button", class: "avatar-choice" + (on ? " ringed" : ""), "aria-pressed": String(on), "aria-label": label + " " + basename(m.file), title: basename(m.file) }, masterCrop(m, size));
@@ -185,7 +197,7 @@ function verifyChip(id) {
 function renderMasters(rows) {
   const box = $("masters");
   clear(box);
-  if (!rows.length) box.append(chip("none"));
+  if (!rows.length) box.append(emptyLabel("No masters"));
   for (const m of rows) {
     box.append(h("div", { class: "img-card", "data-id": m.id },
       h("img", { src: "/images/masters/" + encodeURIComponent(basename(m.file)), alt: "", loading: "lazy" }),
@@ -272,27 +284,27 @@ function imageCard(a, withButtons) {
         a.model ? chip(a.model) : null,
         h("span", { class: "mono muted", title: a.sha256 || "", text: hashPrefix(a.sha256) })),
       h("div", { class: "muted small", text: fmtTime(a.decided_at || a.created_at) }),
-      withButtons ? h("div", { class: "row" }, decideButtons(a.id, slot, load, true), slot) : null));
+      withButtons ? h("div", { class: "row glass" }, decideButtons(a.id, slot, load, true), slot) : null));
 }
 
 function renderCandidates(rows) {
   const box = $("candidates");
   clear(box);
-  if (!rows.length) box.append(chip("none"));
+  if (!rows.length) box.append(emptyLabel("Nothing waiting"));
   for (const a of rows) box.append(imageCard(a, true));
 }
 
 function renderScenes(rows) {
   const box = $("scenes");
   clear(box);
-  if (!rows.length) box.append(chip("none"));
+  if (!rows.length) box.append(emptyLabel("No pictures yet"));
   for (const a of rows) box.append(imageCard(a, false));
 }
 
 function renderRejected(rows) {
   const box = $("rejected");
   clear(box);
-  if (!rows.length) box.append(chip("none"));
+  if (!rows.length) box.append(emptyLabel("Nothing rejected"));
   for (const a of rows) {
     box.append(h("div", { class: "list-row" },
       h("span", { class: "mono", text: a.id }),
@@ -464,7 +476,7 @@ function renderCallFace(face, faceRows, masters, configured) {
       approved ? chip("approved", "ok") : null,
       candidates.length ? chip(candidates.length + " to decide", "amber") : null,
       generating.length ? chip("generating", "amber") : null,
-      !approved && !candidates.length && !generating.length ? chip("none") : null));
+      !approved && !candidates.length && !generating.length ? h("span", { class: "empty-label", text: "Not made yet" }) : null));
     if (approved) body.append(callFaceClip(approved, false));
     for (const a of candidates) body.append(callFaceClip(a, true));
     for (const a of generating) body.append(callFaceClip(a, false));
@@ -486,7 +498,7 @@ function callFaceClip(a, withButtons) {
         a.model ? chip(a.model) : null,
         a.sha256 ? h("span", { class: "mono muted", title: a.sha256, text: hashPrefix(a.sha256) }) : null),
       h("div", { class: "muted small", text: fmtTime(a.decided_at || a.created_at) }),
-      withButtons && !pending ? h("div", { class: "row" }, decideButtons(a.id, slot, loadClips, false), slot) : slot));
+      withButtons && !pending ? h("div", { class: "row glass" }, decideButtons(a.id, slot, loadClips, false), slot) : slot));
 }
 
 // Make her call face: idle, listening and talking in sequence, each answer polled as a
@@ -525,7 +537,7 @@ async function makeCallFaceSet(els) {
 function renderClipSources(rows) {
   const box = $("clipSources");
   clear(box);
-  if (!rows.length) { box.append(chip("none")); return; }
+  if (!rows.length) { box.append(emptyLabel("No pictures to start from")); return; }
   if (clipSource && !rows.some((a) => a.id === clipSource)) clipSource = null;
   for (const a of rows) {
     const src = a.role === "master" ? "/images/masters/" + encodeURIComponent(basename(a.file)) : "/media/" + encode(a.id);
@@ -555,14 +567,14 @@ function clipCard(a, withButtons) {
         a.model ? chip(a.model) : null,
         a.sha256 ? h("span", { class: "mono muted", title: a.sha256, text: hashPrefix(a.sha256) }) : null),
       h("div", { class: "muted small", text: fmtTime(a.decided_at || a.created_at) }),
-      withButtons && !pending ? h("div", { class: "row" }, decideButtons(a.id, slot, loadClips, false), slot) : slot));
+      withButtons && !pending ? h("div", { class: "row glass" }, decideButtons(a.id, slot, loadClips, false), slot) : slot));
 }
 
 function renderClipCandidates(rows) {
   const box = $("clipCandidates");
   clear(box);
   const pending = [...clipPending.values()].filter((p) => !rows.some((r) => r.id === p.id));
-  if (!rows.length && !pending.length) box.append(chip("none"));
+  if (!rows.length && !pending.length) box.append(emptyLabel("Nothing waiting"));
   for (const a of pending) box.append(clipCard(a, false));
   for (const a of rows) box.append(clipCard(a, true));
 }
@@ -570,7 +582,7 @@ function renderClipCandidates(rows) {
 function renderClipApproved(rows) {
   const box = $("clipApproved");
   clear(box);
-  if (!rows.length) box.append(chip("none"));
+  if (!rows.length) box.append(emptyLabel("No clips yet"));
   for (const a of rows) box.append(clipCard(a, false));
 }
 
@@ -662,7 +674,7 @@ async function loadPortraits() {
     list.push(a);
     byPerson.set(key, list);
   }
-  if (!people.length) { box.append(h("div", { class: "chips" }, chip("none"))); return; }
+  if (!people.length) { box.append(emptyLabel("No people yet")); return; }
   for (const t of people) {
     const rows = byPerson.get(String(t.id)) || [];
     const approvedId = t.portrait_asset_id ? String(t.portrait_asset_id) : "";
@@ -672,7 +684,7 @@ async function loadPortraits() {
     if (approvedId && !approved.some((a) => a.id === approvedId)) approved.push({ id: approvedId, approval_status: "approved", created_at: t.updated_at || t.created_at });
     for (const a of candidates) grid.append(portraitCard(a, true));
     for (const a of approved) grid.append(portraitCard(a, false));
-    if (!grid.childElementCount) grid.append(chip("no face yet"));
+    if (!grid.childElementCount) grid.append(h("span", { class: "empty-label", text: "No face yet" }));
     box.append(h("div", { class: "card person-block" },
       h("div", { class: "row" }, h("span", { class: "person-name", text: t.title }), t.relation ? chip(t.relation, "accent") : null, approvedId ? chip("portrait", "ok") : null, candidates.length ? chip(candidates.length + " to decide", "amber") : null),
       grid));
@@ -689,7 +701,7 @@ function portraitCard(a, withButtons) {
         chip(a.approval_status || "approved", a.approval_status === "candidate" ? "amber" : "ok"),
         a.model ? chip(a.model) : null),
       h("div", { class: "muted small", text: fmtTime(a.decided_at || a.created_at) }),
-      withButtons ? h("div", { class: "row" }, decideButtons(a.id, slot, loadPortraits, false), slot) : null));
+      withButtons ? h("div", { class: "row glass" }, decideButtons(a.id, slot, loadPortraits, false), slot) : null));
 }
 
 // ------------------------------------------------------------ library
@@ -705,7 +717,7 @@ async function loadLibrary() {
     box.append(chip(e.code, "danger"));
     return;
   }
-  if (!rows.length) box.append(chip("none"));
+  if (!rows.length) box.append(emptyLabel("Nothing in the library"));
   for (const m of rows) box.append(libraryRow(m));
 }
 
@@ -764,6 +776,141 @@ $("mediaUpload").addEventListener("click", async () => {
     btn.disabled = false;
   }
 });
+
+// ------------------------------------------------------------ places (experience pass 7.4)
+
+// Ported from the v4 phone page (placeCard, renderPlaces): GET /api/places answers the table's
+// snake_case rows (geocoded_by, picture_light, picture_season, last_used_at) plus active and
+// picture. A place with no stored pin is listed first, under "Not on the map"; her Maps app
+// shows a place only once it has one. The pin is typed here; the tap-the-map pin went with the v4 map.
+let placesLoading = false;
+
+function isPinned(p) {
+  return p.lat !== null && p.lat !== undefined && p.lon !== null && p.lon !== undefined
+    && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon));
+}
+
+function coordText(lat, lon) {
+  return Number(lat).toFixed(4) + ", " + Number(lon).toFixed(4);
+}
+
+function errorText(e) {
+  return (e && (e.code || e.message)) || "error";
+}
+
+// The thumbnail column of a .place-row: the picture (a link to it full size) or the empty box.
+function placeThumb(p) {
+  if (!p.picture) return h("span", { class: "place-thumb empty", "aria-hidden": "true" });
+  const src = "/media/place/" + encode(p.id);
+  return h("a", { href: src, target: "_blank", rel: "noopener", "aria-label": "Open the picture of " + p.title },
+    h("img", { class: "place-thumb", src: src + "?v=" + encode(p.picture_made_at || ""), alt: p.title, loading: "lazy", width: "56", height: "56" }));
+}
+
+// One place as the stylesheet's .place-row: the thumb, .place-text (title, detail, pin, chips)
+// and two .place-actions rows (the pin, the picture) with the status chips.
+function placeCard(p) {
+  const statusSlot = h("span", { class: "chips" });
+  const busy = (on) => { card.classList.toggle("busy", on); for (const b of card.querySelectorAll("button")) b.disabled = on; };
+  const act = async (label, fn) => {
+    busy(true);
+    flash(statusSlot, label, "accent");
+    try {
+      await fn();
+      await loadPlaces();
+    } catch (e) {
+      flash(statusSlot, errorText(e), "danger wrap");
+      busy(false);
+    }
+  };
+  const pinned = isPinned(p);
+  const latIn = h("input", { type: "number", step: "any", min: "-90", max: "90", inputmode: "decimal", placeholder: "lat", "aria-label": "Latitude of " + p.title, value: pinned ? String(p.lat) : "" });
+  const lonIn = h("input", { type: "number", step: "any", min: "-180", max: "180", inputmode: "decimal", placeholder: "lon", "aria-label": "Longitude of " + p.title, value: pinned ? String(p.lon) : "" });
+  const card = h("div", { class: "place-row" + (p.active === false ? " inactive" : ""), id: "place-" + p.id, "data-id": p.id },
+    placeThumb(p),
+    h("div", { class: "place-text" },
+      h("span", { class: "place-title", text: p.title }),
+      p.detail ? h("span", { class: "place-detail", text: p.detail }) : null,
+      pinned ? h("span", { class: "place-coords", text: coordText(p.lat, p.lon) }) : null,
+      h("div", { class: "chips" },
+        p.active === false ? chip("gone") : null,
+        pinned && p.geocoded_by ? chip(p.geocoded_by) : null,
+        p.picture && p.picture_light ? chip(p.picture_light, "accent") : null,
+        p.picture && p.picture_season ? chip(p.picture_season) : null,
+        p.last_used_at ? chip("used " + ago(p.last_used_at)) : null)),
+    h("div", { class: "place-actions" },
+      latIn, lonIn,
+      h("button", { type: "button", class: "btn small", text: "Save pin", onclick: () => act("saving", async () => {
+        const lat = latIn.value.trim();
+        const lon = lonIn.value.trim();
+        await api("PUT", "/api/places/" + encode(p.id), { lat: lat === "" ? null : Number(lat), lon: lon === "" ? null : Number(lon), geocodedBy: "owner" });
+      }) }),
+      h("button", { type: "button", class: "btn small", text: "Geocode", onclick: () => act("geocoding", () => api("POST", "/api/places/" + encode(p.id) + "/geocode")) })),
+    h("div", { class: "place-actions" },
+      p.picture
+        ? h("button", { type: "button", class: "btn small", text: "Remake", onclick: () => act("making", () => api("POST", "/api/places/" + encode(p.id) + "/picture", { remake: true })) })
+        : h("button", { type: "button", class: "btn small primary", text: "Make picture", onclick: () => act("making", () => api("POST", "/api/places/" + encode(p.id) + "/picture", {})) }),
+      p.picture ? h("button", { type: "button", class: "btn small ghost", text: "Remove picture", onclick: () => act("removing", () => api("DELETE", "/api/places/" + encode(p.id) + "/picture")) }) : null,
+      statusSlot));
+  return card;
+}
+
+function renderPlaces(box, places) {
+  clear(box);
+  if (!places.length) { box.append(emptyLabel("No places yet")); return; }
+  const unpinned = places.filter((p) => !isPinned(p));
+  const pinned = places.filter((p) => isPinned(p));
+  if (unpinned.length) {
+    box.append(h("div", { class: "kicker", text: "Not on the map" }));
+    box.append(h("div", { class: "stack tight" }, unpinned.map(placeCard)));
+  }
+  if (pinned.length) {
+    box.append(h("div", { class: "kicker", text: "On the map" }));
+    box.append(h("div", { class: "stack tight" }, pinned.map(placeCard)));
+  }
+}
+
+async function loadPlaces() {
+  const box = $("placesAdmin");
+  if (!box || placesLoading) return;
+  placesLoading = true;
+  try {
+    const r = await api("GET", "/api/places");
+    renderPlaces(box, r && Array.isArray(r.places) ? r.places : []);
+  } catch (e) {
+    clear(box);
+    box.append(h("div", { class: "chips" }, chip(errorText(e), "danger")));
+  } finally {
+    placesLoading = false;
+  }
+}
+
+// The add form (images.html: #placeTitle, #placeDetail, #placeAdd, #placeAddStatus).
+function initPlaceAdd() {
+  const addBtn = $("placeAdd");
+  if (!addBtn) return;
+  addBtn.addEventListener("click", async () => {
+    const titleIn = $("placeTitle");
+    const detailIn = $("placeDetail");
+    const status = $("placeAddStatus");
+    const title = titleIn ? titleIn.value.trim() : "";
+    const detail = detailIn ? detailIn.value.trim() : "";
+    if (!title) { flash(status, "title", "danger"); return; }
+    addBtn.disabled = true;
+    try {
+      await api("POST", "/api/places", detail ? { title, detail } : { title });
+      if (titleIn) titleIn.value = "";
+      if (detailIn) detailIn.value = "";
+      flash(status, "added", "ok");
+      await loadPlaces();
+    } catch (e) {
+      flash(status, errorText(e), "danger wrap");
+    } finally {
+      addBtn.disabled = false;
+    }
+  });
+}
+
+initPlaceAdd();
 
 // ------------------------------------------------------------ boot
 

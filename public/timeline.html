@@ -10,23 +10,23 @@
 <link rel="icon" href="/icons/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/css/app.css">
+<link rel="preload" href="/fonts/fraunces-latin-full-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-sans-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body class="page-timeline">
 <header class="top">
   <a class="brand" href="/" aria-label="Avelie, home">
     <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
-    <span class="wordmark">AVELIE</span>
+    <span class="wordmark">Avelie</span>
   </a>
   <nav class="nav" aria-label="Sections"></nav>
 </header>
 
 <main class="page stack">
+  <header class="page-head"><h1 class="display xl">Timeline</h1><span class="chips" id="timeline-status"></span></header>
   <section class="card stack" aria-label="Timeline">
     <div class="row between">
-      <div class="row">
-        <h2 class="section-title">Timeline</h2>
-        <span class="chips" id="timeline-status"></span>
-      </div>
+      <label class="switch" for="logToggle"><input type="checkbox" id="logToggle"><span class="track"></span><span class="switch-label">Show the log</span></label>
       <div class="row">
         <label class="field">Kind
           <select id="kindFilter" aria-label="Kind">
@@ -43,6 +43,7 @@
             <option value="ask">ask</option>
             <option value="correction">note</option>
             <option value="portrait">portrait</option>
+            <option value="beat">beat</option>
           </select>
         </label>
         <button type="button" class="btn small hidden" id="olderBtn">Load older</button>

@@ -10,3 +10,4 @@ reports/
 tests/integration/.state/
 tests/integration/.state-v4/
 tests/integration/.state-v5/
+tests/integration/.state-exp/

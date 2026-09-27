@@ -13,34 +13,34 @@
 <link rel="icon" href="/icons/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/css/app.css">
+<link rel="preload" href="/fonts/fraunces-latin-full-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-sans-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body class="page-album">
 <header class="top">
   <a class="brand" href="/" aria-label="Avelie, home">
     <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
-    <span class="wordmark">AVELIE</span>
+    <span class="wordmark">Avelie</span>
   </a>
   <nav class="nav" aria-label="Sections"></nav>
 </header>
 
 <main class="page album">
-  <div class="album-head">
-    <div class="row">
-      <h2 class="section-title">Album</h2>
-      <span class="chips" id="albumStatus"></span>
-    </div>
-    <div class="filter-chips" id="albumFilter" role="group" aria-label="Show">
-      <button type="button" data-group="all" aria-pressed="true">all</button>
-      <button type="button" data-group="approved" aria-pressed="false">approved</button>
-      <button type="button" data-group="candidates" aria-pressed="false">candidates</button>
-      <button type="button" data-group="us" aria-pressed="false">us</button>
-    </div>
-  </div>
-  <div class="album-grid" id="albumGrid" aria-live="polite"></div>
-  <div class="row">
-    <button type="button" class="btn hidden" id="albumOlder">Load older</button>
-  </div>
+  <header class="page-head"><h1 class="display xl">Album</h1><p class="kicker" id="albumCount"></p></header>
+  <section class="gallery-section us-row hidden" id="usSection" aria-labelledby="usHead"><h2 class="display" id="usHead">Us</h2><div class="gallery" id="usGrid"></div></section>
+  <div id="albumMonths"></div>
+  <p class="empty-label hidden" id="albumEmpty">No pictures yet</p>
+  <div class="row center"><button type="button" class="btn ghost hidden" id="albumOlder">More</button></div>
 </main>
+
+<div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="Picture">
+  <button type="button" class="icon-btn lb-close" id="lbClose" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  <button type="button" class="icon-btn lb-prev" id="lbPrev" aria-label="Previous"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+  <figure class="lightbox-media" id="lbMedia"></figure>
+  <button type="button" class="icon-btn lb-next" id="lbNext" aria-label="Next"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></button>
+  <div class="lightbox-cap"><span class="cap-date" id="lbDate"></span><span class="cap-place" id="lbPlace"></span></div>
+  <div class="lightbox-actions"><a class="btn ghost" id="lbSave">Save</a><a class="btn ghost" id="lbOpen" target="_blank" rel="noopener">Full size</a></div>
+</div>
 
 <script type="module" src="/js/nav.js"></script>
 <script type="module" src="/js/album.js"></script>

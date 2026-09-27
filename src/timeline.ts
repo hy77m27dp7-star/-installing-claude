@@ -20,6 +20,7 @@ import { outcomeWords } from "./arcs";
 import type { BeatOutcome } from "./arcs";
 import { listAssets, listHistory } from "./db";
 import { listMedia } from "./media";
+import { placeTitleNorm } from "./places";
 import type { LifeLog, LifeThread } from "./life";
 import type { Env, HistoryRow, MediaRow, MessageRow, StateVersionRow, VisualAssetRow } from "./types";
 
@@ -47,6 +48,10 @@ export interface TimelineItem {
   version: number | null;
   // v4 (SPEC_V4 section 3): a photo item says whether he is in the picture.
   withHim?: boolean;
+  // The experience pass (DESIGN_EXPERIENCE 8.8): the event in words, or null when it is
+  // machinery (a correction, a portrait, a picture she did not send, a state save that
+  // changed nothing a person would see). `title` keeps the engineering words for the log.
+  story: string | null;
 }
 
 export interface TimelinePage {
@@ -108,6 +113,7 @@ function stateField(json: string, key: string): string | null {
 
 function item(partial: Pick<TimelineItem, "id" | "at" | "type" | "title"> & Partial<TimelineItem>): TimelineItem {
   return {
+    story: null,
     text: null,
     link: null,
     messageId: null,
@@ -149,6 +155,13 @@ function clock(seconds: number): string {
   return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
 }
 
+// "You talked for a minute" under 90 s, else "You talked for N minutes" (rounded).
+export function callStory(seconds: number): string {
+  const s = Math.max(0, Number(seconds) || 0);
+  if (s < 90) return "You talked for a minute";
+  return "You talked for " + Math.round(s / 60) + " minutes";
+}
+
 function callItems(calls: CallRowLite[]): TimelineItem[] {
   return calls
     .filter((c) => c.status === "ended")
@@ -158,6 +171,7 @@ function callItems(calls: CallRowLite[]): TimelineItem[] {
       type: "call",
       title: "call, " + clock(c.seconds),
       text: c.transcript_rows ? c.transcript_rows + " lines" + (c.end_reason && c.end_reason !== "ended" ? ", " + c.end_reason.replace(/_/g, " ") : "") : "no words",
+      story: callStory(c.seconds),
       link: "/",
       conversationId: c.conversation_id,
     }));
@@ -175,6 +189,7 @@ function wantItems(log: WantLogLite[], wants: WantLite[]): TimelineItem[] {
       type: "want",
       title: title + ": " + head + (typeof l.delta === "number" && l.kind !== "note" ? " " + (l.kind === "setback" ? "-" : "+") + Math.abs(l.delta) : ""),
       text: excerpt(l.note),
+      story: titles.has(l.want_id) ? (titles.get(l.want_id) as string) + (excerpt(l.note) ? " -- " + excerpt(l.note) : "") : null,
       link: "/state#wants",
     });
   });
@@ -187,6 +202,7 @@ function askItems(asks: AskLite[]): TimelineItem[] {
     type: "ask",
     title: "she asked" + (a.status !== "open" ? " (" + a.status.replace(/_/g, " ") + ")" : ""),
     text: excerpt(a.text),
+    story: excerpt(a.text) ? "She asked: " + excerpt(a.text) : null,
     link: a.asked_message_id ? "/" : "/state#wants",
     messageId: a.asked_message_id,
   }));
@@ -240,6 +256,7 @@ function beatItems(list: BeatRunLite[]): TimelineItem[] {
         type: "beat",
         title: r.title,
         text: excerpt(words + (r.outcome_note && r.outcome_note.trim() ? ": " + r.outcome_note.trim() : "")),
+        story: r.title && r.title.trim() ? r.title.trim() + " -- " + words : words,
         link: "/state#wants",
       });
     });
@@ -252,6 +269,7 @@ function historyItems(list: HistoryRow[]): TimelineItem[] {
     type: "history",
     title: h.title,
     text: excerpt((h.occurred ? h.occurred + ": " : "") + h.body),
+    story: excerpt(h.title),
     link: "/state#history",
   }));
 }
@@ -265,6 +283,9 @@ function photoItems(assets: VisualAssetRow[]): TimelineItem[] {
       type: "photo",
       title: "photo",
       text: excerpt(a.prompt),
+      // She sent it only when it rides on a message of hers; a picture fired from Studio or
+      // the API has no story.
+      story: a.message_id ? "She sent you a picture" + (Number(a.with_him ?? 0) === 1 ? " of the two of you" : "") : null,
       link: a.message_id ? "/" : "/images",
       messageId: a.message_id,
       conversationId: a.conversation_id,
@@ -285,18 +306,89 @@ function lifeItems(log: LifeLog[], threads: LifeThread[]): TimelineItem[] {
       type: "life",
       title: thread ?? "her day",
       text: excerpt(l.note),
+      story: excerpt(l.note),
       link: "/state#life",
     });
   });
 }
 
-function stateItems(versions: StateVersionRow[]): TimelineItem[] {
+// The status in words when it moved (trimmed, case-folded) from the previous version's.
+export function relationshipStory(json: string, prevJson: string | null): string | null {
+  const status = stateField(json, "status");
+  if (!status) return null;
+  const prev = prevJson === null ? null : stateField(prevJson, "status");
+  if (prev !== null && prev.toLowerCase() === status.toLowerCase()) return null;
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function sceneFields(json: string | null): { status: string | null; location: string | null } {
+  if (json === null) return { status: null, location: null };
+  const status = stateField(json, "status");
+  const location = stateField(json, "location");
+  return { status: status ? status.toLowerCase() : null, location };
+}
+
+// The scene in words only when it moved: the status changed, or together at a place that
+// differs by placeTitleNorm. Every save and every auto-kept proposal writes a version.
+export function sceneStory(json: string, prevJson: string | null): string | null {
+  const cur = sceneFields(json);
+  const prev = sceneFields(prevJson);
+  const moved = cur.status !== prev.status
+    || (cur.status === "together" && placeTitleNorm(cur.location ?? "") !== placeTitleNorm(prev.location ?? ""));
+  if (!moved) return null;
+  if (cur.status === "together") return cur.location ? "Together at " + cur.location.replace(/^at\s+/i, "") : "Together";
+  if (cur.status === "apart") return "Apart";
+  return null;
+}
+
+// The story words of each version, keyed by row id: each version compared with the previous
+// version of the same entity by `version` (the page's own, else the predecessor read at the
+// page edge, `edge`), never with the previous row on the page.
+function stateStories(versions: StateVersionRow[], edge: Map<string, string | null>): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  for (const entity of ["relationship", "scene"] as const) {
+    const own = versions.filter((v) => v.entity === entity).slice().sort((a, b) => a.version - b.version);
+    let prev: string | null = edge.get(entity) ?? null;
+    for (const v of own) {
+      out.set(v.id, entity === "relationship" ? relationshipStory(v.state_json, prev) : sceneStory(v.state_json, prev));
+      prev = v.state_json;
+    }
+  }
+  return out;
+}
+
+// The predecessor of the oldest version of each entity on the page: one statement per entity
+// (at most two). A failed read, or no version before it, is nothing to compare with.
+async function edgePredecessors(db: D1Database, versions: StateVersionRow[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  for (const entity of ["relationship", "scene"] as const) {
+    const own = versions.filter((v) => v.entity === entity);
+    if (!own.length) continue;
+    const oldest = Math.min(...own.map((v) => Number(v.version)));
+    try {
+      const r = await db
+        .prepare("SELECT version, state_json FROM state_versions WHERE entity = ?1 AND version < ?2 ORDER BY version DESC LIMIT 1")
+        .bind(entity, oldest)
+        .all<{ version: number; state_json: string }>();
+      const best = (r.results ?? [])
+        .filter((x) => x && Number(x.version) < oldest && typeof x.state_json === "string")
+        .sort((a, b) => Number(b.version) - Number(a.version))[0];
+      out.set(entity, best ? best.state_json : null);
+    } catch {
+      out.set(entity, null);
+    }
+  }
+  return out;
+}
+
+function stateItems(versions: StateVersionRow[], stories: Map<string, string | null> = new Map()): TimelineItem[] {
   return versions
     .filter((v) => v.entity === "relationship" || v.entity === "scene")
     .map((v) => {
       const status = stateField(v.state_json, "status");
       const detail = v.note?.trim() || stateField(v.state_json, "summary");
       return item({
+        story: stories.get(v.id) ?? null,
         id: v.entity + ":" + v.id,
         at: v.created_at,
         type: v.entity,
@@ -326,6 +418,7 @@ function messageItems(messages: MessageRow[], media: MediaRow[]): TimelineItem[]
         type: "media",
         title: row ? row.title : "sent something from her phone",
         text: excerpt(row?.description ?? m.content),
+        story: row && typeof row.title === "string" && row.title.trim() ? "She sent you " + row.title.trim() : null,
         link: "/",
         messageId: m.id,
         conversationId: m.conversation_id,
@@ -339,6 +432,7 @@ function messageItems(messages: MessageRow[], media: MediaRow[]): TimelineItem[]
         type: "first_text",
         title: "she texted first",
         text: excerpt(m.content),
+        story: "She texted first",
         link: "/",
         messageId: m.id,
         conversationId: m.conversation_id,
@@ -387,11 +481,13 @@ export async function getTimeline(db: D1Database, _env: Env, opts: TimelineOptio
     ),
   ]);
 
+  const stories = stateStories(versions, await edgePredecessors(db, versions));
+
   const all = [
     ...historyItems(history),
     ...photoItems(assets),
     ...lifeItems(log, threads),
-    ...stateItems(versions),
+    ...stateItems(versions, stories),
     ...messageItems(messages, media),
     ...callItems(calls),
     ...wantItems(wantLog, wants),

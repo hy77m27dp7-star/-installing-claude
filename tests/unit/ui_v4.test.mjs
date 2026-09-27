@@ -24,11 +24,11 @@ const TOKENS = [
 ];
 // The class names other lanes use and L0 defines (SPEC_V4 "Cross-lane contracts").
 const CLASSES = [".map", ".map-water", ".map-land", ".map-dot", ".map-dot.here", ".map-label", ".dial", ".dial-track", ".dial-fill", ".polaroid", ".drawer", ".msg-avatar", "#callFace", ".thread::before"];
-const EXPECTED_PAGES = ["album.html", "images.html", "index.html", "memory.html", "model.html", "phone.html", "state.html", "timeline.html"];
+const EXPECTED_PAGES = ["album.html", "images.html", "index.html", "memory.html", "model.html", "phone.html", "state.html", "timeline.html", "us.html"];
 
 const count = (text, needle) => text.split(needle).length - 1;
 
-test("the eight pages exist", () => {
+test("the nine pages exist", () => {
   assert.deepEqual(pages, EXPECTED_PAGES);
 });
 
@@ -72,29 +72,33 @@ test("app.css carries every class name of the cross-lane contract", () => {
   assert.ok(/prefers-reduced-motion/.test(css), "reduced motion respected");
 });
 
-test("the three new pages carry the ids their sections name; index carries the phone button, the drawer and the call face frame", () => {
+test("the pages carry the ids of the experience pass (DESIGN_EXPERIENCE 3.3 to 7.4); index has no phone button or drawer", () => {
   const phone = read("phone.html");
-  for (const id of ["phoneStatus", "phoneNow", "phoneWhere", "phoneWeather", "phoneOutfit", "phoneMood", "phoneWants", "phoneAsks", "phoneToday", "phoneListening", "phoneMap", "placesList", "placesStatus"]) assert.ok(phone.includes('id="' + id + '"'), "phone.html #" + id);
-  assert.ok(/<main class="page phone"/.test(phone), "main.page.phone");
+  for (const id of ["lock", "wallpaper", "lockDate", "lockTime", "lockWeather", "lockPlaying", "lockStack", "rollStrip", "openHome", "home", "homeWallpaper", "homeGrid", "homeDock", "closeHome", "appScreen", "appBack", "appTitle", "appBody"]) assert.ok(phone.includes('id="' + id + '"'), "phone.html #" + id);
+  assert.ok(/<main class="phone-stage"/.test(phone), "main.phone-stage");
   const album = read("album.html");
-  for (const id of ["albumStatus", "albumFilter", "albumGrid", "albumOlder"]) assert.ok(album.includes('id="' + id + '"'), "album.html #" + id);
-  for (const g of ["all", "approved", "candidates", "us"]) assert.ok(album.includes('data-group="' + g + '"'), "album filter " + g);
+  for (const id of ["albumCount", "usSection", "usGrid", "albumMonths", "albumEmpty", "albumOlder", "lightbox", "lbMedia", "lbSave"]) assert.ok(album.includes('id="' + id + '"'), "album.html #" + id);
+  const us = read("us.html");
+  for (const id of ["usStanding", "usSince", "usChapters", "usMoments", "usPlaces", "usKept"]) assert.ok(us.includes('id="' + id + '"'), "us.html #" + id);
+  for (const id of ["usKnows", "usReads", "usUntold"]) assert.ok(!us.includes('id="' + id + '"'), "us.html has no #" + id);
   const memory = read("memory.html");
-  for (const id of ["memoryStatus", "memoryLegend", "memoryFacts", "memoryFading", "memoryReturned", "memoryHistory", "memorySealed", "memoryKept"]) assert.ok(memory.includes('id="' + id + '"'), "memory.html #" + id);
+  for (const id of ["memoryStatus", "memoryLegend", "memoryFacts", "memoryFading", "memoryReturned", "memoryHistory", "memorySealed", "memoryViews", "memoryArtists", "memoryKept"]) assert.ok(memory.includes('id="' + id + '"'), "memory.html #" + id);
   const index = read("index.html");
-  for (const id of ["phoneBtn", "phoneDrawer", "phoneDrawerBody", "callFace", "typing", "placeInput"]) assert.ok(index.includes('id="' + id + '"'), "index.html #" + id);
-  assert.ok(/<aside class="drawer[^"]*" id="phoneDrawer"/.test(index), "the slide-in is aside.drawer");
+  for (const id of ["callFace", "typing", "placeInput", "placeLine", "convTitle", "chapterEdit", "moreMenu", "recBar", "backdrop", "lightbox", "lbKeep", "lbReject", "lbAgain"]) assert.ok(index.includes('id="' + id + '"'), "index.html #" + id);
+  for (const id of ["phoneBtn", "phoneDrawer"]) assert.ok(!index.includes('id="' + id + '"'), "index.html has no #" + id);
   const images = read("images.html");
-  for (const id of ["avatarPick", "callFaceCard"]) assert.ok(images.includes('id="' + id + '"'), "images.html #" + id);
+  for (const id of ["avatarPick", "callFaceCard", "tab-places", "placesAdmin"]) assert.ok(images.includes('id="' + id + '"'), "images.html #" + id);
   const model = read("model.html");
   for (const id of ["spotifyCard", "spotifyStatus", "spotifyConnect", "spotifyDisconnect", "spotifyPlaylist", "herTextsBtn", "herTextsStatus"]) assert.ok(model.includes('id="' + id + '"'), "model.html #" + id);
   for (const name of ["spotifyEnabled", "spotifyPlaylistName", "spotifyPlaylistId", "callFaceProvider", "hisFaceInPhotos", "listeningLineEnabled", "placeCostUsd"]) assert.ok(model.includes('name="' + name + '"'), "model.html field " + name);
 });
 
-test("sw.js: the shell list carries the three pages and the five scripts, the cache name is avelie-shell-v3", () => {
+test("sw.js: the shell list carries the Her pages, their scripts and the two fonts; the fonts are cache-first; the cache name is avelie-shell-v4", () => {
   const sw = read("sw.js");
-  assert.ok(/const CACHE = "avelie-shell-v3"/.test(sw), "cache name");
-  for (const u of ["/phone", "/album", "/memory", "/js/phone.js", "/js/map.js", "/js/album.js", "/js/memory.js", "/js/callface.js"]) assert.ok(sw.includes('"' + u + '"'), "shell " + u);
+  assert.ok(/const CACHE = "avelie-shell-v4"/.test(sw), "cache name");
+  for (const u of ["/", "/phone", "/album", "/us", "/memory", "/js/phone.js", "/js/map.js", "/js/album.js", "/js/memory.js", "/js/us.js", "/js/lockwords.js", "/js/months.js", "/js/callface.js", "/js/player.js", "/fonts/fraunces-latin-full-normal.woff2", "/fonts/instrument-sans-latin-wght-normal.woff2"]) assert.ok(sw.includes('"' + u + '"'), "shell " + u);
+  assert.ok(/const FONTS = "\/fonts\/";/.test(sw), "the fonts prefix");
+  assert.ok(/url\.pathname\.startsWith\(FONTS\)[\s\S]{0,200}caches\.match\(request/.test(sw), "cache first for the fonts");
   assert.ok(/\/api\/push\/latest/.test(sw), "the push handler still reads /api/push/latest");
 });
 

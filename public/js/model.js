@@ -6,6 +6,8 @@ import { api, h, chip, clear, downloadUrl, flash, fmtDate, fmtTime, parseJson, r
 
 const $ = (id) => document.getElementById(id);
 const form = $("settingsForm");
+// A quiet label for an empty list (experience pass 7.5), never a "none" chip.
+const emptyLabel = (text) => h("div", { class: "empty-label", text });
 
 const FIELDS = [
   "provider", "model", "effort", "temperature", "maxTokens", "textureCuesEnabled", "typoCueShare",
@@ -265,6 +267,75 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
+// ------------------------------------------------------------ the grouped form (experience pass 7.3)
+
+// A field that fails the browser's check inside a closed Advanced would block Save with nothing
+// he can see ("not focusable"). `invalid` does not bubble, so it is caught in the capture phase:
+// every details around the field opens, the first one comes into view and takes the focus, and
+// its message shows in the save bar.
+let invalidShown = false;
+
+function fieldLabel(el) {
+  const lab = el.labels && el.labels[0] ? el.labels[0] : el.closest("label");
+  if (lab) {
+    for (const n of lab.childNodes) if (n.nodeType === 3 && n.textContent.trim()) return n.textContent.trim();
+  }
+  return el.getAttribute("aria-label") || el.name || el.id || "";
+}
+
+function onInvalid(e) {
+  const el = e.target;
+  if (!el || typeof el.closest !== "function") return;
+  for (let d = el.closest("details"); d; d = d.parentElement ? d.parentElement.closest("details") : null) d.open = true;
+  if (invalidShown) return;
+  invalidShown = true;
+  setTimeout(() => { invalidShown = false; }, 0);
+  el.scrollIntoView({ block: "center" });
+  if (typeof el.focus === "function") el.focus({ preventScroll: true });
+  const label = fieldLabel(el);
+  flash($("settings-status"), (label ? label + ": " : "") + (el.validationMessage || "check this"), "danger wrap");
+}
+
+form.addEventListener("invalid", onInvalid, true);
+
+// The System group is open on a wide screen and closed on a phone; markup cannot make open
+// depend on the width.
+function openSystemWhenWide() {
+  const group = $("group-system");
+  if (!group) return;
+  const adv = group.querySelector("details.advanced") || group.closest("details.advanced");
+  if (adv && typeof window.matchMedia === "function" && window.matchMedia("(min-width: 761px)").matches) adv.open = true;
+}
+
+// The group index marks the group in view.
+function initGroupIndex() {
+  const links = [...document.querySelectorAll(".group-index a")].filter((a) => (a.getAttribute("href") || "").startsWith("#"));
+  if (!links.length || typeof IntersectionObserver !== "function") return;
+  const byId = new Map(links.map((a) => [a.getAttribute("href").slice(1), a]));
+  const visible = new Set();
+  const mark = () => {
+    const first = [...byId.keys()].find((id) => visible.has(id));
+    if (!first) return;
+    for (const [id, a] of byId) {
+      const on = id === first;
+      a.classList.toggle("active", on);
+      if (on) a.setAttribute("aria-current", "location");
+      else a.removeAttribute("aria-current");
+    }
+  };
+  const io = new IntersectionObserver((entries) => {
+    for (const en of entries) {
+      if (en.isIntersecting) visible.add(en.target.id);
+      else visible.delete(en.target.id);
+    }
+    mark();
+  }, { rootMargin: "-15% 0px -55% 0px" });
+  for (const id of byId.keys()) {
+    const el = $(id);
+    if (el) io.observe(el);
+  }
+}
+
 // ------------------------------------------------------------ grounding (SPEC_V3 DD)
 
 function cityLabel(r) {
@@ -473,7 +544,7 @@ async function loadTastings() {
   clear(recent);
   const performers = r && Array.isArray(r.performers) ? r.performers : [];
   const live = loaded ? performerKey(loaded) : "";
-  if (!performers.length) tbody.append(h("tr", null, h("td", { colspan: "7" }, chip("none"))));
+  if (!performers.length) tbody.append(h("tr", null, h("td", { colspan: "7" }, emptyLabel("No tastings"))));
   for (const p of performers) {
     const key = performerKey(p);
     const slot = h("span", { class: "chips" });
@@ -504,7 +575,7 @@ async function loadTastings() {
       h("td", null, h("span", { class: "row" }, key === live ? chip("live", "accent") : promote, slot))));
   }
   const rows = r && Array.isArray(r.recent) ? r.recent : [];
-  if (!rows.length) recent.append(h("div", { class: "chips" }, chip("none")));
+  if (!rows.length) recent.append(emptyLabel("Nothing yet"));
   for (const t of rows.slice(0, 20)) {
     const winner = t.winner && typeof t.winner === "object" ? performerKey(t.winner) : t.winner ? String(t.winner) : "";
     const loser = t.loser && typeof t.loser === "object" ? performerKey(t.loser) : t.loser ? String(t.loser) : "";
@@ -790,7 +861,7 @@ function scenarioChips(summary) {
     if (nested.length) return nested.map(([k, v]) => { const n = flagCount(v); return chip(k + " " + n, n ? "amber" : "ok"); });
     return Object.entries(summary).map(([k, v]) => chip(k + " " + String(v).slice(0, 40)));
   }
-  return [chip("none")];
+  return [h("span", { class: "empty-label", text: "No scenarios" })];
 }
 
 function driftRow(row) {
@@ -810,7 +881,7 @@ async function loadDrift() {
   try {
     const r = await api("GET", "/api/drift");
     const rows = Array.isArray(r) ? r : (r && (r.reports || r.rows)) || [];
-    if (!rows.length) box.append(h("div", { class: "chips" }, chip("none")));
+    if (!rows.length) box.append(emptyLabel("No reports"));
     for (const row of rows.slice(0, 4)) box.append(driftRow(row));
   } catch (e) {
     box.append(h("div", { class: "chips" }, chip(e.code, "danger")));
@@ -890,7 +961,7 @@ async function loadVoiceprint() {
   clear(sparks);
   const list = rows.slice(0, 8).map((row) => ({ row, j: parseJson(row.json, null) || row.stats || row }));
   if (!list.length) {
-    tbody.append(h("tr", null, h("td", { colspan: "10" }, chip("none"))));
+    tbody.append(h("tr", null, h("td", { colspan: "10" }, emptyLabel("No runs"))));
     return;
   }
   for (const { row, j } of list) {
@@ -940,7 +1011,7 @@ async function loadUsage() {
     const tbody = $("usageRows");
     clear(tbody);
     const rows = Array.isArray(u.byDay) ? u.byDay : [];
-    if (!rows.length) tbody.append(h("tr", null, h("td", { colspan: "7" }, chip("none"))));
+    if (!rows.length) tbody.append(h("tr", null, h("td", { colspan: "7" }, emptyLabel("No usage"))));
     for (const r of rows) {
       tbody.append(h("tr", null,
         h("td", { class: "mono", text: r.day }),
@@ -1059,7 +1130,7 @@ async function loadNightly() {
     box.append(chip(e.code || "error", "danger"));
     return;
   }
-  if (!runs.length) { box.append(h("div", { class: "chips" }, chip("none"))); return; }
+  if (!runs.length) { box.append(emptyLabel("No runs")); return; }
   const byDay = new Map();
   for (const run of runs) {
     const day = String(run.day || "");
@@ -1113,6 +1184,8 @@ async function init() {
   } catch {
     /* gated before this page loads */
   }
+  openSystemWhenWide();
+  initGroupIndex();
   await loadSettings();
   loadUsage();
   loadSystem();

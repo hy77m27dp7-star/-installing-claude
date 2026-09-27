@@ -25,6 +25,10 @@ const STATE_DIR_V4 = STATE_DIR + "-v4";
 // world are checked against the seed, not against what the earlier phases left.
 const STATE_ARG_V5 = "tests/integration/.state-v5";
 const STATE_DIR_V5 = STATE_DIR + "-v5";
+// The experience pass runs on its own fresh state too (see scenariosExp): the wallpaper is
+// read on an empty roll first.
+const STATE_ARG_EXP = "tests/integration/.state-exp";
+const STATE_DIR_EXP = STATE_DIR + "-exp";
 const STUB_ENV = { DEV_ACTOR_EMAIL, DEFAULT_PROVIDER: "stub", DEFAULT_IMAGE_PROVIDER: "stub" };
 
 const stamp = Date.now().toString(36);
@@ -2968,6 +2972,15 @@ async function gateScenarios(report) {
     }
   });
 
+  await report.check("ACCESS_AUD set: the experience routes, the rename, the Us page and its scripts are gated too -> 401", async () => {
+    for (const path of [...EXP_ROUTES_GET, "/api/roll?limit=6", "/api/conversations", ...EXP_PAGES, ...EXP_SCRIPTS, EXP_FONT]) {
+      const r = await api("GET", path);
+      assert.equal(r.status, 401, path + " -> " + r.status + " " + r.text.slice(0, 100));
+    }
+    const put = await api("PUT", "/api/conversations/c_nothing", { title: "x" });
+    assert.equal(put.status, 401, "PUT /api/conversations/:id -> " + put.status + " " + put.text.slice(0, 100));
+  });
+
   await report.check("ACCESS_AUD set: v2 media paths, the timeline, the character export and the cron routes are gated -> 401", async () => {
     for (const path of ["/media/audio/m_nothing", "/media/inbox/m_nothing/0", "/media/library/md_nothing", "/api/timeline", "/api/export/character", "/api/export/character.md", "/api/drift", "/api/life", "/api/push/latest", "/sw.js", "/manifest.webmanifest"]) {
       const r = await api("GET", path);
@@ -4735,6 +4748,212 @@ async function scenariosV5(report) {
 // ------------------------------------------------------------------ main
 
 // True when anything at all answers on the test port.
+// ------------------------------------------------------------------ the experience pass (DESIGN_EXPERIENCE section 8)
+
+// Its own phase on a FRESH local state (main() applies every migration to a fourth directory):
+// the wallpaper is checked on an empty roll first, and nothing another phase approved or
+// rejected may stand in its way. Nothing here rejects a picture (the stub answers the same
+// bytes for every picture; a rejection would blacklist them all).
+const EXP_ROUTES_GET = ["/api/roll", "/api/wallpaper", "/api/phone/lock", "/api/us"];
+const EXP_PAGES = ["/us"];
+const EXP_SCRIPTS = ["/js/us.js", "/js/lockwords.js", "/js/months.js"];
+const EXP_FONT = "/fonts/fraunces-latin-full-normal.woff2";
+const EXP_VIEW_KEYS = ["displayTitle", "titleFrom", "firstAt", "lastAt", "preview"];
+
+async function scenariosExp(report) {
+  const probe = await api("GET", "/api/wallpaper");
+  // The router's own 404 ("not found") means the route is not on this server; the route's
+  // 404 names the missing master instead.
+  if (probe.status === 404 && probe.json && probe.json.error === "not found") {
+    console.log("exp: GET /api/wallpaper -> 404 on this server; skipping the experience block");
+    return;
+  }
+  const tz = (await api("GET", "/api/settings")).json.timezone || "America/New_York";
+  const tomorrow = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(Date.now() + 24 * 60 * 60 * 1000));
+  const ids = { conv: null, herMessage: null, owner: null, second: null };
+
+  await report.check("exp: GET /api/wallpaper on an empty roll -> the avatar master (kind master, its file and focus, today's day)", async () => {
+    assert.equal(probe.status, 200, probe.text);
+    const avatar = await api("GET", "/api/avatar");
+    assert.equal(avatar.status, 200, avatar.text);
+    assert.equal(probe.json.kind, "master");
+    assert.equal(probe.json.id, avatar.json.assetId);
+    assert.equal(probe.json.url, "/" + avatar.json.file.replace(/^\/+/, ""));
+    assert.deepEqual(probe.json.focus, avatar.json.focus);
+    assert.match(probe.json.day, /^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  await report.check("exp: POST /api/conversations answers a chapter view (201, the day title); GET /api/conversations rows carry displayTitle, titleFrom, firstAt, lastAt and preview", async () => {
+    const created = await api("POST", "/api/conversations", {});
+    assert.equal(created.status, 201, created.text);
+    for (const k of EXP_VIEW_KEYS) assert.ok(k in created.json, k + " on the POST answer");
+    assert.equal(created.json.titleFrom, "day");
+    assert.match(created.json.displayTitle, /^(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday) (morning|afternoon|evening|night)$/);
+    assert.equal(created.json.firstAt, null);
+    assert.equal(created.json.preview, null);
+    ids.second = created.json.id;
+    const list = await api("GET", "/api/conversations");
+    assert.equal(list.status, 200, list.text);
+    assert.ok(list.json.length >= 1);
+    for (const row of list.json) for (const k of ["id", "title", "created_at", "status", ...EXP_VIEW_KEYS]) assert.ok(k in row, k + " on " + row.id);
+  });
+
+  await report.check("exp: a together scene set before the first turn names the chapter after its place; the span and the preview come from the story rows", async () => {
+    const s = (await state()).scene.state;
+    const put = await api("PUT", "/api/state/scene", { state: { ...s, status: "together", location: "at the bench by the water, late" }, note: "integration exp" });
+    assert.equal(put.status, 200, put.text);
+    ids.conv = await newConversation(null);
+    const t = await turn(ids.conv, "hi. is this seat taken", key("exp-first"));
+    assert.equal(t.status, 200, t.text);
+    ids.herMessage = t.json.assistantMessage.id;
+    const row = (await api("GET", "/api/conversations")).json.find((c) => c.id === ids.conv);
+    assert.ok(row, "listed");
+    assert.equal(row.displayTitle, "The bench by the water");
+    assert.equal(row.titleFrom, "place");
+    assert.equal(row.firstAt, t.json.userMessage.created_at);
+    assert.equal(row.lastAt, t.json.assistantMessage.created_at);
+    assert.equal(row.preview.role, "assistant");
+    assert.ok(row.preview.text.length > 0 && row.preview.text.length <= 93);
+  });
+
+  await report.check("exp: PUT /api/conversations/:id renames (the dash repaired, audited), null restores the automatic title, 81 characters -> 400, a missing or bad title -> 400, a deleted or unknown conversation -> 404", async () => {
+    const r = await api("PUT", `/api/conversations/${ids.conv}`, { title: "our bench " + EM_DASH + " night one" });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.displayTitle, "our bench -- night one");
+    assert.equal(r.json.titleFrom, "his");
+    assert.equal(r.json.title, "our bench -- night one");
+    const audit = (await auditRows(50)).find((e) => e.action === "conversation.rename" && e.entity_id === ids.conv);
+    assert.ok(audit, "audited conversation.rename");
+    const back = await api("PUT", `/api/conversations/${ids.conv}`, { title: null });
+    assert.equal(back.status, 200, back.text);
+    assert.equal(back.json.title, null);
+    assert.equal(back.json.displayTitle, "The bench by the water");
+    assert.equal(back.json.titleFrom, "place");
+    const blank = await api("PUT", `/api/conversations/${ids.conv}`, { title: "   " });
+    assert.equal(blank.status, 200, blank.text);
+    assert.equal(blank.json.titleFrom, "place");
+    const long = await api("PUT", `/api/conversations/${ids.conv}`, { title: "x".repeat(81) });
+    assert.equal(long.status, 400, long.text);
+    assert.equal(long.json.code, "validation");
+    assert.match(long.json.error, /too long/);
+    const eighty = await api("PUT", `/api/conversations/${ids.conv}`, { title: "x".repeat(80) });
+    assert.equal(eighty.status, 200, eighty.text);
+    await api("PUT", `/api/conversations/${ids.conv}`, { title: null });
+    for (const body of [{}, { title: 5 }, { title: ["a"] }]) {
+      const bad = await api("PUT", `/api/conversations/${ids.conv}`, body);
+      assert.equal(bad.status, 400, JSON.stringify(body) + ": " + bad.text);
+    }
+    const gone = await newConversation("integration exp: to delete");
+    assert.equal((await api("DELETE", `/api/conversations/${gone}`)).status, 200);
+    const deleted = await api("PUT", `/api/conversations/${gone}`, { title: "x" });
+    assert.equal(deleted.status, 404, deleted.text);
+    assert.equal(deleted.json.code, "not_found");
+    const unknown = await api("PUT", "/api/conversations/c_nothing", { title: "x" });
+    assert.equal(unknown.status, 404, unknown.text);
+  });
+
+  await report.check("exp: an owner-fired picture, approved, is in GET /api/roll and not in GET /api/album; the wallpaper is that photo after one approval", async () => {
+    const gen = await api("POST", "/api/images/generate", { conversationId: ids.conv, description: "integration exp: her window display, late light" });
+    assert.equal(gen.status, 200, gen.text);
+    assert.equal(gen.json.asset.message_id, null);
+    ids.owner = gen.json.asset.id;
+    const ok = await api("POST", `/api/images/${ids.owner}/decide`, { decision: "approve" });
+    assert.equal(ok.status, 200, ok.text);
+    const roll = await api("GET", "/api/roll");
+    assert.equal(roll.status, 200, roll.text);
+    const item = roll.json.items.find((i) => i.id === ids.owner);
+    assert.ok(item, "in the roll: " + roll.text.slice(0, 300));
+    assert.deepEqual(Object.keys(item).sort(), ["at", "conversationId", "id", "kind", "messageId", "place", "poster", "url", "us"]);
+    assert.equal(item.kind, "photo");
+    assert.equal(item.url, "/media/" + ids.owner);
+    assert.equal(item.messageId, null);
+    assert.equal(item.place, null);
+    assert.equal(item.us, false);
+    const album = await api("GET", "/api/album");
+    assert.equal(album.status, 200, album.text);
+    assert.ok(!album.json.items.some((i) => i.id === ids.owner), "never in the album");
+    const bad = await api("GET", "/api/roll?before=yesterday");
+    assert.equal(bad.status, 400, bad.text);
+    const wall = await api("GET", "/api/wallpaper");
+    assert.equal(wall.status, 200, wall.text);
+    assert.equal(wall.json.kind, "photo");
+    assert.equal(wall.json.id, ids.owner);
+    assert.equal(wall.json.url, "/media/" + ids.owner);
+    assert.equal(wall.json.focus, null);
+  });
+
+  await report.check("exp: GET /api/phone/lock -> its keys, held while the scene is together; a Messages entry after his turn; a Calendar entry Tomorrow after a step made through POST /api/wants/:id/beats", async () => {
+    const want = await api("POST", "/api/wants", { title: "sing at an open mic" });
+    assert.equal(want.status, 201, want.text);
+    const beat = await api("POST", `/api/wants/${want.json.id}/beats`, { title: "sign up at the bar", kind: "step", dueOn: tomorrow, dueTime: "19:00" });
+    assert.equal(beat.status, 201, beat.text);
+    assert.ok(beat.json.run && beat.json.run.status === "pending", "the beat carries its pending run");
+    const r = await api("GET", "/api/phone/lock");
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(Object.keys(r.json).sort(), ["dateLine", "frozen", "notes", "now", "roll", "time", "tz", "wallpaper", "wants", "weather"]);
+    assert.equal(r.json.frozen, true, "a together scene holds her phone's clock");
+    assert.ok(Date.parse(r.json.now) <= Date.now());
+    assert.match(r.json.time, /^\d{1,2}:\d{2}$/);
+    assert.match(r.json.dateLine, /^[A-Z][a-z]+day, [A-Z][a-z]+ \d{1,2}$/);
+    assert.equal(r.json.wallpaper.id, ids.owner);
+    const msg = r.json.notes.find((n) => n.app === "messages");
+    assert.ok(msg, "a Messages entry: " + JSON.stringify(r.json.notes));
+    assert.equal(msg.text, "hi. is this seat taken");
+    const cal = r.json.notes.find((n) => n.app === "calendar");
+    assert.ok(cal, "a Calendar entry: " + JSON.stringify(r.json.notes));
+    assert.equal(cal.title, "Tomorrow");
+    assert.equal(cal.text, "sign up at the bar");
+    assert.equal(r.json.notes[0].app, "calendar", "calendar first");
+    assert.ok(r.json.notes.length <= 4);
+    const w = r.json.wants.find((x) => x.id === want.json.id);
+    assert.ok(w && w.next && w.next.day === "Tomorrow", JSON.stringify(r.json.wants));
+    assert.ok(r.json.roll.every((i) => !i.us));
+    assert.ok(!JSON.stringify(r.json).includes("proposal"));
+  });
+
+  await report.check("exp: GET /api/us -> exactly its seven keys; a kept line of hers after POST /api/messages/:id/mark { mark: keep }", async () => {
+    const before = await api("GET", "/api/us");
+    assert.equal(before.status, 200, before.text);
+    assert.deepEqual(Object.keys(before.json).sort(), ["chapters", "kept", "moments", "nicknames", "places", "since", "standing"]);
+    assert.ok(before.json.chapters.some((c) => c.id === ids.conv && c.title === "The bench by the water"));
+    assert.ok(!before.json.chapters.some((c) => c.id === ids.second), "a chapter with no word is not a chapter");
+    assert.ok(before.json.places.some((p) => p.title === "the bench by the water, late" || /bench by the water/.test(p.title)), JSON.stringify(before.json.places));
+    const mark = await api("POST", `/api/messages/${ids.herMessage}/mark`, { mark: "keep" });
+    assert.equal(mark.status, 200, mark.text);
+    const after = await api("GET", "/api/us");
+    assert.equal(after.status, 200, after.text);
+    const kept = after.json.kept.find((k) => k.id === ids.herMessage);
+    assert.ok(kept, "kept: " + JSON.stringify(after.json.kept));
+    assert.equal(kept.conversationId, ids.conv);
+    assert.ok(!/\*/.test(kept.text), "no action marks in a pull quote");
+    const s = (await state()).scene.state;
+    const apart = await api("PUT", "/api/state/scene", { state: { ...s, status: "apart", location: null }, note: "integration exp: apart" });
+    assert.equal(apart.status, 200, apart.text);
+  });
+
+  await report.check("exp: GET /api/timeline items carry story; the owner-fired picture has none", async () => {
+    const r = await api("GET", "/api/timeline");
+    assert.equal(r.status, 200, r.text);
+    assert.ok(r.json.items.length > 0);
+    for (const i of r.json.items) assert.ok("story" in i, "story on " + i.id);
+    const owner = r.json.items.find((i) => i.id === "photo:" + ids.owner);
+    assert.ok(owner, "the owner picture is on the log");
+    assert.equal(owner.story, null);
+    assert.ok(r.json.items.some((i) => i.type === "scene" && i.story === "Together at the bench by the water, late"), "the scene in words");
+  });
+
+  await report.check("exp: the page /us, the scripts us.js, lockwords.js and months.js answer 200; the display font answers 200 as font/woff2", async () => {
+    for (const path of [...EXP_PAGES, ...EXP_SCRIPTS]) {
+      const r = await fetchBytes(path);
+      assert.equal(r.status, 200, path + " -> " + r.status);
+    }
+    const font = await fetchBytes(EXP_FONT);
+    assert.equal(font.status, 200, EXP_FONT + " -> " + font.status);
+    assert.ok(font.contentType.startsWith("font/woff2"), "content-type: " + font.contentType);
+    assert.equal(String.fromCharCode(...font.bytes.slice(0, 4)), "wOF2");
+  });
+}
+
 async function answering() {
   try {
     await fetch(BASE + "/api/me", { signal: AbortSignal.timeout(2000) });
@@ -4915,6 +5134,41 @@ async function main() {
     });
     console.log(`wrangler dev (v5) ready on ${BASE} (${Date.now() - t5} ms)\n`);
     await scenariosV5(report);
+
+    // Experience phase (2026-09-26): a FRESH state again, so the wallpaper starts on an empty
+    // roll and the chapters, the lock and Us are read against this phase's own record.
+    await stopWrangler(wrangler);
+    if (await answering()) throw new Error("the v5 server is still answering on " + BASE + " after shutdown");
+    console.log(`\nintegration exp: fresh state at ${STATE_DIR_EXP}`);
+    removeDir(STATE_DIR_EXP);
+    const tmx = Date.now();
+    const migrateX = await runCommand(["d1", "migrations", "apply", "avelie", "--local", "--persist-to", STATE_ARG_EXP], { env: { CI: "1" } });
+    if (migrateX.code !== 0) {
+      console.log(migrateX.output);
+      throw new Error("exp migrations failed with exit code " + migrateX.code);
+    }
+    console.log(`exp migrations applied (${Date.now() - tmx} ms)`);
+    const tx = Date.now();
+    wrangler = startWrangler([
+      "--port", String(PORT), "--local", "--persist-to", STATE_ARG_EXP,
+      "--var", "APP_ENV:" + APP_ENV_TAG,
+      "--var", "ACCESS_AUD:",
+      "--var", `DEV_ACTOR_EMAIL:${DEV_ACTOR_EMAIL}`,
+      "--var", "DEFAULT_PROVIDER:stub",
+      "--var", "DEFAULT_IMAGE_PROVIDER:stub",
+      "--var", "OPENAI_API_KEY:dummy-for-settings-only",
+    ], STUB_ENV);
+    await waitFor("wrangler dev (exp, fresh state) on " + BASE, async () => {
+      if (wrangler.hasExited()) throw new Error("wrangler dev exited before it was ready");
+      const r = await api("GET", "/api/me");
+      return r.status === 200 && r.json && r.json.env === APP_ENV_TAG;
+    }, BOOT_TIMEOUT_MS, 500).catch((e) => {
+      console.log("wrangler output (tail):");
+      console.log(wrangler.tail());
+      throw e;
+    });
+    console.log(`wrangler dev (exp) ready on ${BASE} (${Date.now() - tx} ms)\n`);
+    await scenariosExp(report);
 
     // Third phase, same port and state, with the production gate switched on. The gated
     // server cannot be told apart by /api/me (401), so nothing may answer before it boots.

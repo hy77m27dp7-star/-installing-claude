@@ -5,696 +5,696 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#060a13">
-<title>Avelie Model</title>
+<title>Avelie Settings</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icons/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/css/app.css">
+<link rel="preload" href="/fonts/fraunces-latin-full-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-sans-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body class="page-model">
 <header class="top">
   <a class="brand" href="/" aria-label="Avelie, home">
     <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
-    <span class="wordmark">AVELIE</span>
+    <span class="wordmark">Avelie</span>
   </a>
   <nav class="nav" aria-label="Sections"></nav>
 </header>
 
-<main class="page stack">
-  <form class="card stack" id="settingsForm" autocomplete="off">
-    <h2 class="section-title">Text</h2>
-    <div class="grid-form">
-      <label class="field">Provider
-        <select name="provider">
-          <option value="anthropic">anthropic</option>
-          <option value="openai">openai</option>
-          <option value="workersai">workersai</option>
-          <option value="stub">stub</option>
-        </select>
-      </label>
-      <label class="field">Model
-        <input type="text" name="model" placeholder="Model" maxlength="200">
-      </label>
-      <label class="field">Effort
-        <select name="effort">
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-        </select>
-      </label>
-      <label class="field">Temperature
-        <input type="number" name="temperature" min="0" max="2" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Max tokens
-        <input type="number" name="maxTokens" min="64" max="4000" step="1" inputmode="numeric">
-      </label>
-      <label class="check"><input type="checkbox" name="textureCuesEnabled"> Texture cues</label>
-      <label class="field">Typo cue share (0 = off)
-        <input type="number" name="typoCueShare" min="0" max="0.3" step="0.01" inputmode="decimal">
-      </label>
-    </div>
+<main class="page studio-settings">
+  <h1 class="display xl">Settings</h1>
+  <nav class="group-index" aria-label="Groups"><a href="#group-voice">Her voice</a><a href="#group-memory">Her memory</a><a href="#group-time">Her time</a><a href="#group-pictures">Pictures</a><a href="#group-calls">Calls</a><a href="#group-songs">Songs</a><a href="#group-money">Money</a><a href="#group-system">System</a></nav>
+  <form id="settingsForm" autocomplete="off">
+    <section class="studio-group" id="group-voice" aria-labelledby="gh-voice">
+      <h2 class="group-title" id="gh-voice">Her voice</h2>
+      <section class="setting-block">
+        <h3 class="block-title">Text</h3>
+          <label class="setting">Effort
+            <select name="effort">
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+          <label class="setting">Temperature
+            <input type="number" name="temperature" min="0" max="2" step="any" inputmode="decimal">
+          </label>
+          <label class="setting">Max tokens
+            <input type="number" name="maxTokens" min="64" max="4000" step="1" inputmode="numeric">
+          </label>
+          <label class="setting switch"><span class="switch-label">Texture cues</span><input type="checkbox" name="textureCuesEnabled"><span class="track"></span></label>
+          <label class="setting">Typo cue share
+            <input type="number" name="typoCueShare" min="0" max="0.3" step="0.01" inputmode="decimal"><span class="setting-hint">0 = off</span>
+          </label>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="setting">Provider
+            <select name="provider">
+              <option value="anthropic">anthropic</option>
+              <option value="openai">openai</option>
+              <option value="workersai">workersai</option>
+              <option value="stub">stub</option>
+            </select>
+          </label>
+          <label class="setting">Model
+            <input type="text" name="model" placeholder="Model" maxlength="200">
+          </label>
+        </details>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Voice bank</h3>
+          <label class="setting">Exemplars per turn
+            <input type="number" name="exemplarsPerTurn" min="0" max="12" step="1" inputmode="numeric">
+          </label>
+          <label class="setting">Exemplar cooldown turns
+            <input type="number" name="exemplarCooldownTurns" min="0" max="500" step="1" inputmode="numeric">
+          </label>
+          <label class="setting">Notes shown
+            <input type="number" name="correctionsShown" min="0" max="100" step="1" inputmode="numeric">
+          </label>
+          <label class="setting switch"><span class="switch-label">Rewrites join the bank</span><input type="checkbox" name="correctionRewriteToBank"><span class="track"></span></label>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Voice notes</h3>
+          <label class="setting">Voice provider
+            <select name="voiceProvider">
+              <option value="workersai">workersai</option>
+              <option value="elevenlabs">elevenlabs</option>
+              <option value="off">off</option>
+            </select>
+          </label>
+          <label class="setting">Voice mode
+            <select name="voiceMode">
+              <option value="off">off</option>
+              <option value="some">some</option>
+              <option value="all">all</option>
+            </select>
+          </label>
+          <label class="setting">Transcribe provider
+            <select name="transcribeProvider">
+              <option value="workersai">workersai</option>
+              <option value="openai">openai</option>
+            </select>
+          </label>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="setting">ElevenLabs voice id
+            <input type="text" name="elevenLabsVoiceId" placeholder="Voice id" maxlength="120">
+          </label>
+          <label class="setting">ElevenLabs model
+            <input type="text" name="elevenLabsModel" placeholder="eleven_multilingual_v2" maxlength="60">
+          </label>
+          <label class="setting">ElevenLabs per 1k characters
+            <input type="number" name="elevenLabsTtsPricePer1kChars" min="0" max="100" step="any" inputmode="decimal"><span class="setting-hint">USD</span>
+          </label>
+        </details>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Tastings</h3>
+          <label class="setting switch"><span class="switch-label">Tastings</span><input type="checkbox" name="tastingEnabled"><span class="track"></span></label>
+          <label class="setting">Tasting daily cap
+            <input type="number" name="tastingDailyCapUsd" min="0" max="1000" step="any" inputmode="decimal"><span class="setting-hint">USD</span>
+          </label>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="setting">Tasting provider
+            <select name="tastingProvider">
+              <option value="anthropic">anthropic</option>
+              <option value="openai">openai</option>
+              <option value="workersai">workersai</option>
+              <option value="stub">stub</option>
+            </select>
+          </label>
+          <label class="setting">Tasting model
+            <input type="text" name="tastingModel" placeholder="gpt-4.1" maxlength="200">
+          </label>
+        </details>
+      </section>
+      <section class="setting-block" id="tastingsBox">
+        <div class="row between"><h3 class="block-title">Tasting ledger</h3><span class="chips" id="tastings-status"></span></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Performer</th>
+                <th class="num">Wins</th>
+                <th class="num">Losses</th>
+                <th class="num">Draws</th>
+                <th class="num">Rate</th>
+                <th>Last</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="ledgerRows"></tbody>
+          </table>
+        </div>
+        <p class="kicker">Recent</p>
+        <div id="tastingsRecent"></div>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Texter</h3>
+          <label class="setting">Minimum examples
+            <input type="number" name="finetuneMinExamples" min="10" max="5000" step="1" inputmode="numeric">
+          </label>
+          <label class="setting">System mode
+            <select name="finetuneSystemMode">
+              <option value="compact">compact</option>
+              <option value="full">full</option>
+            </select>
+          </label>
+      </section>
+      <section class="setting-block" id="texterBox">
+        <div class="row between"><h3 class="block-title">Texter model</h3><span class="chips" id="texter-status"></span></div>
+        <div class="meter-head">
+          <span class="big" id="texterCount">0 <span>of 0</span></span>
+          <span class="chips" id="texterChips"></span>
+        </div>
+        <div class="progress meter" id="texterMeter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+        <label class="setting switch"><span class="switch-label">Leave him out of the state</span><input type="checkbox" id="stripHim" checked><span class="track"></span></label>
+        <div class="row">
+          <button type="button" class="btn" id="exportTrain">Export training set</button>
+          <button type="button" class="btn" id="exportRecord">Export record</button>
+          <span class="chips" id="export-status"></span>
+        </div>
+        <label class="setting">Model id
+          <input type="text" id="texterModel" placeholder="ft:gpt-4.1-mini-2025-04-14:..." maxlength="200">
+        </label>
+        <label class="setting">Input price per 1M
+          <input type="number" id="texterIn" min="0" step="any" inputmode="decimal">
+        </label>
+        <label class="setting">Output price per 1M
+          <input type="number" id="texterOut" min="0" step="any" inputmode="decimal">
+        </label>
+        <div class="row">
+          <button type="button" class="btn primary" id="texterUse">Use</button>
+          <button type="button" class="btn" id="texterRevert">Back to Claude</button>
+          <span class="chips" id="texterLive"></span>
+        </div>
+      </section>
+      <section class="setting-block hidden" id="voiceprintBox">
+        <div class="row between">
+          <h3 class="block-title">Voiceprint</h3>
+          <div class="row">
+            <span class="chips" id="voiceprint-status"></span>
+            <button type="button" class="btn small" id="voiceprintRun">Run now</button>
+          </div>
+        </div>
+        <div class="row" id="voiceprintSparks"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Week</th>
+                <th class="num">Messages</th>
+                <th class="num">Mean</th>
+                <th class="num">Median</th>
+                <th class="num">Questions</th>
+                <th class="num">Bubbles</th>
+                <th class="num">One word</th>
+                <th class="num">Lowercase</th>
+                <th class="num">First texts</th>
+                <th class="num">Flags</th>
+              </tr>
+            </thead>
+            <tbody id="voiceprintRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
 
-    <h2 class="section-title">Voice bank</h2>
-    <div class="grid-form">
-      <label class="field">Exemplars per turn
-        <input type="number" name="exemplarsPerTurn" min="0" max="12" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Exemplar cooldown turns
-        <input type="number" name="exemplarCooldownTurns" min="0" max="500" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Notes shown
-        <input type="number" name="correctionsShown" min="0" max="100" step="1" inputmode="numeric">
-      </label>
-      <label class="check"><input type="checkbox" name="correctionRewriteToBank"> Rewrites join the bank</label>
-    </div>
+    <section class="studio-group" id="group-memory" aria-labelledby="gh-memory">
+      <h2 class="group-title" id="gh-memory">Her memory</h2>
+      <section class="setting-block">
+        <h3 class="block-title">Memory</h3>
+          <label class="setting switch"><span class="switch-label">Decay</span><input type="checkbox" name="memoryDecayEnabled"><span class="track"></span></label>
+          <label class="setting">Facts max
+            <input type="number" name="memoryFactsMax" min="5" max="200" step="1" inputmode="numeric">
+          </label>
+          <label class="setting">Half-life low
+            <input type="number" name="memoryHalfLifeLowDays" min="1" max="365" step="1" inputmode="numeric"><span class="setting-hint">days</span>
+          </label>
+          <label class="setting">Half-life mid
+            <input type="number" name="memoryHalfLifeMidDays" min="1" max="3650" step="1" inputmode="numeric"><span class="setting-hint">days</span>
+          </label>
+          <label class="setting">Half-life high
+            <input type="number" name="memoryHalfLifeHighDays" min="1" max="36500" step="1" inputmode="numeric"><span class="setting-hint">days</span>
+          </label>
+          <label class="setting">Half-remember every N turns
+            <input type="number" name="provisionalRecallEvery" min="0" max="50" step="1" inputmode="numeric"><span class="setting-hint">0 = off</span>
+          </label>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Proposals</h3>
+          <label class="setting switch"><span class="switch-label">Proposals</span><input type="checkbox" name="proposalsEnabled"><span class="track"></span></label>
+          <label class="setting switch"><span class="switch-label">Memory keeps itself</span><input type="checkbox" name="proposalsAutoApprove"><span class="track"></span><span class="setting-hint">the Inbox is where you remove</span></label>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="setting">Proposal provider
+            <select name="proposalProvider">
+              <option value="anthropic">anthropic</option>
+              <option value="openai">openai</option>
+              <option value="workersai">workersai</option>
+              <option value="stub">stub</option>
+            </select>
+          </label>
+          <label class="setting">Proposal model
+            <input type="text" name="proposalModel" placeholder="Model" maxlength="200">
+          </label>
+        </details>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Her story</h3>
+          <label class="setting">Beats ahead
+            <input type="number" name="beatHorizonDays" min="1" max="30" step="1" inputmode="numeric"><span class="setting-hint">days</span>
+          </label>
+          <label class="setting">Beats remembered
+            <input type="number" name="arcMemoryDays" min="1" max="30" step="1" inputmode="numeric"><span class="setting-hint">days</span>
+          </label>
+          <label class="setting">Reads shown
+            <input type="number" name="viewsShown" min="0" max="12" step="1" inputmode="numeric"><span class="setting-hint">0 = off</span>
+          </label>
+          <label class="setting">Read confidence at least
+            <input type="number" name="viewMinConfidence" min="0" max="1" step="0.05" inputmode="decimal">
+          </label>
+          <label class="setting">Friction days default
+            <input type="number" name="frictionDaysDefault" min="1" max="14" step="1" inputmode="numeric">
+          </label>
+          <label class="setting">Sent shown
+            <input type="number" name="sentShown" min="0" max="30" step="1" inputmode="numeric"><span class="setting-hint">0 = off</span>
+          </label>
+          <label class="setting">Sent window
+            <input type="number" name="sentWindowDays" min="1" max="60" step="1" inputmode="numeric"><span class="setting-hint">days</span>
+          </label>
+          <label class="setting">People and places shown
+            <input type="number" name="worldShown" min="0" max="20" step="1" inputmode="numeric"><span class="setting-hint">0 = off</span>
+          </label>
+          <label class="setting">Artists listed
+            <input type="number" name="knownArtistsShown" min="0" max="200" step="1" inputmode="numeric"><span class="setting-hint">0 = off</span>
+          </label>
+      </section>
+    </section>
 
-    <h2 class="section-title">Memory</h2>
-    <div class="grid-form">
-      <label class="check"><input type="checkbox" name="memoryDecayEnabled"> Decay</label>
-      <label class="field">Facts max
-        <input type="number" name="memoryFactsMax" min="5" max="200" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Half-life low (days)
-        <input type="number" name="memoryHalfLifeLowDays" min="1" max="365" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Half-life mid (days)
-        <input type="number" name="memoryHalfLifeMidDays" min="1" max="3650" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Half-life high (days)
-        <input type="number" name="memoryHalfLifeHighDays" min="1" max="36500" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Half-remember every N turns (0 = off)
-        <input type="number" name="provisionalRecallEvery" min="0" max="50" step="1" inputmode="numeric">
-      </label>
-    </div>
+    <section class="studio-group" id="group-time" aria-labelledby="gh-time">
+      <h2 class="group-title" id="gh-time">Her time</h2>
+      <section class="setting-block" id="storyCard" aria-label="Story">
+        <div class="row between"><h3 class="block-title">Her clock</h3><span class="chips" id="clockStatus"></span></div>
+          <label class="setting switch"><span class="switch-label">Her clock</span><input type="checkbox" name="storyClockEnabled" form="settingsForm"><span class="track"></span><span class="setting-hint">held while together</span></label>
+          <label class="setting">Time-since line after
+            <input type="number" name="gapLineMinMinutes" form="settingsForm" min="15" max="10080" step="1" inputmode="numeric"><span class="setting-hint">minutes</span>
+          </label>
+        <div class="row">
+          <button type="submit" class="btn primary" form="settingsForm">Save</button>
+          <span class="chips" data-save-status></span>
+        </div>
+      </section>
+      <section class="setting-block" id="nightlyCard" aria-label="Nightly">
+        <div class="row between"><h3 class="block-title">Nightly</h3><span class="chips" id="nightlyResult"></span></div>
+          <label class="setting switch"><span class="switch-label">Nightly story pass</span><input type="checkbox" name="nightlyStoryEnabled" form="settingsForm"><span class="track"></span></label>
+          <label class="setting">Budget a night
+            <input type="number" name="nightlyBudgetUsd" form="settingsForm" min="0" max="5" step="any" inputmode="decimal"><span class="setting-hint">USD</span>
+          </label>
+          <label class="setting">Her day items
+            <input type="number" name="herDayItemsMax" form="settingsForm" min="0" max="3" step="1" inputmode="numeric"><span class="setting-hint">0 = off</span>
+          </label>
+          <label class="setting">Beats decided
+            <input type="number" name="nightlyBeatsMax" form="settingsForm" min="0" max="10" step="1" inputmode="numeric"><span class="setting-hint">0 = off</span>
+          </label>
+          <label class="setting">Reads a night
+            <input type="number" name="viewsPerNight" form="settingsForm" min="0" max="6" step="1" inputmode="numeric"><span class="setting-hint">0 = off</span>
+          </label>
+          <label class="setting switch"><span class="switch-label">Memory hygiene</span><input type="checkbox" name="hygieneEnabled" form="settingsForm"><span class="track"></span></label>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="setting">Provider
+            <select name="nightlyProvider" form="settingsForm">
+              <option value="anthropic">anthropic</option>
+              <option value="openai">openai</option>
+              <option value="workersai">workersai</option>
+              <option value="stub">stub</option>
+            </select>
+          </label>
+          <label class="setting">Model
+            <input type="text" name="nightlyModel" form="settingsForm" placeholder="claude-sonnet-5" maxlength="200">
+          </label>
+          <label class="setting">Hygiene model
+            <input type="text" name="hygieneModel" form="settingsForm" placeholder="claude-haiku-4-5" maxlength="200">
+          </label>
+        </details>
+        <div class="row">
+          <button type="submit" class="btn primary" form="settingsForm">Save</button>
+          <button type="button" class="btn" id="nightlyRun">Run now</button>
+          <span class="chips" data-save-status></span>
+        </div>
+        <div id="nightlyRuns"></div>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Grounding</h3>
+          <label class="setting">City
+            <input type="text" name="herCity" placeholder="City" maxlength="80">
+          </label>
+          <div class="row">
+            <button type="button" class="btn" id="geoFind">Find</button>
+            <span class="chips" id="geo-status"></span>
+          </div>
+          <div class="geo-results" id="geoResults"></div>
+          <label class="setting">Units
+            <select name="weatherUnits">
+              <option value="fahrenheit">fahrenheit</option>
+              <option value="celsius">celsius</option>
+            </select>
+          </label>
+          <label class="setting">Weather provider
+            <select name="weatherProvider">
+              <option value="openmeteo">openmeteo</option>
+              <option value="stub">stub</option>
+              <option value="off">off</option>
+            </select>
+          </label>
+          <label class="setting">Timezone
+            <input type="text" name="timezone" placeholder="America/New_York" maxlength="80">
+          </label>
+        <div class="now-line" id="groundingNow"></div>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Timing</h3>
+          <label class="setting">Reply delay
+            <select name="replyDelayMode">
+              <option value="instant">instant</option>
+              <option value="real">real</option>
+            </select>
+          </label>
+          <label class="setting">Real delay max
+            <input type="number" name="realDelayMaxMinutes" min="1" max="120" step="1" inputmode="numeric"><span class="setting-hint">minutes</span>
+          </label>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Her first texts</h3>
+          <label class="setting">Per day
+            <input type="number" name="herFirstTextsPerDay" min="0" max="10" step="1" inputmode="numeric">
+          </label>
+          <label class="setting">Quiet hours
+            <input type="text" name="herFirstQuietHours" placeholder="23:30-08:30" maxlength="20">
+          </label>
+        <div class="row">
+          <button type="button" class="btn" id="herFirstRun">Send one now</button>
+          <span class="chips" id="herfirst-status"></span>
+        </div>
+        <div class="row">
+          <button type="button" class="btn" id="herTextsBtn" aria-pressed="false">Get her texts on this phone</button>
+          <span class="chips" id="herTextsStatus"></span>
+        </div>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Wants</h3>
+          <label class="setting">Wants shown
+            <input type="number" name="wantsShown" min="0" max="20" step="1" inputmode="numeric">
+          </label>
+          <label class="setting">Ask let-go days
+            <input type="number" name="askLetGoDays" min="1" max="90" step="1" inputmode="numeric">
+          </label>
+          <label class="setting">Mood days default
+            <input type="number" name="moodDaysDefault" min="1" max="14" step="1" inputmode="numeric">
+          </label>
+      </section>
+      <section class="setting-block" id="pushBox">
+        <div class="row between"><h3 class="block-title">Notifications</h3><span class="chips" id="push-status"></span></div>
+        <label class="setting switch" for="pushToggle"><span class="switch-label">Her first texts</span><input type="checkbox" id="pushToggle"><span class="track"></span></label>
+      </section>
+    </section>
 
-    <h2 class="section-title">Wants</h2>
-    <div class="grid-form">
-      <label class="field">Wants shown
-        <input type="number" name="wantsShown" min="0" max="20" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Ask let-go days
-        <input type="number" name="askLetGoDays" min="1" max="90" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Mood days default
-        <input type="number" name="moodDaysDefault" min="1" max="14" step="1" inputmode="numeric">
-      </label>
-    </div>
+    <section class="studio-group" id="group-pictures" aria-labelledby="gh-pictures">
+      <h2 class="group-title" id="gh-pictures">Pictures</h2>
+      <section class="setting-block">
+        <h3 class="block-title">Images</h3>
+          <label class="setting">Quality
+            <select name="imageQuality">
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+          <label class="setting">Size
+            <input type="text" name="imageSize" placeholder="1024x1536" maxlength="20">
+          </label>
+          <label class="setting">Cost
+            <input type="number" name="imageCostUsd" min="0" step="any" inputmode="decimal"><span class="setting-hint">USD</span>
+          </label>
+          <label class="setting">Portrait size
+            <input type="text" name="portraitSize" placeholder="1024x1024" maxlength="20">
+          </label>
+          <label class="setting">Portrait cost
+            <input type="number" name="portraitCostUsd" min="0" max="100" step="any" inputmode="decimal"><span class="setting-hint">USD</span>
+          </label>
+          <label class="setting">Video provider
+            <select name="videoProvider">
+              <option value="runway">runway</option>
+              <option value="stub">stub</option>
+              <option value="off">off</option>
+            </select>
+          </label>
+          <label class="setting">Video seconds
+            <select name="videoSeconds">
+              <option value="5">5</option>
+              <option value="10">10</option>
+            </select>
+          </label>
+          <label class="setting">Video ratio
+            <input type="text" name="videoRatio" placeholder="720:1280" maxlength="9">
+          </label>
+          <label class="setting">Video cost per 5 s
+            <input type="number" name="videoCostUsd" min="0" max="100" step="any" inputmode="decimal"><span class="setting-hint">USD</span>
+          </label>
+          <label class="setting switch"><span class="switch-label">She sends clips</span><input type="checkbox" name="videoMarkerEnabled"><span class="track"></span></label>
+          <label class="setting">Place picture cost
+            <input type="number" name="placeCostUsd" min="0" max="100" step="any" inputmode="decimal"><span class="setting-hint">USD</span>
+          </label>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="setting">Image provider
+            <select name="imageProvider">
+              <option value="runway">runway</option>
+              <option value="openai">openai</option>
+              <option value="stub">stub</option>
+            </select>
+          </label>
+          <label class="setting">Image model
+            <input type="text" name="imageModel" placeholder="Model" maxlength="120">
+          </label>
+          <label class="setting">Video model
+            <input type="text" name="videoModel" placeholder="gen4_turbo" maxlength="60">
+          </label>
+        </details>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">His face</h3>
+          <label class="setting switch"><span class="switch-label">Photos on every Together turn</span><input type="checkbox" name="hisFaceInTogether"><span class="track"></span></label>
+          <label class="setting switch"><span class="switch-label">Him in her pictures when she says so</span><input type="checkbox" name="hisFaceInPhotos"><span class="track"></span></label>
+          <label class="setting">Apart: every N turns
+            <input type="number" name="hisFaceApartEvery" min="0" max="50" step="1" inputmode="numeric"><span class="setting-hint">0 = first turn only</span>
+          </label>
+          <label class="setting">Photos on file, at most
+            <input type="number" name="hisFaceMax" min="1" max="3" step="1" inputmode="numeric">
+          </label>
+      </section>
+    </section>
 
-    <h2 class="section-title">Grounding</h2>
-    <div class="grid-form">
-      <label class="field">City
-        <input type="text" name="herCity" placeholder="City" maxlength="80">
-      </label>
-      <div class="row">
-        <button type="button" class="btn" id="geoFind">Find</button>
-        <span class="chips" id="geo-status"></span>
-      </div>
-      <label class="field">Units
-        <select name="weatherUnits">
-          <option value="fahrenheit">fahrenheit</option>
-          <option value="celsius">celsius</option>
-        </select>
-      </label>
-      <label class="field">Weather provider
-        <select name="weatherProvider">
-          <option value="openmeteo">openmeteo</option>
-          <option value="stub">stub</option>
-          <option value="off">off</option>
-        </select>
-      </label>
-      <label class="field">Timezone
-        <input type="text" name="timezone" placeholder="America/New_York" maxlength="80">
-      </label>
-    </div>
-    <div class="geo-results" id="geoResults"></div>
-    <div class="now-line" id="groundingNow"></div>
+    <section class="studio-group" id="group-calls" aria-labelledby="gh-calls">
+      <h2 class="group-title" id="gh-calls">Calls</h2>
+      <section class="setting-block">
+        <h3 class="block-title">Calls</h3>
+          <label class="setting">Call provider
+            <select name="callProvider">
+              <option value="openai">openai</option>
+              <option value="elevenlabs">elevenlabs</option>
+              <option value="stub">stub</option>
+              <option value="off">off</option>
+            </select>
+          </label>
+          <label class="setting">Voice
+            <input type="text" name="callVoice" placeholder="marin" maxlength="40">
+          </label>
+          <label class="setting">Instructions
+            <select name="callSystemMode">
+              <option value="compact">compact</option>
+              <option value="full">full</option>
+            </select>
+          </label>
+          <label class="setting">Max minutes
+            <input type="number" name="callMaxMinutes" min="1" max="60" step="1" inputmode="numeric">
+          </label>
+          <label class="setting">Call face
+            <select name="callFaceProvider">
+              <option value="clips">clips</option>
+              <option value="off">off</option>
+              <option value="lipsync">lipsync (reserved)</option>
+            </select>
+          </label>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="setting">Call model
+            <input type="text" name="callModel" placeholder="gpt-realtime" maxlength="120">
+          </label>
+          <label class="setting">Transcribe model
+            <input type="text" name="callTranscribeModel" placeholder="gpt-4o-mini-transcribe" maxlength="120">
+          </label>
+          <label class="setting">Price per minute
+            <input type="number" name="callPricePerMinute" min="0" max="100" step="any" inputmode="decimal"><span class="setting-hint">USD, the floor</span>
+          </label>
+          <label class="setting">Audio in per 1M
+            <input type="number" name="callPrices.audioInPerMTok" min="0" step="any" inputmode="decimal">
+          </label>
+          <label class="setting">Audio out per 1M
+            <input type="number" name="callPrices.audioOutPerMTok" min="0" step="any" inputmode="decimal">
+          </label>
+          <label class="setting">Text in per 1M
+            <input type="number" name="callPrices.textInPerMTok" min="0" step="any" inputmode="decimal">
+          </label>
+          <label class="setting">Text out per 1M
+            <input type="number" name="callPrices.textOutPerMTok" min="0" step="any" inputmode="decimal">
+          </label>
+          <label class="setting">ElevenLabs agent id
+            <input type="text" name="elevenLabsAgentId" placeholder="Agent id" maxlength="120">
+          </label>
+          <label class="setting">ElevenLabs per minute
+            <input type="number" name="elevenLabsCallPricePerMinute" min="0" max="100" step="any" inputmode="decimal"><span class="setting-hint">USD</span>
+          </label>
+        </details>
+      </section>
+    </section>
 
-    <h2 class="section-title">Timing</h2>
-    <div class="grid-form">
-      <label class="field">Reply delay
-        <select name="replyDelayMode">
-          <option value="instant">instant</option>
-          <option value="real">real</option>
-        </select>
-      </label>
-      <label class="field">Real delay max minutes
-        <input type="number" name="realDelayMaxMinutes" min="1" max="120" step="1" inputmode="numeric">
-      </label>
-    </div>
+    <section class="studio-group" id="group-songs" aria-labelledby="gh-songs">
+      <h2 class="group-title" id="gh-songs">Songs</h2>
+      <section class="setting-block" id="spotifyCard" aria-label="Spotify">
+        <div class="row between"><h3 class="block-title">Spotify</h3><span class="chips" id="spotifyStatus"></span></div>
+        <div id="spotifyPlaylist"></div>
+        <div class="spotify-row">
+          <a class="btn primary" id="spotifyConnect" href="/api/spotify/connect">Connect</a>
+          <button type="button" class="btn danger" id="spotifyDisconnect">Disconnect</button>
+        </div>
+          <label class="setting switch"><span class="switch-label">Add her songs to the playlist</span><input type="checkbox" name="spotifyEnabled" form="settingsForm"><span class="track"></span></label>
+          <label class="setting">Playlist name
+            <input type="text" name="spotifyPlaylistName" form="settingsForm" placeholder="songs from avelie" maxlength="100">
+          </label>
+          <label class="setting">Player
+            <select name="spotifyPlayer" form="settingsForm">
+              <option value="sdk">sdk</option>
+              <option value="embed">embed</option>
+              <option value="off">off</option>
+            </select>
+          </label>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="setting">Playlist id
+            <input type="text" name="spotifyPlaylistId" form="settingsForm" placeholder="Playlist id" maxlength="62" pattern="[A-Za-z0-9]*">
+          </label>
+        </details>
+        <div class="row">
+          <button type="submit" class="btn primary" form="settingsForm">Save</button>
+          <span class="chips" data-save-status></span>
+        </div>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Listening</h3>
+          <label class="setting switch"><span class="switch-label">Listening line</span><input type="checkbox" name="listeningLineEnabled"><span class="track"></span><span class="setting-hint">one call a day</span></label>
+      </section>
+    </section>
 
-    <h2 class="section-title">Her first texts</h2>
-    <div class="grid-form">
-      <label class="field">Per day
-        <input type="number" name="herFirstTextsPerDay" min="0" max="10" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Quiet hours
-        <input type="text" name="herFirstQuietHours" placeholder="23:30-08:30" maxlength="20">
-      </label>
-      <div class="row">
-        <button type="button" class="btn" id="herFirstRun">Send one now</button>
-        <span class="chips" id="herfirst-status"></span>
-      </div>
-      <div class="row">
-        <button type="button" class="btn" id="herTextsBtn" aria-pressed="false">Get her texts on this phone</button>
-        <span class="chips" id="herTextsStatus"></span>
-      </div>
-    </div>
+    <section class="studio-group" id="group-money" aria-labelledby="gh-money">
+      <h2 class="group-title" id="gh-money">Money</h2>
+      <section class="setting-block">
+        <h3 class="block-title">Caps</h3>
+          <label class="setting">Daily cap
+            <input type="number" name="dailyCapUsd" min="0" step="any" inputmode="decimal"><span class="setting-hint">USD</span>
+          </label>
+          <label class="setting">Monthly cap
+            <input type="number" name="monthlyCapUsd" min="0" step="any" inputmode="decimal"><span class="setting-hint">USD</span>
+          </label>
+      </section>
+      <section class="setting-block">
+        <h3 class="block-title">Prices</h3>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <div class="table-wrap prices">
+            <table>
+              <caption>USD per 1M tokens</caption>
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th class="num">Input per 1M</th>
+                  <th class="num">Output per 1M</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="priceRows"></tbody>
+            </table>
+          </div>
+          <div class="row">
+            <button type="button" class="btn small" id="addPriceBtn">Add model</button>
+          </div>
+        </details>
+      </section>
+      <section class="setting-block">
+        <div class="row between"><h3 class="block-title">Usage</h3><span class="chips" id="usage-status"></span></div>
+        <div class="stats">
+          <div class="stat">
+            <div class="k">Today</div>
+            <div class="v" id="usageToday"></div>
+            <div class="sub" id="usageTodayCap"></div>
+          </div>
+          <div class="stat">
+            <div class="k">Month</div>
+            <div class="v" id="usageMonth"></div>
+            <div class="sub" id="usageMonthCap"></div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Day</th>
+                <th>Provider</th>
+                <th>Model</th>
+                <th class="num">Requests</th>
+                <th class="num">In</th>
+                <th class="num">Out</th>
+                <th class="num">Cost</th>
+              </tr>
+            </thead>
+            <tbody id="usageRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
 
-    <h2 class="section-title">Voice</h2>
-    <div class="grid-form">
-      <label class="field">Voice provider
-        <select name="voiceProvider">
-          <option value="workersai">workersai</option>
-          <option value="elevenlabs">elevenlabs</option>
-          <option value="off">off</option>
-        </select>
-      </label>
-      <label class="field">Voice mode
-        <select name="voiceMode">
-          <option value="off">off</option>
-          <option value="some">some</option>
-          <option value="all">all</option>
-        </select>
-      </label>
-      <label class="field">ElevenLabs voice id
-        <input type="text" name="elevenLabsVoiceId" placeholder="Voice id" maxlength="120">
-      </label>
-      <label class="field">ElevenLabs model
-        <input type="text" name="elevenLabsModel" placeholder="eleven_multilingual_v2" maxlength="60">
-      </label>
-      <label class="field">ElevenLabs price per 1k characters USD
-        <input type="number" name="elevenLabsTtsPricePer1kChars" min="0" max="100" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Transcribe provider
-        <select name="transcribeProvider">
-          <option value="workersai">workersai</option>
-          <option value="openai">openai</option>
-        </select>
-      </label>
-    </div>
+    <section class="studio-group" id="group-system" aria-labelledby="gh-system">
+      <h2 class="group-title" id="gh-system">System</h2>
+      <details class="advanced">
+        <summary>Advanced</summary>
+      <section class="setting-block">
+        <div class="row between"><h3 class="block-title">Drift</h3><div class="row">
+          <span class="chips" id="drift-status"></span>
+          <button type="button" class="btn small" id="driftRun">Run now</button>
+        </div></div>
+          <label class="setting switch"><span class="switch-label">Weekly drift check</span><input type="checkbox" name="driftCheckEnabled"><span class="track"></span></label>
+        <div id="driftList"></div>
+      </section>
+      <section class="setting-block">
+        <div class="row between"><h3 class="block-title">System</h3><span class="chips" id="system-status"></span></div>
+        <div class="kv">
+          <span class="k">Constitution</span><span class="v mono" id="sysConstitution"></span>
+          <span class="k">Prompt</span><span class="v mono" id="sysPrompt"></span>
+        </div>
+        <p class="kicker">Keys</p>
+        <div class="kv" id="sysKeys"></div>
+        <p class="kicker">Counts</p>
+        <div class="kv" id="sysCounts"></div>
+      </section>
+      </details>
+    </section>
 
-    <h2 class="section-title">Calls</h2>
-    <div class="grid-form">
-      <label class="field">Call provider
-        <select name="callProvider">
-          <option value="openai">openai</option>
-          <option value="elevenlabs">elevenlabs</option>
-          <option value="stub">stub</option>
-          <option value="off">off</option>
-        </select>
-      </label>
-      <label class="field">Call model
-        <input type="text" name="callModel" placeholder="gpt-realtime" maxlength="120">
-      </label>
-      <label class="field">Voice
-        <input type="text" name="callVoice" placeholder="marin" maxlength="40">
-      </label>
-      <label class="field">Transcribe model
-        <input type="text" name="callTranscribeModel" placeholder="gpt-4o-mini-transcribe" maxlength="120">
-      </label>
-      <label class="field">Instructions
-        <select name="callSystemMode">
-          <option value="compact">compact</option>
-          <option value="full">full</option>
-        </select>
-      </label>
-      <label class="field">Max minutes
-        <input type="number" name="callMaxMinutes" min="1" max="60" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Price per minute USD (floor)
-        <input type="number" name="callPricePerMinute" min="0" max="100" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Audio in per 1M
-        <input type="number" name="callPrices.audioInPerMTok" min="0" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Audio out per 1M
-        <input type="number" name="callPrices.audioOutPerMTok" min="0" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Text in per 1M
-        <input type="number" name="callPrices.textInPerMTok" min="0" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Text out per 1M
-        <input type="number" name="callPrices.textOutPerMTok" min="0" step="any" inputmode="decimal">
-      </label>
-      <label class="field">ElevenLabs agent id
-        <input type="text" name="elevenLabsAgentId" placeholder="Agent id" maxlength="120">
-      </label>
-      <label class="field">ElevenLabs price per minute USD
-        <input type="number" name="elevenLabsCallPricePerMinute" min="0" max="100" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Call face
-        <select name="callFaceProvider">
-          <option value="clips">clips</option>
-          <option value="off">off</option>
-          <option value="lipsync">lipsync (reserved)</option>
-        </select>
-      </label>
-    </div>
-
-    <h2 class="section-title">Proposals</h2>
-    <div class="grid-form">
-      <label class="check"><input type="checkbox" name="proposalsEnabled"> Proposals</label>
-      <label class="check"><input type="checkbox" name="proposalsAutoApprove"> Memory keeps itself (the Inbox is where you remove)</label>
-      <label class="field">Proposal provider
-        <select name="proposalProvider">
-          <option value="anthropic">anthropic</option>
-          <option value="openai">openai</option>
-          <option value="workersai">workersai</option>
-          <option value="stub">stub</option>
-        </select>
-      </label>
-      <label class="field">Proposal model
-        <input type="text" name="proposalModel" placeholder="Model" maxlength="200">
-      </label>
-    </div>
-
-    <h2 class="section-title">Tastings</h2>
-    <div class="grid-form">
-      <label class="check"><input type="checkbox" name="tastingEnabled"> Tastings</label>
-      <label class="field">Tasting provider
-        <select name="tastingProvider">
-          <option value="anthropic">anthropic</option>
-          <option value="openai">openai</option>
-          <option value="workersai">workersai</option>
-          <option value="stub">stub</option>
-        </select>
-      </label>
-      <label class="field">Tasting model
-        <input type="text" name="tastingModel" placeholder="gpt-4.1" maxlength="200">
-      </label>
-      <label class="field">Tasting daily cap USD
-        <input type="number" name="tastingDailyCapUsd" min="0" max="1000" step="any" inputmode="decimal">
-      </label>
-    </div>
-
-    <h2 class="section-title">Texter</h2>
-    <div class="grid-form">
-      <label class="field">Minimum examples
-        <input type="number" name="finetuneMinExamples" min="10" max="5000" step="1" inputmode="numeric">
-      </label>
-      <label class="field">System mode
-        <select name="finetuneSystemMode">
-          <option value="compact">compact</option>
-          <option value="full">full</option>
-        </select>
-      </label>
-    </div>
-
-    <h2 class="section-title">Prices</h2>
-    <p class="small muted">USD per 1M tokens</p>
-    <div class="table-wrap prices">
-      <table>
-        <thead>
-          <tr>
-            <th>Model</th>
-            <th class="num">Input per 1M</th>
-            <th class="num">Output per 1M</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="priceRows"></tbody>
-      </table>
-    </div>
-    <div class="row">
-      <button type="button" class="btn small" id="addPriceBtn">Add model</button>
-    </div>
-
-    <h2 class="section-title">Images</h2>
-    <div class="grid-form">
-      <label class="field">Image provider
-        <select name="imageProvider">
-          <option value="runway">runway</option>
-          <option value="openai">openai</option>
-          <option value="stub">stub</option>
-        </select>
-      </label>
-      <label class="field">Image model
-        <input type="text" name="imageModel" placeholder="Model" maxlength="120">
-      </label>
-      <label class="field">Quality
-        <select name="imageQuality">
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-        </select>
-      </label>
-      <label class="field">Size
-        <input type="text" name="imageSize" placeholder="1024x1536" maxlength="20">
-      </label>
-      <label class="field">Cost USD
-        <input type="number" name="imageCostUsd" min="0" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Portrait size
-        <input type="text" name="portraitSize" placeholder="1024x1024" maxlength="20">
-      </label>
-      <label class="field">Portrait cost USD
-        <input type="number" name="portraitCostUsd" min="0" max="100" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Video provider
-        <select name="videoProvider">
-          <option value="runway">runway</option>
-          <option value="stub">stub</option>
-          <option value="off">off</option>
-        </select>
-      </label>
-      <label class="field">Video model
-        <input type="text" name="videoModel" placeholder="gen4_turbo" maxlength="60">
-      </label>
-      <label class="field">Video seconds
-        <select name="videoSeconds">
-          <option value="5">5</option>
-          <option value="10">10</option>
-        </select>
-      </label>
-      <label class="field">Video ratio
-        <input type="text" name="videoRatio" placeholder="720:1280" maxlength="9">
-      </label>
-      <label class="field">Video cost USD per 5 s
-        <input type="number" name="videoCostUsd" min="0" max="100" step="any" inputmode="decimal">
-      </label>
-      <label class="check"><input type="checkbox" name="videoMarkerEnabled"> She sends clips</label>
-      <label class="field">Place picture cost USD
-        <input type="number" name="placeCostUsd" min="0" max="100" step="any" inputmode="decimal">
-      </label>
-      <label class="check"><input type="checkbox" name="listeningLineEnabled"> Listening line (one call a day)</label>
-    </div>
-
-    <h2 class="section-title">His face</h2>
-    <div class="grid-form">
-      <label class="check"><input type="checkbox" name="hisFaceInTogether"> Photos on every Together turn</label>
-      <label class="check"><input type="checkbox" name="hisFaceInPhotos"> Him in her pictures when she says so</label>
-      <label class="field">Apart: every N turns (0 = first turn only)
-        <input type="number" name="hisFaceApartEvery" min="0" max="50" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Photos on file, at most
-        <input type="number" name="hisFaceMax" min="1" max="3" step="1" inputmode="numeric">
-      </label>
-    </div>
-
-    <h2 class="section-title">Her story</h2>
-    <div class="grid-form">
-      <label class="field">Beats ahead (days)
-        <input type="number" name="beatHorizonDays" min="1" max="30" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Beats remembered (days)
-        <input type="number" name="arcMemoryDays" min="1" max="30" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Reads shown (0 = off)
-        <input type="number" name="viewsShown" min="0" max="12" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Read confidence at least
-        <input type="number" name="viewMinConfidence" min="0" max="1" step="0.05" inputmode="decimal">
-      </label>
-      <label class="field">Friction days default
-        <input type="number" name="frictionDaysDefault" min="1" max="14" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Sent shown (0 = off)
-        <input type="number" name="sentShown" min="0" max="30" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Sent window (days)
-        <input type="number" name="sentWindowDays" min="1" max="60" step="1" inputmode="numeric">
-      </label>
-      <label class="field">People and places shown (0 = off)
-        <input type="number" name="worldShown" min="0" max="20" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Artists listed (0 = off)
-        <input type="number" name="knownArtistsShown" min="0" max="200" step="1" inputmode="numeric">
-      </label>
-    </div>
-
-    <h2 class="section-title">Caps</h2>
-    <div class="grid-form">
-      <label class="field">Daily cap USD
-        <input type="number" name="dailyCapUsd" min="0" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Monthly cap USD
-        <input type="number" name="monthlyCapUsd" min="0" step="any" inputmode="decimal">
-      </label>
-      <label class="check"><input type="checkbox" name="driftCheckEnabled"> Weekly drift check</label>
-    </div>
-
-    <div class="row">
-      <button type="submit" class="btn primary" id="saveBtn">Save</button>
-      <span class="chips" id="settings-status"></span>
-    </div>
+    <div class="save-bar"><button type="submit" class="btn primary" id="saveBtn">Save</button><span class="chips" id="settings-status"></span></div>
   </form>
-
-  <section class="card stack" id="spotifyCard" aria-label="Spotify">
-    <div class="row between">
-      <h2 class="section-title">Spotify</h2>
-      <span class="chips" id="spotifyStatus"></span>
-    </div>
-    <div id="spotifyPlaylist"></div>
-    <div class="spotify-row">
-      <a class="btn primary" id="spotifyConnect" href="/api/spotify/connect">Connect</a>
-      <button type="button" class="btn danger" id="spotifyDisconnect">Disconnect</button>
-    </div>
-    <div class="grid-form">
-      <label class="check"><input type="checkbox" name="spotifyEnabled" form="settingsForm"> Add her songs to the playlist</label>
-      <label class="field">Playlist name
-        <input type="text" name="spotifyPlaylistName" form="settingsForm" placeholder="songs from avelie" maxlength="100">
-      </label>
-      <label class="field">Playlist id
-        <input type="text" name="spotifyPlaylistId" form="settingsForm" placeholder="Playlist id" maxlength="62" pattern="[A-Za-z0-9]*">
-      </label>
-      <label class="field">Player
-        <select name="spotifyPlayer" form="settingsForm">
-          <option value="sdk">sdk</option>
-          <option value="embed">embed</option>
-          <option value="off">off</option>
-        </select>
-      </label>
-    </div>
-    <div class="row">
-      <button type="submit" class="btn primary" form="settingsForm">Save</button>
-      <span class="chips" data-save-status></span>
-    </div>
-  </section>
-
-  <section class="card stack" id="storyCard" aria-label="Story">
-    <div class="row between">
-      <h2 class="section-title">Story</h2>
-      <span class="chips" id="clockStatus"></span>
-    </div>
-    <div class="grid-form">
-      <label class="check"><input type="checkbox" name="storyClockEnabled" form="settingsForm"> Her clock (held while together)</label>
-      <label class="field">Time-since line after (minutes)
-        <input type="number" name="gapLineMinMinutes" form="settingsForm" min="15" max="10080" step="1" inputmode="numeric">
-      </label>
-    </div>
-    <div class="row">
-      <button type="submit" class="btn primary" form="settingsForm">Save</button>
-      <span class="chips" data-save-status></span>
-    </div>
-  </section>
-
-  <section class="card stack" id="nightlyCard" aria-label="Nightly">
-    <div class="row between">
-      <h2 class="section-title">Nightly</h2>
-      <span class="chips" id="nightlyResult"></span>
-    </div>
-    <div class="grid-form">
-      <label class="check"><input type="checkbox" name="nightlyStoryEnabled" form="settingsForm"> Nightly story pass</label>
-      <label class="field">Provider
-        <select name="nightlyProvider" form="settingsForm">
-          <option value="anthropic">anthropic</option>
-          <option value="openai">openai</option>
-          <option value="workersai">workersai</option>
-          <option value="stub">stub</option>
-        </select>
-      </label>
-      <label class="field">Model
-        <input type="text" name="nightlyModel" form="settingsForm" placeholder="claude-sonnet-5" maxlength="200">
-      </label>
-      <label class="field">Hygiene model
-        <input type="text" name="hygieneModel" form="settingsForm" placeholder="claude-haiku-4-5" maxlength="200">
-      </label>
-      <label class="field">Budget USD a night
-        <input type="number" name="nightlyBudgetUsd" form="settingsForm" min="0" max="5" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Her day items (0 = off)
-        <input type="number" name="herDayItemsMax" form="settingsForm" min="0" max="3" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Beats decided (0 = off)
-        <input type="number" name="nightlyBeatsMax" form="settingsForm" min="0" max="10" step="1" inputmode="numeric">
-      </label>
-      <label class="field">Reads a night (0 = off)
-        <input type="number" name="viewsPerNight" form="settingsForm" min="0" max="6" step="1" inputmode="numeric">
-      </label>
-      <label class="check"><input type="checkbox" name="hygieneEnabled" form="settingsForm"> Memory hygiene</label>
-    </div>
-    <div class="row">
-      <button type="submit" class="btn primary" form="settingsForm">Save</button>
-      <button type="button" class="btn" id="nightlyRun">Run now</button>
-      <span class="chips" data-save-status></span>
-    </div>
-    <div id="nightlyRuns"></div>
-  </section>
-
-  <section class="card stack" id="texterBox">
-    <div class="row between">
-      <h2 class="section-title">Texter</h2>
-      <span class="chips" id="texter-status"></span>
-    </div>
-    <div class="meter-head">
-      <span class="big" id="texterCount">0 <span>of 0</span></span>
-      <span class="chips" id="texterChips"></span>
-    </div>
-    <div class="progress meter" id="texterMeter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
-    <div class="row">
-      <label class="check"><input type="checkbox" id="stripHim" checked> Leave him out of the state</label>
-    </div>
-    <div class="row">
-      <button type="button" class="btn" id="exportTrain">Export training set</button>
-      <button type="button" class="btn" id="exportRecord">Export record</button>
-      <span class="chips" id="export-status"></span>
-    </div>
-    <div class="grid-form">
-      <label class="field">Model id
-        <input type="text" id="texterModel" placeholder="ft:gpt-4.1-mini-2025-04-14:..." maxlength="200">
-      </label>
-      <label class="field">Input price per 1M
-        <input type="number" id="texterIn" min="0" step="any" inputmode="decimal">
-      </label>
-      <label class="field">Output price per 1M
-        <input type="number" id="texterOut" min="0" step="any" inputmode="decimal">
-      </label>
-    </div>
-    <div class="row">
-      <button type="button" class="btn primary" id="texterUse">Use</button>
-      <button type="button" class="btn" id="texterRevert">Back to Claude</button>
-      <span class="chips" id="texterLive"></span>
-    </div>
-  </section>
-
-  <section class="card stack" id="tastingsBox">
-    <div class="row between">
-      <h2 class="section-title">Tastings</h2>
-      <span class="chips" id="tastings-status"></span>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Performer</th>
-            <th class="num">Wins</th>
-            <th class="num">Losses</th>
-            <th class="num">Draws</th>
-            <th class="num">Rate</th>
-            <th>Last</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="ledgerRows"></tbody>
-      </table>
-    </div>
-    <h3 class="section-title">Recent</h3>
-    <div id="tastingsRecent"></div>
-  </section>
-
-  <section class="card stack" id="pushBox">
-    <div class="row between">
-      <h2 class="section-title">Notifications</h2>
-      <span class="chips" id="push-status"></span>
-    </div>
-    <label class="switch" for="pushToggle">
-      <input type="checkbox" id="pushToggle">
-      <span class="track"></span>
-      <span class="switch-label">Her first texts</span>
-    </label>
-  </section>
-
-  <section class="card stack">
-    <div class="row between">
-      <h2 class="section-title">Drift</h2>
-      <div class="row">
-        <span class="chips" id="drift-status"></span>
-        <button type="button" class="btn small" id="driftRun">Run now</button>
-      </div>
-    </div>
-    <div id="driftList"></div>
-  </section>
-
-  <section class="card stack hidden" id="voiceprintBox">
-    <div class="row between">
-      <h2 class="section-title">Voiceprint</h2>
-      <div class="row">
-        <span class="chips" id="voiceprint-status"></span>
-        <button type="button" class="btn small" id="voiceprintRun">Run now</button>
-      </div>
-    </div>
-    <div class="row" id="voiceprintSparks"></div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Week</th>
-            <th class="num">Messages</th>
-            <th class="num">Mean</th>
-            <th class="num">Median</th>
-            <th class="num">Questions</th>
-            <th class="num">Bubbles</th>
-            <th class="num">One word</th>
-            <th class="num">Lowercase</th>
-            <th class="num">First texts</th>
-            <th class="num">Flags</th>
-          </tr>
-        </thead>
-        <tbody id="voiceprintRows"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="card stack">
-    <div class="row between">
-      <h2 class="section-title">Usage</h2>
-      <span class="chips" id="usage-status"></span>
-    </div>
-    <div class="stats">
-      <div class="stat">
-        <div class="k">Today</div>
-        <div class="v" id="usageToday"></div>
-        <div class="sub" id="usageTodayCap"></div>
-      </div>
-      <div class="stat">
-        <div class="k">Month</div>
-        <div class="v" id="usageMonth"></div>
-        <div class="sub" id="usageMonthCap"></div>
-      </div>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Day</th>
-            <th>Provider</th>
-            <th>Model</th>
-            <th class="num">Requests</th>
-            <th class="num">In</th>
-            <th class="num">Out</th>
-            <th class="num">Cost</th>
-          </tr>
-        </thead>
-        <tbody id="usageRows"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="card stack">
-    <div class="row between">
-      <h2 class="section-title">System</h2>
-      <span class="chips" id="system-status"></span>
-    </div>
-    <div class="kv">
-      <span class="k">Constitution</span><span class="v mono" id="sysConstitution"></span>
-      <span class="k">Prompt</span><span class="v mono" id="sysPrompt"></span>
-    </div>
-    <h3 class="section-title">Keys</h3>
-    <div class="kv" id="sysKeys"></div>
-    <h3 class="section-title">Counts</h3>
-    <div class="kv" id="sysCounts"></div>
-  </section>
 </main>
 
 <script type="module" src="/js/nav.js"></script>

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#060a13">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Avelie">
+<title>Avelie Us</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/css/app.css">
+<link rel="preload" href="/fonts/fraunces-latin-full-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-sans-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+</head>
+<body class="page-us">
+<img class="backdrop" id="backdrop" alt="" aria-hidden="true" decoding="async">
+<header class="top">
+  <a class="brand" href="/" aria-label="Avelie, home">
+    <img class="avatar" id="avatar" alt="" width="36" height="36" decoding="async">
+    <span class="wordmark">Avelie</span>
+  </a>
+  <nav class="nav" aria-label="Sections"></nav>
+</header>
+
+<main class="page us-page">
+  <header class="us-hero">
+    <img class="avatar ring hero" alt="" width="120" height="120" decoding="async" data-avatar="her">
+    <h1 class="display xl">Us</h1>
+    <p class="us-standing hidden" id="usStanding"></p>
+    <p class="us-since hidden" id="usSince"></p>
+    <p class="us-names hidden" id="usNames"></p>
+  </header>
+  <section class="us-section hidden" id="chaptersSection"><p class="kicker">Chapters</p><ol class="chapter-list" id="usChapters"></ol></section>
+  <section class="us-section hidden" id="momentsSection"><p class="kicker">Moments</p><ol class="moments" id="usMoments"></ol></section>
+  <section class="us-section hidden" id="placesSection"><p class="kicker">Places</p><ul class="places-together" id="usPlaces"></ul></section>
+  <section class="us-section hidden" id="keptSection"><p class="kicker">Her words</p><div class="kept-quotes" id="usKept"></div></section>
+</main>
+
+<script type="module" src="/js/nav.js"></script>
+<script type="module" src="/js/us.js"></script>
+</body>
+</html>
