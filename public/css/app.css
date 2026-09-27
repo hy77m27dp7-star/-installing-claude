@@ -3729,6 +3729,30 @@ td .empty-label { padding: 16px 0; }
   .sidebar, .drawer, .drawer:not(.open), .btn, .switch .track, .switch .track::after, .seg button, .icon-btn, .thread { transition: none; }
 }
 
+/* ------------------------------------------------------------ fix0927 lane B */
+
+/* Her masters open the Album: the same large frameless tiles as the Us row, in a row that
+   scrolls on a phone and five across on a wider screen, her face kept in the frame. (Placed
+   before the global reduced-motion switch, which must stay last in the file.) */
+.her-row .gallery {
+  display: flex;
+  gap: 10px;
+  margin: 0 calc(-1 * var(--gutter));
+  padding: 0 var(--gutter) 6px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+
+.her-row .gallery::-webkit-scrollbar { display: none; }
+.her-row .roll-tile { flex: 0 0 72vw; aspect-ratio: 4 / 5; border-radius: 14px; scroll-snap-align: center; }
+.her-row .roll-tile img { object-position: 50% 24%; }
+
+@media (min-width: 761px) {
+  .her-row .gallery { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; padding: 0; overflow: visible; }
+  .her-row .roll-tile { flex: none; }
+}
+
 /* The one global switch, last in the file: no animation and no transition anywhere. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

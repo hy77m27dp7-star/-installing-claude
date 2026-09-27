@@ -1,6 +1,8 @@
-// src/roll.ts (DESIGN_EXPERIENCE 8.1): her camera roll. Every APPROVED picture and clip of
-// hers, bound to a message or not; never a candidate, rejected, him, portrait, call-face or
-// master row. Runs on the D1 stand-in (helpers_v2 fakeDb).
+// src/roll.ts (DESIGN_EXPERIENCE 8.1): her camera roll. Every APPROVED picture and clip she
+// SENT (fix0927 lane B: a message behind it; an owner-fired picture is left out); never a
+// candidate, rejected, him, portrait, call-face or master row in `items`. Her masters 01 to
+// 05 ride beside them as `masters` (fix0927_b_masters.test.mjs covers them). Runs on the D1
+// stand-in (helpers_v2 fakeDb).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadSrc, sceneState } from "./helpers.mjs";
@@ -40,15 +42,20 @@ function tables() {
   };
 }
 
-test("rollEligible: approved scene, candidate and video rows only", () => {
-  assert.equal(roll.rollEligible({ role: "scene", approval_status: "approved" }), true);
-  assert.equal(roll.rollEligible({ role: "candidate", approval_status: "approved" }), true);
-  assert.equal(roll.rollEligible({ role: "video", approval_status: "approved" }), true);
+// fix0927 lane B changed this rule on purpose: a row counts only with a message behind it.
+test("rollEligible: approved scene, candidate and video rows she sent (a message behind them) only", () => {
+  const sent = { message_id: "m_1" };
+  assert.equal(roll.rollEligible({ role: "scene", approval_status: "approved", ...sent }), true);
+  assert.equal(roll.rollEligible({ role: "candidate", approval_status: "approved", ...sent }), true);
+  assert.equal(roll.rollEligible({ role: "video", approval_status: "approved", ...sent }), true);
+  for (const unsent of [{}, { message_id: null }, { message_id: "" }, { message_id: "  " }]) {
+    assert.equal(roll.rollEligible({ role: "scene", approval_status: "approved", ...unsent }), false, "owner-fired: " + JSON.stringify(unsent));
+  }
   for (const role of ["master", "him", "portrait", "callface", "legacy_archive", "blacklisted", "missing"]) {
-    assert.equal(roll.rollEligible({ role, approval_status: "approved" }), false, role);
+    assert.equal(roll.rollEligible({ role, approval_status: "approved", ...sent }), false, role);
   }
   for (const status of ["candidate", "rejected", "pending", "generating", "failed"]) {
-    assert.equal(roll.rollEligible({ role: "scene", approval_status: status }), false, status);
+    assert.equal(roll.rollEligible({ role: "scene", approval_status: status, ...sent }), false, status);
   }
   assert.deepEqual([...roll.ROLL_ROLES], ["scene", "candidate", "video"]);
   assert.equal(roll.ROLL_LIMIT_DEFAULT, 60);
@@ -65,25 +72,27 @@ test("clipSourceOf: the part before the first | when it starts with source:, tri
   assert.equal(roll.clipSourceOf(null), null);
 });
 
-test("listRoll: approved pictures and clips newest first, the owner-fired picture in; candidate, rejected, him, portrait, call-face and master out", async () => {
+// fix0927 lane B changed this on purpose: the owner-fired picture and the unbound clip are out.
+test("listRoll: approved pictures and clips she sent newest first; the owner-fired picture, the unbound clip, candidate, rejected, him, portrait, call-face and master out of items; the master in masters", async () => {
   const page = await roll.listRoll(fakeDb(tables()));
-  assert.deepEqual(page.items.map((i) => i.id), ["img_owner", "vid_bare", "vid_clip", "img_us", "img_bound"]);
+  assert.deepEqual(page.items.map((i) => i.id), ["vid_clip", "img_us", "img_bound"]);
   assert.equal(page.nextBefore, null);
   for (const i of page.items) {
     assert.deepEqual(Object.keys(i).sort(), ["at", "conversationId", "id", "kind", "messageId", "place", "poster", "url", "us"]);
     assert.equal(i.url, "/media/" + i.id);
   }
+  assert.deepEqual(page.masters.map((m) => [m.id, m.url, m.master]), [["master-05", "/images/masters/05.png", true]]);
 });
 
-test("listRoll: us from with_him, kind clip for video, the poster from notes, at and place from the message for a bound row, the asset for an unbound one", async () => {
+test("listRoll: us from with_him, kind clip for video, the poster from notes, at and place from the message", async () => {
   const page = await roll.listRoll(fakeDb(tables()));
   const by = Object.fromEntries(page.items.map((i) => [i.id, i]));
   assert.equal(by.img_us.us, true);
   assert.equal(by.img_bound.us, false);
   assert.equal(by.vid_clip.kind, "clip");
   assert.equal(by.vid_clip.poster, "/media/img_bound");
-  assert.equal(by.vid_bare.kind, "clip");
-  assert.equal(by.vid_bare.poster, null, "a clip with no source has no poster");
+  assert.equal(by.vid_bare, undefined, "a clip with no message is not hers to show");
+  assert.equal(by.img_owner, undefined, "an owner-fired picture stays in Studio");
   assert.equal(by.img_bound.kind, "photo");
   assert.equal(by.img_bound.poster, null);
   assert.equal(by.img_bound.at, D("25T10:29:00.000Z"), "the message's time");
@@ -91,38 +100,33 @@ test("listRoll: us from with_him, kind clip for video, the poster from notes, at
   assert.equal(by.img_bound.messageId, "m_bound");
   assert.equal(by.img_bound.conversationId, "c1");
   assert.equal(by.img_us.place, null, "apart at the time: no place");
-  assert.equal(by.img_owner.at, D("26T12:00:00.000Z"), "unbound: the asset's time");
-  assert.equal(by.img_owner.place, null, "unbound: no place even inside a together scene");
-  assert.equal(by.img_owner.messageId, null);
-  assert.equal(by.img_owner.conversationId, "c9", "unbound: the row's conversation");
 });
 
 test("listRoll: limit and before page the roll; nextBefore is the oldest row's created_at on a full page; a bad before is a 400", async () => {
   const two = await roll.listRoll(fakeDb(tables()), { limit: 2 });
-  assert.deepEqual(two.items.map((i) => i.id), ["img_owner", "vid_bare"]);
-  assert.equal(two.nextBefore, D("26T11:30:00.000Z"));
-  const next = await roll.listRoll(fakeDb(tables()), { limit: 2, before: two.nextBefore });
-  assert.deepEqual(next.items.map((i) => i.id), ["vid_clip", "img_us"]);
-  const last = await roll.listRoll(fakeDb(tables()), { limit: 2, before: next.nextBefore });
+  assert.deepEqual(two.items.map((i) => i.id), ["vid_clip", "img_us"]);
+  assert.equal(two.nextBefore, D("26T10:00:00.000Z"));
+  const last = await roll.listRoll(fakeDb(tables()), { limit: 2, before: two.nextBefore });
   assert.deepEqual(last.items.map((i) => i.id), ["img_bound"]);
   assert.equal(last.nextBefore, null);
-  const rfc = await roll.listRoll(fakeDb(tables()), { limit: 2, before: "Sat, 26 Sep 2026 11:30:00 GMT" });
-  assert.deepEqual(rfc.items.map((i) => i.id), ["vid_clip", "img_us"], "any time Date.parse reads");
+  assert.deepEqual(last.masters.map((m) => m.id), ["master-05"], "the same masters on every page");
+  const rfc = await roll.listRoll(fakeDb(tables()), { limit: 2, before: "Sat, 26 Sep 2026 10:00:00 GMT" });
+  assert.deepEqual(rfc.items.map((i) => i.id), ["img_bound"], "any time Date.parse reads");
   await assert.rejects(roll.listRoll(fakeDb(tables()), { before: "yesterday" }), (e) => e.status === 400 && e.code === "validation");
   const clamped = await roll.listRoll(fakeDb(tables()), { limit: 9999 });
-  assert.equal(clamped.items.length, 5);
+  assert.equal(clamped.items.length, 3);
   const empty = await roll.listRoll(fakeDb({ visual_assets: [], messages: [], state_versions: [] }));
-  assert.deepEqual(empty, { items: [], nextBefore: null });
+  assert.deepEqual(empty, { items: [], nextBefore: null, masters: [] });
 });
 
 test("listRoll: a tie at the page edge joins the page (listAlbum's rule)", async () => {
   const at = D("26T10:00:00.000Z");
   const tied = {
     visual_assets: [
-      { ...assetRow({ id: "a1", message_id: null, created_at: D("26T12:00:00.000Z") }), with_him: 0 },
-      { ...assetRow({ id: "a2", message_id: null, created_at: at }), with_him: 0 },
-      { ...assetRow({ id: "a3", message_id: null, created_at: at }), with_him: 0 },
-      { ...assetRow({ id: "a4", message_id: null, created_at: D("25T10:00:00.000Z") }), with_him: 0 },
+      { ...assetRow({ id: "a1", message_id: "m_a1", created_at: D("26T12:00:00.000Z") }), with_him: 0 },
+      { ...assetRow({ id: "a2", message_id: "m_a2", created_at: at }), with_him: 0 },
+      { ...assetRow({ id: "a3", message_id: "m_a3", created_at: at }), with_him: 0 },
+      { ...assetRow({ id: "a4", message_id: "m_a4", created_at: D("25T10:00:00.000Z") }), with_him: 0 },
     ],
     messages: [],
     state_versions: [],
