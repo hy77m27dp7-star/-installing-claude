@@ -71,7 +71,35 @@ interface MessageStamp {
   created_at: string;
 }
 
+// fix0927 lane B (Justin: "where are the fucking master photos"): her five real photos, the
+// masters 01 to 05, belong on the Her side (the Album's own "Her" section, her camera roll
+// after the pictures she sent, her lock-screen wallpaper). master-00 is a tight face crop of
+// master-04, an identity reference only, and never shown there; any other master id is not
+// hers to show until it is named here. A master is a static file under /images/masters/
+// (public/images/masters, served by the Worker's assets after the Access check), never a
+// /media/ row: it has no message, no conversation, no clip.
+export const HER_MASTER_IDS: readonly string[] = ["master-01", "master-02", "master-03", "master-04", "master-05"];
+
+export interface HerMaster {
+  id: string;
+  file: string;
+  url: string;
+  created_at: string;
+}
+
 // ------------------------------------------------------------------ pure
+
+// A master row that may be shown on the Her side: one of HER_MASTER_IDS, role master, approved.
+export function isHerMaster(row: { id?: unknown; role?: unknown; approval_status?: unknown } | null | undefined): boolean {
+  return !!row && typeof row.id === "string" && HER_MASTER_IDS.includes(row.id) && row.role === "master" && row.approval_status === "approved";
+}
+
+// The URL a master file loads at: "/images/masters/" plus its file name (public/js/images.js
+// masterSrc builds the same). null when the row names no file.
+export function masterUrl(file: string | null | undefined): string | null {
+  const name = typeof file === "string" ? (file.split(/[\\/]/).pop() ?? "").trim() : "";
+  return name ? "/images/masters/" + encodeURIComponent(name) : null;
+}
 
 function parseTime(value: unknown): number | null {
   if (typeof value !== "string" || !value) return null;
@@ -202,6 +230,29 @@ async function readSceneVersions(db: D1Database): Promise<SceneVersionLike[]> {
   // Bound, not a literal, so the same statement narrows on the unit suite's stand-in.
   const r = await db.prepare("SELECT version, state_json, created_at FROM state_versions WHERE entity = ?1 ORDER BY version").bind("scene").all<SceneVersionLike>();
   return r.results;
+}
+
+interface MasterRow { id: string; file: string | null; role: string; approval_status: string; created_at: string }
+
+// fix0927 lane B: her masters 01 to 05 as the Her side shows them, in id order. A failed
+// read answers none (the page still shows what she sent).
+export async function readHerMasters(db: D1Database): Promise<HerMaster[]> {
+  try {
+    const r = await db
+      .prepare("SELECT id, file, role, approval_status, created_at FROM visual_assets WHERE role = ?1 AND approval_status = ?2 ORDER BY id")
+      .bind("master", "approved")
+      .all<MasterRow>();
+    const out: HerMaster[] = [];
+    for (const row of r.results ?? []) {
+      if (!isHerMaster(row)) continue;
+      const url = masterUrl(row.file);
+      if (!url || typeof row.file !== "string" || out.some((m) => m.id === row.id)) continue;
+      out.push({ id: row.id, file: row.file, url, created_at: typeof row.created_at === "string" ? row.created_at : "" });
+    }
+    return out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  } catch {
+    return [];
+  }
 }
 
 // One page of the album, newest first. `before` cuts on the asset's created_at (the

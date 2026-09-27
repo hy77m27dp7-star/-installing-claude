@@ -8,6 +8,16 @@
 // began; outside one it is the real now, so her calendar is Portland's. Absence is measured
 // in story time: real elapsed time minus its overlap with every held span.
 //
+// fix0927 (Justin, 2026-09-27: "her phone is stuck on yesterday 3:27 even though time doesnt
+// pass in the scene that is fucked"): inside a held span the story clock still moves WITH THE
+// CONVERSATION and stands still only while he is away. The clock carries `talkMs` (the time
+// the two of them have been talking since the scene froze, every gap between messages capped
+// at five minutes) and storyNow is frozen_at plus that, never later than the real now. ONLY
+// the displayed and stated time of day moves: every measure of time passing (storyElapsedMs,
+// the overlap, story age, the story instant, the deferred instant, the story window, TIME
+// SINCE, the beat shift, her day, the mood fade, absence) stays held exactly as before, and
+// heldNow is the frozen instant for any reader that needs it.
+//
 // The spans live in one small table (story_clock) that every reader syncs lazily against
 // state_versions (syncStoryClock), so every path that moves the scene (the Apart switch, a
 // promoted proposal, a restore, an import) is caught without a hook in any of them.
@@ -51,6 +61,9 @@ export interface StoryClock {
   frozen: boolean; // enabled and a span is open (the scene is together)
   open: ClockSpan | null;
   spans: ClockSpan[]; // open spans and spans resumed within CLOCK_HORIZON_DAYS, oldest first
+  // fix0927: the conversation's own time inside the open span (talkMsOf); missing reads 0, so
+  // a clock built without it holds at frozen_at exactly as before.
+  talkMs?: number;
 }
 
 export interface ClockView {
@@ -83,6 +96,10 @@ const RETRY_SHIFT_LIMIT = 3;
 const BACKFILL_VERSIONS_LIMIT = 2000;
 const BACKFILL_BATCH = 50;
 const TIME_SINCE_FLOOR_MINUTES = 15;
+// fix0927: a gap between two messages of a held scene counts at most this much story time;
+// the talk read takes at most this many of the newest story messages since the freeze.
+export const TALK_GAP_CAP_MS = 5 * 60 * 1000;
+export const TALK_STAMPS_LIMIT = 2000;
 
 export const TIME_SINCE_HEADER =
   "TIME SINCE (true, from the clock; use it or ignore it; never a complaint, never who wrote last, never where he was, never how long you waited)";
@@ -99,9 +116,48 @@ export function disabledClock(real: Date): StoryClock {
   return { enabled: false, real: t.toISOString(), frozen: false, open: null, spans: [] };
 }
 
-export function storyNow(clock: StoryClock): Date {
+// The frozen instant of a held scene (the real now otherwise): what storyNow answered before
+// fix0927, and what every measure of passing time still reads.
+export function heldNow(clock: StoryClock): Date {
   if (clock.enabled && clock.open) return new Date(Date.parse(clock.open.frozen_at));
   return new Date(Date.parse(clock.real));
+}
+
+// The story's time of day. Inside a held span: frozen_at plus the conversation's own time
+// (talkMs), never later than the real now; outside one, the real now.
+export function storyNow(clock: StoryClock): Date {
+  const held = heldNow(clock);
+  if (!(clock.enabled && clock.open)) return held;
+  const talk = typeof clock.talkMs === "number" && Number.isFinite(clock.talkMs) ? Math.max(0, clock.talkMs) : 0;
+  const heldMs = held.getTime();
+  if (talk <= 0 || !Number.isFinite(heldMs)) return held;
+  const real = Date.parse(clock.real);
+  const moved = heldMs + talk;
+  return new Date(Number.isFinite(real) ? Math.max(heldMs, Math.min(moved, real)) : moved);
+}
+
+// fix0927: the time a held scene has been talked through. From frozenAt, every story message
+// at or after it (oldest first) adds its gap from the one before, capped at capMs, and the
+// tail from the last message (or frozenAt) to the real now adds at most capMs too: a scene
+// moves while they talk and stands still while he is away. Stamps before frozenAt, after the
+// real now or unreadable are ignored. Never more than the real time since frozenAt.
+export function talkMsOf(stamps: string[], frozenAt: string, realIso: string, capMs: number = TALK_GAP_CAP_MS): number {
+  const start = typeof frozenAt === "string" ? Date.parse(frozenAt) : NaN;
+  const real = typeof realIso === "string" ? Date.parse(realIso) : NaN;
+  if (!Number.isFinite(start) || !Number.isFinite(real) || real <= start) return 0;
+  const cap = typeof capMs === "number" && Number.isFinite(capMs) ? Math.max(0, capMs) : TALK_GAP_CAP_MS;
+  const times = (Array.isArray(stamps) ? stamps : [])
+    .map((s) => (typeof s === "string" ? Date.parse(s) : NaN))
+    .filter((t) => Number.isFinite(t) && t >= start && t <= real)
+    .sort((a, b) => a - b);
+  let sum = 0;
+  let last = start;
+  for (const t of times) {
+    sum += Math.min(t - last, cap);
+    last = t;
+  }
+  sum += Math.min(real - last, cap);
+  return Math.max(0, Math.min(sum, real - start));
 }
 
 function spanStart(s: ClockSpan): number {
@@ -296,7 +352,8 @@ export function timeSince(clock: StoryClock, last: LastExchange, tz: string): Ti
   const lastAgoMs = last && last.lastAt ? storyElapsedMs(clock, last.lastAt) : null;
   // Review fix: the day of the last exchange is read back from the story time since it, so a
   // scene held from Tuesday night to Friday morning is not "a new day" three hours later.
-  const nowStory = storyNow(clock);
+  // fix0927: on the held instant, so the conversation's own time never moves TIME SINCE.
+  const nowStory = heldNow(clock);
   const newDay = last && last.lastAt && typeof lastAgoMs === "number"
     ? localDayKeyOf(new Date(nowStory.getTime() - lastAgoMs), tz) !== localDayKeyOf(nowStory, tz)
     : false;
@@ -751,10 +808,40 @@ export async function loadStoryClock(db: D1Database, settings: Partial<Settings>
       .sort((a, b) => (Date.parse(a.frozen_at) || 0) - (Date.parse(b.frozen_at) || 0) || a.opened_version - b.opened_version);
     let open: ClockSpan | null = null;
     for (const s of spans) if (s.resumed_at === null || s.resumed_at === undefined) open = s;
-    return { enabled: true, real: at.toISOString(), frozen: open !== null, open, spans };
+    const clock: StoryClock = { enabled: true, real: at.toISOString(), frozen: open !== null, open, spans };
+    if (open) clock.talkMs = await talkMsFor(db, open.frozen_at, clock.real);
+    return clock;
   } catch (e) {
     console.warn("clock: read skipped", errorClass(e));
     return disabledClock(at);
+  }
+}
+
+interface TalkStamp { created_at: string; channel?: string; deliver_at?: string | null }
+
+// fix0927: the open span's talk time, from ONE bounded read of the story messages (both
+// roles) since the freeze, over the conversations the list shows, delivered by the real now;
+// the newest TALK_STAMPS_LIMIT of them (an older part past the limit counts one capped gap).
+// Any failure reads 0: the clock then holds at frozen_at, as before.
+async function talkMsFor(db: D1Database, frozenAt: string, realIso: string): Promise<number> {
+  try {
+    const r = await db
+      .prepare(
+        "SELECT m.created_at AS created_at, m.channel AS channel, m.deliver_at AS deliver_at FROM messages m JOIN conversations c ON c.id = m.conversation_id "
+        + "WHERE m.channel = 'story' AND m.created_at >= ?1 AND m.created_at <= ?2 AND (m.deliver_at IS NULL OR m.deliver_at <= ?2) AND c.status NOT IN ('deleted', 'drift') ORDER BY m.created_at DESC LIMIT ?3",
+      )
+      .bind(frozenAt, realIso, TALK_STAMPS_LIMIT)
+      .all<TalkStamp>();
+    const stamps = (r.results ?? [])
+      .filter((m) => m && typeof m.created_at === "string")
+      .filter((m) => m.channel === undefined || m.channel === "story")
+      .filter((m) => m.deliver_at === null || m.deliver_at === undefined || m.deliver_at <= realIso)
+      .map((m) => m.created_at);
+    // talkMsOf keeps only the stamps inside [frozenAt, real] (read as times, not strings).
+    return talkMsOf(stamps, frozenAt, realIso);
+  } catch (e) {
+    console.warn("clock: talk read skipped", errorClass(e));
+    return 0;
   }
 }
 

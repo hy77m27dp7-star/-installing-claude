@@ -205,7 +205,12 @@ test("lockScreen on the D1 stand-in: the reads it makes land (his last text unde
     ],
     state_versions: [{ id: "r1", entity: "relationship", version: 3, state_json: JSON.stringify(relationshipState({ his_name: "Justin" })), source: "owner", note: null, created_at: "2026-10-01T00:00:00.000Z" }],
     wants: [wantRow({ id: "w_test", title: "sing at an open mic" })],
-    visual_assets: [{ ...assetRow({ id: "img_1", message_id: null, created_at: "2026-10-01T12:00:00.000Z" }), with_him: 0 }],
+    // fix0927 lane B changed this on purpose: the wallpaper and the roll take only a picture
+    // she sent (img_1, on her song message); the owner-fired one (message_id null) never.
+    visual_assets: [
+      { ...assetRow({ id: "img_1", message_id: "m_song", created_at: "2026-10-01T12:00:00.000Z" }), with_him: 0 },
+      { ...assetRow({ id: "img_owner", message_id: null, created_at: "2026-10-01T13:00:00.000Z" }), with_him: 0 },
+    ],
   });
   const settings = settingsV5({ timezone: TZ, storyClockEnabled: false, weatherProvider: "off" });
   const wallpaper = await lock.wallpaperNow(db, settings, realNow, FALLBACK);

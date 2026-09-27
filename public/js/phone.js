@@ -9,8 +9,12 @@
 // clock is HER clock: while the story clock runs (`frozen` false) the time and the date tick
 // here every 15 s from the offset measured at the read; while a together scene holds it
 // (`frozen` true) the tick stops and the screen shows exactly what the read answered.
+// fix0927: a held scene's clock still moves with the conversation (the server adds the time
+// they have been talking, and stands still only while he is away), so the minute's read is
+// what moves it here: never a client tick past what the server says.
 // Her apps read GET /api/phone (the map and her places, the song on her mind), GET /api/sent
-// (the songs she sent), GET /api/spotify (her playlist) and GET /api/roll (her pictures).
+// (the songs she sent), GET /api/spotify (her playlist) and GET /api/roll (her pictures: the
+// ones she sent, then her masters, fix0927 lane B).
 // Nothing here writes: placing a place on her map is the writer's, in Studio.
 //
 // Every run-time value goes through the CSSOM (objectPosition, a progress width) or a plain
@@ -128,10 +132,21 @@ function load(key, path, pick) {
 
 const asObject = (r) => (r && typeof r === "object" ? r : null);
 const asItems = (r) => (r && Array.isArray(r.items) ? r.items : []);
+// The roll as her phone shows it: the pictures she sent, then her masters (each id once).
+const asRoll = (r) => {
+  const out = [];
+  const seen = new Set();
+  for (const it of [...asItems(r), ...(r && Array.isArray(r.masters) ? r.masters : [])]) {
+    if (!it || typeof it.id !== "string" || seen.has(it.id)) continue;
+    seen.add(it.id);
+    out.push(it);
+  }
+  return out;
+};
 const loadPhone = () => load("phone", "/api/phone", asObject);
 const loadSent = () => load("sent", "/api/sent", asItems);
 const loadSpotify = () => load("spotify", "/api/spotify", asObject);
-const loadRoll = () => load("roll", "/api/roll?limit=" + PHOTOS_MAX, asItems);
+const loadRoll = () => load("roll", "/api/roll?limit=" + PHOTOS_MAX, asRoll);
 
 // ------------------------------------------------------------------ what each app holds
 

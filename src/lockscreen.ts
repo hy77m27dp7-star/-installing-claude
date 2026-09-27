@@ -3,11 +3,17 @@
 // notifications, the strip of her last pictures and the things she wants with their next
 // step.
 //
+// fix0927 lane B: the wallpaper pool is her masters 01 to 05 and the solo photos she SENT
+// (approved, a message behind it); a picture the owner fired (message_id null) never dresses
+// her phone. The lock's roll is the pictures she sent, then her masters.
+//
 // Every text here is a line of the record as stored (cut to length) or a fixed label; nothing
 // is generated, narrated or rewritten, and nothing calls a provider. The read writes no story
 // row: the only writes it can cause are the story clock's idempotent sync inside
 // loadStoryClock and the weather cache inside getWeather, as GET /api/clock and GET
 // /api/phone already do. It never calls syncPeople or syncPlaces.
+import { masterUrl, readHerMasters } from "./album";
+import type { HerMaster } from "./album";
 import { listBeatViews } from "./arcs";
 import type { BeatView } from "./arcs";
 import { loadStoryClock, localDayKeyOf, storyNow } from "./clock";
@@ -26,6 +32,28 @@ export interface Wallpaper { kind: "photo" | "master"; id: string; url: string; 
 
 export const WALLPAPER_POOL = 30;
 
+// fix0927 lane B: the face-centred crop of each master as [x%, y%], the same table as
+// src/api.ts AVATAR_FOCUS (fix0927_b_masters keeps the two equal; this file cannot import
+// api.ts, which imports it). A master missing from it sits at 50% 30%.
+export const MASTER_FOCUS: Readonly<Record<string, [number, number]>> = {
+  "master-00": [50, 40],
+  "master-01": [48, 28],
+  "master-02": [58, 24],
+  "master-03": [50, 32],
+  "master-04": [44, 27],
+  "master-05": [50, 24],
+};
+const MASTER_FOCUS_DEFAULT: [number, number] = [50, 30];
+
+// A wallpaper candidate: a photo she sent (id, created_at), or one of her masters (with its
+// `file`, and a `focus` when known).
+export interface WallCandidate { id: string; created_at: string; file?: string; focus?: [number, number] | null }
+
+function masterFocus(id: string, given: [number, number] | null | undefined): [number, number] {
+  const f = Array.isArray(given) && given.length === 2 ? given : MASTER_FOCUS[id] ?? MASTER_FOCUS_DEFAULT;
+  return [f[0], f[1]];
+}
+
 // 32-bit FNV-1a over the UTF-8 bytes of `s`.
 export function fnv1a32(s: string): number {
   const bytes = new TextEncoder().encode(typeof s === "string" ? s : "");
@@ -42,37 +70,49 @@ function byNewest(a: { id: string; created_at: string }, b: { id: string; create
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
 }
 
-// One wallpaper per day of hers: the photo at fnv1a32(day) % n of the newest-first list, or
-// the fallback master (with its focus) when she has no approved solo photo.
-export function pickWallpaper(day: string, photos: Array<{ id: string; created_at: string }>, fallback: { id: string; file: string; focus: [number, number] }): Wallpaper {
+// One wallpaper per day of hers: the candidate at fnv1a32(day) % n of the newest-first list
+// (a photo she sent, or one of her masters when it carries its `file`), or the fallback
+// master (with its focus) when the pool is empty.
+export function pickWallpaper(day: string, photos: WallCandidate[], fallback: { id: string; file: string; focus: [number, number] }): Wallpaper {
   const list = (Array.isArray(photos) ? photos : []).filter((p) => p && typeof p.id === "string" && p.id).slice().sort(byNewest);
   if (!list.length) {
     const file = String(fallback.file ?? "").replace(/^\/+/, "");
     return { kind: "master", id: fallback.id, url: "/" + file, focus: [fallback.focus[0], fallback.focus[1]], day };
   }
-  const pick = list[fnv1a32(day) % list.length] as { id: string };
+  const pick = list[fnv1a32(day) % list.length] as WallCandidate;
+  const url = typeof pick.file === "string" ? masterUrl(pick.file) : null;
+  if (url) return { kind: "master", id: pick.id, url, focus: masterFocus(pick.id, pick.focus), day };
   return { kind: "photo", id: pick.id, url: "/media/" + encodeURIComponent(pick.id), focus: null, day };
 }
 
-interface WallRow { id: string; created_at: string; role?: string; approval_status?: string; with_him?: number | null; bytes?: number | null }
+// Her masters as wallpaper candidates.
+export function masterCandidates(masters: HerMaster[]): WallCandidate[] {
+  return (Array.isArray(masters) ? masters : [])
+    .filter((m) => m && typeof m.id === "string" && typeof m.file === "string")
+    .map((m) => ({ id: m.id, created_at: m.created_at, file: m.file, focus: masterFocus(m.id, null) }));
+}
+
+interface WallRow { id: string; created_at: string; role?: string; approval_status?: string; with_him?: number | null; bytes?: number | null; message_id?: string | null }
 
 function tzOf(settings: Partial<Settings> | null | undefined): string {
   const tz = settings && typeof settings.timezone === "string" && settings.timezone.trim() ? settings.timezone.trim() : "America/New_York";
   return safeTimezone(tz);
 }
 
-// Her approved solo photos with bytes, newest 30. A read that fails answers none (the master).
+// Her approved solo photos with bytes that she SENT (a message behind each), newest 30. A read
+// that fails answers none (her masters, then the fallback master).
 async function wallpaperPhotos(db: D1Database): Promise<WallRow[]> {
   try {
     const r = await db
       .prepare(
-        "SELECT id, created_at, role, approval_status, with_him, bytes FROM visual_assets WHERE role IN ('scene', 'candidate') AND approval_status = ?1 AND COALESCE(with_him, 0) = 0 AND bytes IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT ?2",
+        "SELECT id, created_at, role, approval_status, with_him, bytes, message_id FROM visual_assets WHERE role IN ('scene', 'candidate') AND approval_status = ?1 AND message_id IS NOT NULL AND COALESCE(with_him, 0) = 0 AND bytes IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT ?2",
       )
       .bind("approved", WALLPAPER_POOL)
       .all<WallRow>();
     return (r.results ?? [])
       .filter((row) => row && typeof row.id === "string" && typeof row.created_at === "string")
       .filter((row) => (row.role === undefined || row.role === "scene" || row.role === "candidate") && (row.approval_status === undefined || row.approval_status === "approved"))
+      .filter((row) => typeof row.message_id === "string" && row.message_id.trim().length > 0)
       .filter((row) => Number(row.with_him ?? 0) === 0 && (row.bytes === undefined || (row.bytes !== null && Number.isFinite(Number(row.bytes)))))
       .sort(byNewest)
       .slice(0, WALLPAPER_POOL);
@@ -81,10 +121,13 @@ async function wallpaperPhotos(db: D1Database): Promise<WallRow[]> {
   }
 }
 
-// The day is her local calendar day on the REAL clock (the phone panel stays on it).
+// The day is her local calendar day on the REAL clock (the phone panel stays on it). The pool:
+// the solo photos she sent and her masters 01 to 05.
 export async function wallpaperNow(db: D1Database, settings: Settings, now: Date, fallback: { id: string; file: string; focus: [number, number] }): Promise<Wallpaper> {
   const day = localDayKey(now, tzOf(settings));
-  return pickWallpaper(day, await wallpaperPhotos(db), fallback);
+  const [photos, masters] = await Promise.all([wallpaperPhotos(db), readHerMasters(db)]);
+  const pool: WallCandidate[] = [...photos.map((p) => ({ id: p.id, created_at: p.created_at })), ...masterCandidates(masters)];
+  return pickWallpaper(day, pool, fallback);
 }
 
 // ------------------------------------------------------------------ the lock
@@ -355,7 +398,7 @@ export async function lockScreen(env: Env, db: D1Database, settings: Settings, r
     quiet("her song", herSong(db, real), null),
     quiet("beats", listBeatViews(db, { status: "active" }), [] as BeatView[]),
     quiet("wants", listWants(db, "active"), [] as Awaited<ReturnType<typeof listWants>>),
-    quiet("roll", listRoll(db, { limit: LOCK_ROLL_READ }).then((p) => p.items), [] as RollItem[]),
+    quiet("roll", listRoll(db, { limit: LOCK_ROLL_READ }).then((p) => [...p.items, ...(Array.isArray(p.masters) ? p.masters : [])]), [] as RollItem[]),
   ]);
   let beats: LockBeat[] = [];
   try {

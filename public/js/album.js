@@ -5,6 +5,11 @@
 // A tap opens the lightbox: the picture or the clip, the day and the place, Save and Full
 // size. Nothing here decides a picture (that lives in Studio), nothing sits under a tile,
 // and nothing writes a style attribute (the CSP has no unsafe-inline).
+//
+// fix0927 lane B: her masters 01 to 05 (the page's `masters`, in id order, the same five on
+// every page) open the Album in their own "Her" row at the top. A master is a static file
+// (`master: true`, its `url` under /images/masters/): no date, no place, no message; Save and
+// Full size point at that file.
 import { api, h, clear } from "./api.js";
 import { monthKey, monthLabel, dayWords, tileLabel, countLabel } from "./months.js";
 
@@ -29,6 +34,19 @@ export function mediaUrl(id, download) {
   return "/media/" + encodeURIComponent(String(id)) + (download ? "?download=1" : "");
 }
 
+// One of her masters: its own file (a same-origin path), never a /media/ row.
+function isMaster(item) {
+  return Boolean(item && item.master === true && typeof item.url === "string" && item.url.startsWith("/images/masters/"));
+}
+
+function srcOf(item, download) {
+  return isMaster(item) ? item.url : mediaUrl(item.id, download);
+}
+
+function labelOf(item) {
+  return isMaster(item) ? "Her" : tileLabel(item, nowIso());
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -47,7 +65,7 @@ function pictureFor(item) {
     markLoaded(video);
     return video;
   }
-  const src = item.kind === "clip" ? item.poster : mediaUrl(item.id);
+  const src = item.kind === "clip" ? item.poster : srcOf(item);
   const img = h("img", { alt: "", loading: "lazy", decoding: "async" });
   img.addEventListener("load", () => markLoaded(img), { once: true });
   img.src = src;
@@ -60,9 +78,9 @@ export function tileFor(item, hero) {
   if (hero) classes.push("month-hero");
   const tile = h("a", {
     class: classes.join(" "),
-    href: mediaUrl(item.id),
+    href: srcOf(item),
     "data-id": item.id,
-    "aria-label": tileLabel(item, nowIso()),
+    "aria-label": labelOf(item),
   }, pictureFor(item));
   if (item.kind === "clip") tile.append(h("span", { class: "play-badge", "aria-hidden": "true" }));
   if (hero) tile.append(h("span", { class: "month-over display", "aria-hidden": "true", text: monthLabel(monthKey(item.at), nowIso()) }));
@@ -87,6 +105,20 @@ function monthFor(key, first) {
   const entry = { section, grid, fresh: true };
   state.months.set(key, entry);
   return entry;
+}
+
+// Her masters, in the order the page gives them (id order), each once, counted once.
+function placeHer(list) {
+  const grid = $("herGrid");
+  const section = $("herSection");
+  if (!grid || !section) return;
+  for (const item of Array.isArray(list) ? list : []) {
+    if (!isMaster(item) || typeof item.id !== "string" || state.items.has(item.id)) continue;
+    state.items.set(item.id, item);
+    grid.append(tileFor(item, false));
+    section.classList.remove("hidden");
+    state.count += 1;
+  }
 }
 
 function place(item) {
@@ -121,8 +153,10 @@ async function fetchPage() {
   try {
     const page = await api("GET", path);
     const items = Array.isArray(page && page.items) ? page.items : [];
+    placeHer(page && page.masters);
     for (const item of items) {
       if (!item || typeof item.id !== "string" || state.items.has(item.id)) continue;
+      if (isMaster(item)) { placeHer([item]); continue; }
       state.items.set(item.id, item);
       place(item);
       state.count += 1;
@@ -150,7 +184,7 @@ function loadPage() {
 // ------------------------------------------------------------ the lightbox
 
 function tiles() {
-  return Array.from(document.querySelectorAll("#usGrid .roll-tile, #albumMonths .roll-tile"));
+  return Array.from(document.querySelectorAll("#herGrid .roll-tile, #usGrid .roll-tile, #albumMonths .roll-tile"));
 }
 
 function tileById(id) {
@@ -177,7 +211,7 @@ function mediaIn(item) {
     if (item.poster) video.setAttribute("poster", item.poster);
     return video;
   }
-  return h("img", { src: mediaUrl(item.id), alt: tileLabel(item, nowIso()), decoding: "async" });
+  return h("img", { src: srcOf(item), alt: labelOf(item), decoding: "async" });
 }
 
 function show(id) {
@@ -187,15 +221,16 @@ function show(id) {
   const box = $("lbMedia");
   clear(box);
   box.append(mediaIn(item));
-  $("lbDate").textContent = dayWords(item.at, nowIso());
+  // A master carries no day of hers (its row's date is when it was filed): no date line.
+  $("lbDate").textContent = isMaster(item) ? "" : dayWords(item.at, nowIso());
   const placeEl = $("lbPlace");
-  const where = typeof item.place === "string" ? item.place.trim() : "";
+  const where = !isMaster(item) && typeof item.place === "string" ? item.place.trim() : "";
   placeEl.textContent = where;
   placeEl.classList.toggle("hidden", !where);
   const save = $("lbSave");
-  save.setAttribute("href", mediaUrl(item.id, true));
+  save.setAttribute("href", srcOf(item, true));
   save.setAttribute("download", "");
-  $("lbOpen").setAttribute("href", mediaUrl(item.id));
+  $("lbOpen").setAttribute("href", srcOf(item));
   syncWalk();
   return true;
 }

@@ -1,13 +1,23 @@
 // Her camera roll (the experience pass, DESIGN_EXPERIENCE section 8.1): every picture and
-// clip of hers that is APPROVED, bound to a message or not. The album (src/album.ts) keeps
-// its own shape and rule (message-bound rows only, candidates too); the roll is what the Her
-// pages show: the Album's months, the phone's Photos app and its lock-screen strip.
+// clip she SENT him that is APPROVED. The album (src/album.ts) keeps its own shape and rule
+// (message-bound rows only, candidates too); the roll is what the Her pages show: the
+// Album's months, the phone's Photos app and its lock-screen strip.
 //
-// Read-only. Never a master, him, portrait, call-face, archive, blacklisted or missing row;
-// never a candidate, rejected, pending, generating or failed one; never the R2 key.
+// fix0927 lane B, two rules on every Her surface:
+// - A picture or clip is hers to show only when it is approved AND has a message behind it
+//   (message_id set: she sent it in a conversation). A picture the owner fired from Studio or
+//   the API (message_id null, the face tests of 2026-09-25) never appears here; it stays in
+//   Studio > Pictures, untouched.
+// - Her masters 01 to 05 (src/album.ts HER_MASTER_IDS; never master-00, the face crop) ride
+//   on every page as `masters`, in id order, and the Her pages show them after the pictures
+//   she sent (the Album in its own "Her" section at the top). `items` stays the sent
+//   pictures alone, so the `before` cursor pages exactly as before.
+//
+// Read-only. Never a him, portrait, call-face, archive, blacklisted or missing row; never a
+// candidate, rejected, pending, generating or failed one; never the R2 key.
 import { ApiHttpError } from "./errors";
-import { sceneAt } from "./album";
-import type { SceneVersionLike } from "./album";
+import { readHerMasters, sceneAt } from "./album";
+import type { HerMaster, SceneVersionLike } from "./album";
 import { placeWords } from "./chapters";
 
 export interface RollItem {
@@ -20,11 +30,16 @@ export interface RollItem {
   us: boolean;
   conversationId: string | null;
   messageId: string | null;
+  // fix0927 lane B: true on one of her masters (a static file, no message); absent on a
+  // picture she sent, so those items keep their nine keys.
+  master?: true;
 }
 
 export interface RollPage {
   items: RollItem[];
   nextBefore: string | null;
+  // fix0927 lane B: her masters 01 to 05 in id order, on every page (the same five).
+  masters: RollItem[];
 }
 
 export const ROLL_ROLES: readonly string[] = ["scene", "candidate", "video"];
@@ -53,8 +68,16 @@ interface MessageStamp {
 
 // ------------------------------------------------------------------ pure
 
-export function rollEligible(row: { role: string; approval_status: string }): boolean {
-  return !!row && ROLL_ROLES.includes(row.role) && row.approval_status === "approved";
+// fix0927 lane B: approved AND sent (a message behind it).
+export function rollEligible(row: { role: string; approval_status: string; message_id?: string | null }): boolean {
+  return !!row && ROLL_ROLES.includes(row.role) && row.approval_status === "approved"
+    && typeof row.message_id === "string" && row.message_id.trim().length > 0;
+}
+
+// One of her masters as a roll item: a photo at its static URL, dated by its row, no place,
+// no message, no conversation, never of the two of them.
+export function masterItem(m: HerMaster): RollItem {
+  return { id: m.id, kind: "photo", url: m.url, poster: null, at: m.created_at, place: null, us: false, conversationId: null, messageId: null, master: true };
 }
 
 // The picture a clip was made from, as chat.js clipSourceOf reads it: the part of `notes`
@@ -99,7 +122,7 @@ function media(id: string): string {
 // The SQL filter and, again in memory, the same rule (the unit suite's stand-in evaluates
 // only "column = ?N" binds). `at`: only the rows created at exactly that time.
 async function readRows(db: D1Database, before: string | null, limit: number, at?: string): Promise<RollAssetRow[]> {
-  const where: string[] = ["role IN ('scene', 'candidate', 'video')", "approval_status = ?1"];
+  const where: string[] = ["role IN ('scene', 'candidate', 'video')", "approval_status = ?1", "message_id IS NOT NULL"];
   const binds: Array<string | number> = ["approved"];
   if (before !== null) {
     binds.push(before);
@@ -148,6 +171,7 @@ async function sceneVersions(db: D1Database): Promise<SceneVersionLike[]> {
 export async function listRoll(db: D1Database, opts: { limit?: number; before?: string } = {}): Promise<RollPage> {
   const limit = normLimit(opts.limit);
   const before = normBefore(opts.before);
+  const masters = (await readHerMasters(db)).map(masterItem);
 
   const ahead = await readRows(db, before, limit + 1);
   let rows = ahead.slice(0, limit);
@@ -158,7 +182,7 @@ export async function listRoll(db: D1Database, opts: { limit?: number; before?: 
     const tie = await readRows(db, before, ROLL_LIMIT_MAX, edge.created_at);
     rows = rows.filter((r) => r.created_at !== edge.created_at).concat(tie).sort(byNewest);
   }
-  if (!rows.length) return { items: [], nextBefore: null };
+  if (!rows.length) return { items: [], nextBefore: null, masters };
 
   const bound = rows.map((r) => r.message_id).filter((id): id is string => typeof id === "string" && id.length > 0);
   let stamps = new Map<string, MessageStamp>();
@@ -190,5 +214,5 @@ export async function listRoll(db: D1Database, opts: { limit?: number; before?: 
   });
 
   const last = rows[rows.length - 1];
-  return { items, nextBefore: more && last ? last.created_at : null };
+  return { items, nextBefore: more && last ? last.created_at : null, masters };
 }
