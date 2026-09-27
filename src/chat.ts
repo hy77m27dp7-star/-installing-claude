@@ -693,6 +693,9 @@ export async function prepareTurn(
     env,
     hisFace: opts?.hisFace,
     performers: sideB ? [performer, sideB] : [performer],
+    // 2026-09-27, Justin: "why are her replies so short". A turn of the hands-free call is
+    // talk, not texting: no rhythm cue (it kept asking for one line).
+    ...(opts?.speak === true ? { cues: false } : {}),
   });
   const turnNote = !opener && typeof opts?.turnNote === "string" && opts.turnNote.trim() ? opts.turnNote.trim() : "";
   const statePart = opener

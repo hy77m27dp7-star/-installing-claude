@@ -931,8 +931,15 @@ const OPENER_NOTE = FIRST_TEXT_NOTE;
 // apart is a phone call: she knows it, and she talks the way she does on the phone.
 const PHONE_TURN_NOTE =
   "He called you and you picked up: you are on the phone with him right now, not texting. His last message is what he just said out loud on the call. "
-  + "Answer out loud, the way you talk on the phone: spoken sentences, no asterisk actions (he cannot see you), no bracket markers, nothing that only works on a screen. "
+  + "Answer out loud, the way you talk on the phone: spoken sentences, usually two to four of them, like a real conversation, no asterisk actions (he cannot see you), no bracket markers, nothing that only works on a screen. "
   + CALL_NOTE.replace(/^ON THE PHONE \(now\)\n/, "");
+
+// The hands-free call face to face: he is talking out loud, right there; she talks back the
+// way people talk, not the way they text.
+const IN_PERSON_TURN_NOTE =
+  "He is talking to you out loud, face to face, right now; his last message is what he just said. You are talking, not texting: answer the way you actually talk to him in person, "
+  + "usually two to four sentences, with the small back-and-forth of a real conversation (react, add something of your own, sometimes ask), and a word or two only when that is truly all you would say. "
+  + "Keep your actions short and only when you move or touch; the talking carries it.";
 
 const SCENE_OPENER_NOTE =
   "You are with him right now, in the scene as the record has it, and it is your move. Continue from exactly where the last messages left off: what you do or say next, in the moment, "
@@ -1163,7 +1170,7 @@ route("POST", "/api/conversations/:id/voice", async (c) => {
     if (speak) {
       try {
         const scene = await getCurrentState<SceneState>(c.db, "scene");
-        if (sceneMode(scene.state.status) !== "together") turnNote = PHONE_TURN_NOTE;
+        turnNote = sceneMode(scene.state.status) !== "together" ? PHONE_TURN_NOTE : IN_PERSON_TURN_NOTE;
       } catch { /* no scene record: texting, so a phone call */ turnNote = PHONE_TURN_NOTE; }
     }
     r = await runTurn(c.env, c.ctx, c.db, settings, id, transcript, idempotencyKey, c.actor, speak ? { speak: true, ...(turnNote ? { turnNote } : {}) } : undefined);

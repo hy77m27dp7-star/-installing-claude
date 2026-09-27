@@ -2875,25 +2875,45 @@ async function dtStart() {
   const dt = { on: true, stream: null, ctx: null, analyser: null, recorder: null, chunks: [], heard: false, quietSince: 0, startedAt: 0, poll: null, bar: null, status: null };
   state.dt = dt;
   dtBar(dt);
-  try {
-    dt.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-  } catch {
-    showError("microphone", false);
-    dtEnd();
-    return;
-  }
   const AC = window.AudioContext || window.webkitAudioContext;
   dt.ctx = new AC();
-  const src = dt.ctx.createMediaStreamSource(dt.stream);
   dt.analyser = dt.ctx.createAnalyser();
   dt.analyser.fftSize = 1024;
-  src.connect(dt.analyser);
   dtListen(dt);
 }
 
-function dtListen(dt) {
-  if (!dt || !dt.on || state.dt !== dt || !dt.stream) return;
+// 2026-09-27: an open mic while she plays made the Mac duck her first words (and puts
+// Bluetooth headphones into their low-quality headset mode), so the mic is closed after each
+// of his turns and opened again here, only when it is his turn.
+async function dtOpenMic(dt) {
+  if (dt.stream && dt.stream.getAudioTracks().some((t) => t.readyState === "live")) return true;
+  try {
+    dt.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } });
+  } catch {
+    showError("microphone", false);
+    dtEnd();
+    return false;
+  }
+  if (!dt.on || state.dt !== dt) { dt.stream.getTracks().forEach((t) => t.stop()); return false; }
+  try { if (dt.src) dt.src.disconnect(); } catch { /* already gone */ }
+  dt.src = dt.ctx.createMediaStreamSource(dt.stream);
+  dt.src.connect(dt.analyser);
+  return true;
+}
+
+function dtCloseMic(dt) {
+  if (dt && dt.stream) dt.stream.getTracks().forEach((t) => t.stop());
+  if (dt) dt.stream = null;
+}
+
+async function dtListen(dt) {
+  if (!dt || !dt.on || state.dt !== dt) return;
   if (dt.recorder && dt.recorder.state === "recording") return;
+  if (dt.opening) return;
+  dt.opening = true;
+  const ok = await dtOpenMic(dt);
+  dt.opening = false;
+  if (!ok || !dt.on || state.dt !== dt) return;
   const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
   try {
     dt.recorder = new MediaRecorder(dt.stream, mime ? { mimeType: mime } : undefined);
@@ -2937,6 +2957,8 @@ function dtSend(dt) {
   if (!dt.on || state.dt !== dt) return;
   const mime = (dt.recorder && dt.recorder.mimeType) || "audio/webm";
   const blob = new Blob(dt.chunks, { type: mime });
+  // His turn is over: the mic closes while she answers.
+  if (dt.heard && blob.size >= 2000) dtCloseMic(dt);
   // Nothing said (or a click of noise): keep listening.
   if (!dt.heard || blob.size < 2000) { dtListen(dt); return; }
   if (blob.size > MAX_VOICE_BYTES) { dtListen(dt); return; }
@@ -2961,7 +2983,7 @@ function dtEnd() {
   dt.on = false;
   clearInterval(dt.poll);
   try { if (dt.recorder && dt.recorder.state !== "inactive") dt.recorder.stop(); } catch { /* already stopped */ }
-  if (dt.stream) dt.stream.getTracks().forEach((t) => t.stop());
+  dtCloseMic(dt);
   if (dt.ctx) dt.ctx.close().catch(() => {});
   if (dt.bar) dt.bar.remove();
   for (const b of callButtons()) { b.classList.remove("calling"); b.setAttribute("aria-pressed", "false"); }

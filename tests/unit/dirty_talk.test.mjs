@@ -82,10 +82,11 @@ test("padMp3Silence: silent MPEG-1 Layer III frames after the ID3 tag, in the fi
 });
 
 import { readFileSync as rf } from "node:fs";
-test("the hands-free call while apart tells her she is on the phone; together it does not", () => {
+test("the hands-free call: apart she is on the phone, together he is talking to her face to face", () => {
   const api = rf(new URL("../../src/api.ts", import.meta.url), "utf8");
   const chat = rf(new URL("../../src/chat.ts", import.meta.url), "utf8");
   assert.match(api, /const PHONE_TURN_NOTE =\s*"He called you and you picked up: you are on the phone with him right now, not texting\./);
-  assert.match(api, /if \(sceneMode\(scene\.state\.status\) !== "together"\) turnNote = PHONE_TURN_NOTE;/);
+  assert.match(api, /turnNote = sceneMode\(scene\.state\.status\) !== "together" \? PHONE_TURN_NOTE : IN_PERSON_TURN_NOTE;/);
+  assert.match(api, /const IN_PERSON_TURN_NOTE =\s*"He is talking to you out loud, face to face, right now/);
   assert.match(chat, /turnNote\s*\? assembled\.systemParts\.state \+ SYSTEM_SEPARATOR \+ "ONE-TIME OPERATOR NOTE/);
 });
