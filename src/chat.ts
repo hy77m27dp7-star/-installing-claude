@@ -145,6 +145,9 @@ export interface TurnOptions {
   turnNote?: string;
   // 2026-09-27: the Watch game button is on; her prompt carries the live game and her rules.
   tv?: boolean;
+  // The game as his TV shows it (the page holds ESPN's feed back to match his broadcast); when
+  // present it is used instead of a live fetch, so she is never ahead of his screen.
+  tvText?: string;
 }
 
 // Dirty talk mode: whether the scene record says an intimate Together scene she chose is
@@ -707,7 +710,8 @@ export async function prepareTurn(
     const sc = assembled.state.scene;
     const sceneText = [sc.location, sc.summary, sc.last_beat].filter((x) => typeof x === "string").join(" ");
     if (opts?.tv === true || tvWanted(String(assembled.state.mode ?? sceneMode(sc.status)), sceneText, opener ? "" : userText)) {
-      const game = await fetchGame();
+      const held = typeof opts?.tvText === "string" && opts.tvText.trim() ? opts.tvText.trim().slice(0, 1200) : "";
+      const game = held ? { state: "in", text: held, score: "", last: "", detail: "" } : await fetchGame();
       if (game && (game.state !== "post" || opts?.tv === true)) tvPart = SYSTEM_SEPARATOR + tvSection(game);
     }
   } catch {

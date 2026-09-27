@@ -2578,7 +2578,10 @@ async function send(opts) {
         } else {
           const body = { content: text, idempotencyKey: pending.key };
           if (tasting) body.tasting = true;
-          if (state.tv && state.tv.on) body.tv = true;
+          if (state.tv && state.tv.on) {
+            body.tv = true;
+            if (state.tv.held && state.tv.held.text) body.tvGame = state.tv.held.text;
+          }
           r = await api("POST", path, body);
         }
       } catch (e) {
@@ -2807,7 +2810,10 @@ async function sendVoice(blob, mime, opts) {
     fd.append("audio", blob, "voice." + ext);
     fd.append("idempotencyKey", crypto.randomUUID());
     if (opts && opts.speak) fd.append("speak", "1");
-    if (state.tv && state.tv.on) fd.append("tv", "1");
+    if (state.tv && state.tv.on) {
+      fd.append("tv", "1");
+      if (state.tv.held && state.tv.held.text) fd.append("tvGame", state.tv.held.text);
+    }
     const r = await apiForm("POST", "/api/conversations/" + encodeURIComponent(id) + "/voice", fd);
     handleTurnResponse(r, id);
     touchConversation(id);
@@ -2829,8 +2835,11 @@ async function sendVoice(blob, mime, opts) {
 // Justin: "there should be a watch game button". On: every turn of his carries the live game
 // (the server adds it and her game rules), the page checks the game every 20 s, and a big
 // play (a score, a turnover, halftime) gets her own reaction, out loud on the call. Off: none.
-const TV_POLL_MS = 20000;
-const TV_REACT_GAP_MS = 60000;
+const TV_POLL_MS = 10000;
+const TV_REACT_GAP_MS = 45000;
+// ESPN's feed runs ahead of his TV (he said "shes ahead of me"): she sees the game as it
+// stood this long ago, the way his broadcast shows it.
+const TV_DELAY_MS = 45000;
 const TV_KEY = "avelie.tv";
 
 function tvPaint() {
@@ -2848,7 +2857,7 @@ function tvToggle() {
 }
 
 function tvStart() {
-  state.tv = { on: true, prev: null, lastReactAt: 0, timer: null, score: "" };
+  state.tv = { on: true, prev: null, lastReactAt: 0, timer: null, score: "", history: [], held: null };
   storeSet(TV_KEY, "1");
   tvPaint();
   tvPoll();
@@ -2862,7 +2871,18 @@ function tvStop() {
   tvPaint();
 }
 
-const TV_BIG_RE = /\b(?:touchdown|intercept\w*|fumble[sd]?|field goal|safety|sacked|blocked|recovered)\b/i;
+const TV_BIG_RE = /\b(?:touchdown|intercept\w*|fumble[sd]?|field goal|safety|sacked|blocked|recovered|penalty|for (?:1[5-9]|[2-9]\d) yards)\b/i;
+
+// The game as his TV shows it: the newest snapshot at least TV_DELAY_MS old (the oldest one
+// while the page has not been watching that long).
+function tvHeld(tv) {
+  const h = tv.history;
+  if (!h.length) return null;
+  const cut = Date.now() - TV_DELAY_MS;
+  let pick = h[0];
+  for (const x of h) if (x.t <= cut) pick = x;
+  return pick.game;
+}
 
 async function tvPoll() {
   const tv = state.tv;
@@ -2875,6 +2895,14 @@ async function tvPoll() {
     return;
   }
   if (!game || state.tv !== tv) return;
+  tv.history.push({ t: Date.now(), game });
+  while (tv.history.length > 200) tv.history.shift();
+  const seen = tvHeld(tv);
+  if (!seen) return;
+  // Only a snapshot he has now seen on his TV counts, once.
+  if (tv.held && tv.held === seen) return;
+  tv.held = seen;
+  game = seen;
   tv.score = game.state === "pre" ? "" : game.score;
   tvPaint();
   const prev = tv.prev;
@@ -2903,7 +2931,8 @@ async function tvReact(tv) {
   tv.lastReactAt = Date.now();
   setInFlight(true);
   try {
-    const r = await api("POST", "/api/conversations/" + encodeURIComponent(id) + "/open", { reason: "tv", speak: !!dt });
+    const held = tv.held || null;
+    const r = await api("POST", "/api/conversations/" + encodeURIComponent(id) + "/open", { reason: "tv", speak: !!dt, ...(held ? { tvGame: held.text, tvLast: held.last || "" } : {}) });
     handleTurnResponse(r, id);
     touchConversation(id);
     if (dt && !(r && r.spoken === true)) setTimeout(() => dtListen(state.dt), 1000);

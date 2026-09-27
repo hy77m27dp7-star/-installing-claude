@@ -1093,9 +1093,10 @@ route("POST", "/api/conversations/:id/turn", async (c) => {
   const idempotencyKey = reqString(body, "idempotencyKey", 200);
   const tasting = optBool(body, "tasting") === true;
   const tv = optBool(body, "tv") === true;
+  const tvText = typeof body.tvGame === "string" ? body.tvGame.slice(0, 1200) : "";
   const settings = await loadSettings(c);
   if (tasting) return json(await runTastingTurn(c.env, c.ctx, c.db, settings, id, content, idempotencyKey, c.actor));
-  return json(await runTurn(c.env, c.ctx, c.db, settings, id, content, idempotencyKey, c.actor, tv ? { tv: true } : undefined));
+  return json(await runTurn(c.env, c.ctx, c.db, settings, id, content, idempotencyKey, c.actor, tv ? { tv: true, ...(tvText ? { tvText } : {}) } : undefined));
 });
 
 // She opens (SPEC_V2 section Q): a turn with no message of his and the one-time note.
@@ -1119,10 +1120,14 @@ route("POST", "/api/conversations/:id/open", async (c) => {
   // 2026-09-27: the Watch game button's own reaction: a big play just happened.
   const body = await readBody(c.request).catch(() => ({} as Record<string, unknown>));
   if (body && (body as Record<string, unknown>).reason === "tv") {
-    const game = await fetchGame();
+    const b = body as Record<string, unknown>;
+    // The play as his TV shows it (held back by the page), or the live feed.
+    const heldText = typeof b.tvGame === "string" ? b.tvGame.slice(0, 1200) : "";
+    const heldLast = typeof b.tvLast === "string" ? b.tvLast.slice(0, 400) : "";
+    const game = heldText ? { state: "in", text: heldText, score: "", last: heldLast, detail: "" } : await fetchGame();
     if (!game) throw new ApiHttpError(503, "tv_unavailable", "the game could not be read", true);
-    const speakTv = optBool(body as never, "speak") === true;
-    return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: tvReactNote(game), tv: true, ...(speakTv ? { speak: true } : {}) }));
+    const speakTv = optBool(b as never, "speak") === true;
+    return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: tvReactNote(game), tv: true, ...(heldText ? { tvText: heldText } : {}), ...(speakTv ? { speak: true } : {}) }));
   }
   return json(await runTurn(c.env, c.ctx, c.db, settings, id, "", "", c.actor, { openerNote: note }));
 });
@@ -1187,7 +1192,8 @@ route("POST", "/api/conversations/:id/voice", async (c) => {
       } catch { /* no scene record: texting, so a phone call */ turnNote = PHONE_TURN_NOTE; }
     }
     const tvOn = formString(form, "tv", 8, false) === "1";
-    const vopts = { ...(speak ? { speak: true } : {}), ...(turnNote ? { turnNote } : {}), ...(tvOn ? { tv: true } : {}) };
+    const tvText = tvOn ? formString(form, "tvGame", 1200, false) : "";
+    const vopts = { ...(speak ? { speak: true } : {}), ...(turnNote ? { turnNote } : {}), ...(tvOn ? { tv: true } : {}), ...(tvText ? { tvText } : {}) };
     r = await runTurn(c.env, c.ctx, c.db, settings, id, transcript, idempotencyKey, c.actor, Object.keys(vopts).length ? vopts : undefined);
   } catch (e) {
     await deleteKeys(c.env, [key]);
