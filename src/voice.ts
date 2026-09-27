@@ -406,7 +406,7 @@ export async function attachVoiceNote(env: Env, db: D1Database, settings: Settin
     const chars = provider === "elevenlabs" && typeof r.chars === "number" ? r.chars : 0;
     const costMicro = provider === "elevenlabs" ? elevenLabsNoteCostMicro(chars, elevenLabsSettingsOf(settings).ttsPricePer1kChars) : 0;
     const key = (args.spoken === true ? SPOKEN_PREFIX : VOICE_PREFIX) + args.messageId + ".mp3";
-    const mp3 = padMp3Silence(r.mp3 as Uint8Array | ArrayBuffer);
+    const mp3 = padMp3Silence(r.mp3 as Uint8Array | ArrayBuffer, 800);
     await env.MEDIA.put(key, mp3, { httpMetadata: { contentType: "audio/mpeg" } });
     // Only her message, and only once: a second note for the same message is dropped.
     const res = await db

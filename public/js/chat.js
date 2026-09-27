@@ -2879,6 +2879,24 @@ async function dtStart() {
   dt.ctx = new AC();
   dt.analyser = dt.ctx.createAnalyser();
   dt.analyser.fftSize = 1024;
+  // 2026-09-27: her first words were still eaten when she auto-played. For the whole call the
+  // output plays constant silence, so the speakers or headphones never fall asleep between
+  // her lines and there is nothing to wake when she starts.
+  try {
+    const buf = dt.ctx.createBuffer(1, dt.ctx.sampleRate, dt.ctx.sampleRate);
+    const loop = dt.ctx.createBufferSource();
+    loop.buffer = buf;
+    loop.loop = true;
+    const gain = dt.ctx.createGain();
+    gain.gain.value = 0.0001;
+    loop.connect(gain);
+    gain.connect(dt.ctx.destination);
+    loop.start();
+    dt.keepAwake = loop;
+  } catch {
+    // no keep-awake: the padded silence in her files still helps
+  }
+  if (dt.ctx.state === "suspended") dt.ctx.resume().catch(() => {});
   dtListen(dt);
 }
 
@@ -2984,6 +3002,7 @@ function dtEnd() {
   clearInterval(dt.poll);
   try { if (dt.recorder && dt.recorder.state !== "inactive") dt.recorder.stop(); } catch { /* already stopped */ }
   dtCloseMic(dt);
+  try { if (dt.keepAwake) dt.keepAwake.stop(); } catch { /* already stopped */ }
   if (dt.ctx) dt.ctx.close().catch(() => {});
   if (dt.bar) dt.bar.remove();
   for (const b of callButtons()) { b.classList.remove("calling"); b.setAttribute("aria-pressed", "false"); }
