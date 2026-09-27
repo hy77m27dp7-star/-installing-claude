@@ -59,3 +59,24 @@ test("a kiss is not a bed scene; a bed or undressing is", () => {
   assert.equal(promptMod.intimateScene({ ...base, summary: "clothes coming off on the couch" }), true);
   assert.equal(promptMod.intimateScene({ ...base, intimate: true }), true);
 });
+
+const voiceMod = await loadSrc("voice");
+test("isWhisperJunk: what Whisper invents from silence is no line", () => {
+  for (const t of ["Продолжение следует...", "ん ん ん ん", "Thanks for watching!", "", "   ", "字幕"]) assert.equal(voiceMod.isWhisperJunk(t), true, t);
+  for (const t of ["I pull you closer", "Can we watch the Lions game together today?", "da fuck?", "hey"]) assert.equal(voiceMod.isWhisperJunk(t), false, t);
+});
+
+test("padMp3Silence: silent MPEG-1 Layer III frames after the ID3 tag, in the file's format", () => {
+  const id3 = [0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 2, 0xaa, 0xbb];
+  const frame = new Array(417).fill(1); frame[0] = 0xff; frame[1] = 0xfb; frame[2] = 0x90; frame[3] = 0xc0;
+  const input = new Uint8Array([...id3, ...frame]);
+  const out = voiceMod.padMp3Silence(input, 500);
+  const frames = Math.round(0.5 * 44100 / 1152);
+  assert.equal(out.length, input.length + frames * 417);
+  assert.deepEqual([...out.slice(0, 12)], id3, "the tag stays first");
+  assert.deepEqual([...out.slice(12, 16)], [0xff, 0xfb, 0x90, 0xc0], "a silent frame in the same format");
+  assert.equal(out[16], 0);
+  assert.deepEqual([...out.slice(12 + frames * 417, 16 + frames * 417)], [0xff, 0xfb, 0x90, 0xc0], "her audio follows");
+  const junk = new Uint8Array([1, 2, 3, 4, 5]);
+  assert.deepEqual(voiceMod.padMp3Silence(junk), junk, "not an mp3: unchanged");
+});

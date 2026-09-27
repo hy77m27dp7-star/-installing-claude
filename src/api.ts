@@ -52,7 +52,7 @@ import { subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from "./pu
 import { getTimeline } from "./timeline";
 import { listVoiceprints, runVoiceprint } from "./voiceprint";
 import { exportCharacterJson, exportCharacterMarkdown } from "./exportCharacter";
-import { transcribe } from "./voice";
+import { transcribe, isWhisperJunk } from "./voice";
 import { safeErrorMessage } from "./providers/types";
 // v3 modules (SPEC_V3 Build lanes M1, M2, M4). Imported by path and by the export names the
 // spec fixes; nothing here is defined by this file.
@@ -1142,7 +1142,7 @@ route("POST", "/api/conversations/:id/voice", async (c) => {
     if (e instanceof ProviderError) throw providerToApi(e);
     throw e;
   }
-  if (!transcript) {
+  if (!transcript || isWhisperJunk(transcript)) {
     await deleteKeys(c.env, [key]);
     throw new ApiHttpError(422, "empty_transcript", "nothing was heard in the recording", true);
   }

@@ -331,6 +331,59 @@ export interface VoiceNoteArgs {
   actor?: string;
 }
 
+// 2026-09-27: on the hands-free call, silence and room noise came back from Whisper as
+// "Продолжение следует..." ("to be continued") and "ん ん ん", and she answered them. Its
+// known inventions, and a line that is mostly not Latin letters, are no line at all.
+const WHISPER_JUNK_RE = /^(?:продолжение следует|субтитры|редактор субтитров|thank you(?: so much)? for watching|thanks for watching|please subscribe|subtitles by|amara\.org|you|bye)[\s.!…]*$/i;
+export function isWhisperJunk(text: string): boolean {
+  const t = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return true;
+  if (WHISPER_JUNK_RE.test(t) || /продолжение следует|субтитр|amara\.org|字幕/i.test(t)) return true;
+  const letters = t.match(/\p{L}/gu) ?? [];
+  if (!letters.length) return true;
+  const latin = letters.filter((c) => /[A-Za-z\u00C0-\u024F]/.test(c)).length;
+  return latin / letters.length < 0.5;
+}
+
+// 2026-09-27: her first word was eaten on playback (the output device wakes a beat late; the
+// file itself starts speaking at 0.1 s). Half a second of silent MPEG-1 Layer III frames goes
+// in front of the audio, after any ID3 tag and any Xing/Info frame, in the file's own format.
+// A file that is not MPEG-1 Layer III is returned unchanged.
+const MP3_BITRATES = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+const MP3_RATES = [44100, 48000, 32000];
+export function padMp3Silence(input: Uint8Array | ArrayBuffer, ms = 500): Uint8Array {
+  const buf = input instanceof Uint8Array ? input : new Uint8Array(input);
+  let at = 0;
+  if (buf.length > 10 && buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) {
+    at = 10 + (((buf[6]! & 0x7f) << 21) | ((buf[7]! & 0x7f) << 14) | ((buf[8]! & 0x7f) << 7) | (buf[9]! & 0x7f));
+  }
+  const frameAt = (i: number): { len: number; header: number[] } | null => {
+    if (i + 4 > buf.length || buf[i] !== 0xff || (buf[i + 1]! & 0xfe) !== 0xfa) return null; // MPEG-1, Layer III
+    const bi = buf[i + 2]! >> 4;
+    const si = (buf[i + 2]! >> 2) & 0x03;
+    if (bi <= 0 || bi >= 15 || si >= 3) return null;
+    const pad = (buf[i + 2]! >> 1) & 0x01;
+    return { len: Math.floor((144 * MP3_BITRATES[bi]! * 1000) / MP3_RATES[si]!) + pad, header: [buf[i]!, buf[i + 1]!, buf[i + 2]!, buf[i + 3]!] };
+  };
+  const first = frameAt(at);
+  if (!first) return buf;
+  let insert = at;
+  const mono = (first.header[3]! >> 6) === 3;
+  const tagAt = at + 4 + (mono ? 17 : 32);
+  const tag = String.fromCharCode(...buf.slice(tagAt, tagAt + 4));
+  if (tag === "Xing" || tag === "Info") insert = at + first.len;
+  const header = [first.header[0]!, first.header[1]!, first.header[2]! & ~0x02, first.header[3]!];
+  const bi = header[2]! >> 4;
+  const si = (header[2]! >> 2) & 0x03;
+  const len = Math.floor((144 * MP3_BITRATES[bi]! * 1000) / MP3_RATES[si]!);
+  const frames = Math.max(1, Math.round((ms / 1000) * MP3_RATES[si]! / 1152));
+  const out = new Uint8Array(buf.length + frames * len);
+  out.set(buf.subarray(0, insert), 0);
+  for (let f = 0; f < frames; f++) out.set(header, insert + f * len);
+  out.set(buf.subarray(insert), insert + frames * len);
+  return out;
+}
+
 // The whole after-the-response job: synthesize, store voice/<messageId>.mp3, point the
 // message at it, record the run. Best effort: any failure is logged by class, written as
 // a failed run, and the text message stands untouched. Returns the key or null.
@@ -347,7 +400,8 @@ export async function attachVoiceNote(env: Env, db: D1Database, settings: Settin
     const chars = provider === "elevenlabs" && typeof r.chars === "number" ? r.chars : 0;
     const costMicro = provider === "elevenlabs" ? elevenLabsNoteCostMicro(chars, elevenLabsSettingsOf(settings).ttsPricePer1kChars) : 0;
     const key = VOICE_PREFIX + args.messageId + ".mp3";
-    await env.MEDIA.put(key, r.mp3, { httpMetadata: { contentType: "audio/mpeg" } });
+    const mp3 = padMp3Silence(r.mp3 as Uint8Array | ArrayBuffer);
+    await env.MEDIA.put(key, mp3, { httpMetadata: { contentType: "audio/mpeg" } });
     // Only her message, and only once: a second note for the same message is dropped.
     const res = await db
       .prepare("UPDATE messages SET audio_key = ?1 WHERE id = ?2 AND role = 'assistant' AND audio_key IS NULL")

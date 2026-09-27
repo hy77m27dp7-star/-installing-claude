@@ -2799,8 +2799,10 @@ async function sendVoice(blob, mime, opts) {
     // Dirty talk call: a reply that is not spoken hands the turn straight back to him.
     if (state.dt && state.dt.on && !(r && r.spoken === true)) setTimeout(() => dtListen(state.dt), 1500);
   } catch (e) {
-    showError(e.code || "error", false);
-    if (state.dt && state.dt.on) setTimeout(() => dtListen(state.dt), 1500);
+    // On the call, a recording with nothing in it is not an error: keep listening.
+    const onCall = state.dt && state.dt.on;
+    if (!(onCall && e && e.code === "empty_transcript")) showError(e.code || "error", false);
+    if (onCall) setTimeout(() => dtListen(state.dt), e && e.code === "empty_transcript" ? 100 : 1500);
   } finally {
     setInFlight(false);
   }
@@ -2814,7 +2816,9 @@ async function sendVoice(blob, mime, opts) {
 // (waitForSpoken plays it), and when she finishes it listens again. Hang up ends it.
 const DT_INTIMATE_RE = /\b(?:kiss(?:ing|ed|es)?|making out|make out|undress(?:ing|ed)?|naked|bra|shirt (?:off|open|up)|under (?:my|her|his|your) shirt|in (?:my |her |his |the )?bed|on (?:my|her|his|your) lap|hot and heavy|breathing hard|straddl\w*|sex|fuck\w*|sleep(?:ing)? together|bedroom|hands? (?:on|under) (?:my|her|his|your))\b/i;
 const DT_QUIET_MS = 1300;
-const DT_LEVEL = 0.035;
+const DT_LEVEL = 0.045;
+// At least this much of him above the level before a recording counts as speech.
+const DT_VOICED_MS = 400;
 
 // Her own ElevenLabs voice is set up: every call is the hands-free loop in her voice (the
 // realtime call's stock voice is the fallback only).
@@ -2886,6 +2890,7 @@ function dtListen(dt) {
     return;
   }
   dt.chunks = [];
+  dt.voicedMs = 0;
   dt.heard = false;
   dt.quietSince = 0;
   dt.startedAt = Date.now();
@@ -2902,7 +2907,11 @@ function dtListen(dt) {
     for (const v of buf) { const x = (v - 128) / 128; sum += x * x; }
     const level = Math.sqrt(sum / buf.length);
     const now = Date.now();
-    if (level > DT_LEVEL) { dt.heard = true; dt.quietSince = 0; }
+    if (level > DT_LEVEL) {
+      dt.voicedMs = (dt.voicedMs || 0) + 100;
+      if (dt.voicedMs >= DT_VOICED_MS) dt.heard = true;
+      dt.quietSince = 0;
+    }
     else if (dt.heard && !dt.quietSince) dt.quietSince = now;
     if ((dt.heard && dt.quietSince && now - dt.quietSince > DT_QUIET_MS) || now - dt.startedAt > MAX_VOICE_MS) {
       clearInterval(dt.poll);
