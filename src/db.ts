@@ -169,6 +169,14 @@ export const DEFAULT_SETTINGS: Settings = {
   hygieneEnabled: true,
   worldShown: 6,
   knownArtistsShown: 40,
+  // Dirty talk mode (migration 0010): Llama 4 Scout wrote the explicit tests best of the
+  // three Workers AI models tried (2026-09-26); the main performer comes back when the
+  // scene ends. Voice and narration need an ElevenLabs voice (never the generic one).
+  intimateEnabled: true,
+  intimateProvider: "workersai",
+  intimateModel: "@cf/meta/llama-4-scout-17b-16e-instruct",
+  intimateVoice: true,
+  intimateNarrate: true,
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {

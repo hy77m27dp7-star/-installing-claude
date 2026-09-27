@@ -119,5 +119,10 @@
   "sentWindowDays": 7,
   "hygieneEnabled": true,
   "worldShown": 6,
-  "knownArtistsShown": 40
+  "knownArtistsShown": 40,
+  "intimateEnabled": true,
+  "intimateProvider": "workersai",
+  "intimateModel": "@cf/meta/llama-4-scout-17b-16e-instruct",
+  "intimateVoice": true,
+  "intimateNarrate": true
 }

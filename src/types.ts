@@ -248,6 +248,14 @@ export interface Settings {
   hygieneEnabled: boolean;
   worldShown: number;
   knownArtistsShown: number;
+  // Dirty talk mode (2026-09-27): an intimate Together scene she chose runs on its own
+  // performer (the explicit-capable one), her lines there are spoken in her voice, and her
+  // asterisk actions are narrated in the first person.
+  intimateEnabled: boolean;
+  intimateProvider: ProviderName;
+  intimateModel: string;
+  intimateVoice: boolean;
+  intimateNarrate: boolean;
 }
 
 export interface ConversationRow {
@@ -819,6 +827,9 @@ export interface TurnResponse {
   flags: Flag[];
   imagePending: boolean;
   replayed: boolean;
+  // Dirty talk mode: her line is being spoken in her voice; the audio lands on
+  // /media/audio/<assistantMessage.id> a few seconds after this response.
+  spoken?: boolean;
 }
 
 export interface ApiError {

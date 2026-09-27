@@ -1718,8 +1718,44 @@ function handleTurnResponse(r, id) {
     const deliverAt = a.deliver_at || a.deliverAt || r.deliverAt || null;
     if (futureIso(deliverAt)) scheduleDelivery({ ...a, deliver_at: deliverAt }, seq);
     else arrive(a, seq);
+    if (r.spoken === true && a.id) waitForSpoken(a.id, id);
   }
   scrollBottom();
+}
+
+// Dirty talk mode: her line is spoken in her own voice; the audio lands a few seconds after
+// the reply. Wait for it (up to 45 s), put the voice row on her message and play it.
+async function waitForSpoken(messageId, conversationId) {
+  const src = "/media/audio/" + encodeURIComponent(messageId);
+  for (let i = 0; i < 45; i++) {
+    await new Promise((res) => setTimeout(res, 1000));
+    if (state.currentId !== conversationId) return;
+    const el = findMessageEl(messageId);
+    if (!el) continue;
+    let ok = false;
+    try {
+      const res = await fetch(src, { headers: { Range: "bytes=0-1" }, credentials: "same-origin", cache: "no-store" });
+      ok = res.ok;
+    } catch {
+      ok = false;
+    }
+    if (!ok) continue;
+    let row = el.querySelector(".voice-note");
+    if (!row) {
+      row = voiceNote(messageId);
+      const meta = el.querySelector(".meta");
+      if (meta) el.insertBefore(row, meta);
+      else el.append(row);
+    }
+    const audio = row.querySelector("audio");
+    if (!audio) return;
+    const other = state.voicePlaying;
+    if (other && other !== audio && !other.paused) other.pause();
+    state.voicePlaying = audio;
+    const p = audio.play();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+    return;
+  }
 }
 
 // ------------------------------------------------------------ tastings (v3 HH)

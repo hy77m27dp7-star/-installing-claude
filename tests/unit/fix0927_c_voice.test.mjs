@@ -50,8 +50,10 @@ test("the prompt's rhythm cue reads voiceCueAllowed with the scene mode", () => 
 test("commitReply decides the note with the scene the reply was written in and hands that to afterReply", () => {
   const c = src("chat");
   assert.ok(/const together = assembled\.state\.mode === "together";\n\s+const wantsVoice = voiceWanted\(settings, chosen\.voice, together\);/.test(c));
-  assert.ok(/REPLY_TOGETHER\.set\(response, together\);\n\s+return response;/.test(c));
-  assert.equal((c.match(/attachVoiceNote\(/g) ?? []).length, 1, "one place makes a note");
+  assert.ok(/REPLY_TOGETHER\.set\(response, together\);\n\s+REPLY_INTIMATE\.set\(response, [^\n]+\);\n\s+return response;/.test(c));
+  // Two callers since dirty talk mode (2026-09-27): the voice note, and the spoken line of an
+  // intimate scene (her own ElevenLabs voice only), in the same afterReply, one or the other.
+  assert.equal((c.match(/attachVoiceNote\(/g) ?? []).length, 2, "the note and the spoken line");
 });
 
 // afterReply with a response it has not seen (the fallback reads the current scene).

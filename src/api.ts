@@ -746,6 +746,12 @@ export function validateSettingsPatch(body: Body): Partial<Settings> {
   if (v.hygieneEnabled !== undefined) boolSetting(v, "hygieneEnabled", p);
   if (v.worldShown !== undefined) p.worldShown = int(v.worldShown, "worldShown", 0, 20);
   if (v.knownArtistsShown !== undefined) p.knownArtistsShown = int(v.knownArtistsShown, "knownArtistsShown", 0, 200);
+  // Dirty talk mode (0010).
+  if (v.intimateEnabled !== undefined) boolSetting(v, "intimateEnabled", p);
+  if (v.intimateProvider !== undefined) p.intimateProvider = oneOf(v.intimateProvider, PROVIDERS, "intimateProvider");
+  if (v.intimateModel !== undefined) p.intimateModel = reqString(v, "intimateModel", 200).trim();
+  if (v.intimateVoice !== undefined) boolSetting(v, "intimateVoice", p);
+  if (v.intimateNarrate !== undefined) boolSetting(v, "intimateNarrate", p);
   return p as Partial<Settings>;
 }
 

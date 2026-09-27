@@ -89,7 +89,9 @@ test("the ledger's order: 0008 sorts after 0007 and nothing sorts after 0008", (
   if (idx < 0) return;
   assert.equal(files[idx - 1], "0007_his_face.sql");
   const after = files.slice(idx + 1);
-  assert.ok(after.length === 0 || (after.length === 1 && after[0] === "0009_v5.sql"), "0008 is the last v4 migration; only v5's 0009 sorts after it: " + after.join(", "));
+  // 2026-09-27: dirty talk mode's 0010 (settings only) follows v5's 0009.
+  const allowed = ["0009_v5.sql", "0010_dirty_talk.sql"];
+  assert.ok(after.every((f, i) => f === allowed[i]), "0008 is the last v4 migration; only 0009 and 0010 sort after it: " + after.join(", "));
 });
 
 test("the frozen migrations 0001 to 0007 match git HEAD", (tc) => {

@@ -34,7 +34,7 @@
 // once and holds a held scene's first weather; the provenance carries the clock, the time
 // since, the rhythm and the ids of every v5 section that rode.
 import { assembleContext, keywords } from "./context";
-import { SYSTEM_SEPARATOR, isInferredFact, moodPhase, sceneMode } from "./prompt";
+import { SYSTEM_SEPARATOR, intimateScene, isInferredFact, moodPhase, sceneMode } from "./prompt";
 import { holdWeatherStmt, timeSinceSection } from "./clock";
 import { beatLines, beatLinesByWant } from "./arcs";
 import { sentForCheck } from "./honest";
@@ -51,6 +51,8 @@ import { computeDeliverAt } from "./life";
 import { contextStmt } from "./provenance";
 import { resolveMediaTitle } from "./media";
 import { attachVoiceNote, voiceWanted } from "./voice";
+import { spokenText } from "./narrate";
+import { elevenLabsVoiceConfigured } from "./providers/elevenlabs";
 import type { ImageRef } from "./vision";
 import { extractProposals } from "./proposals";
 import { assertBudget, costMicro, estimateUsd } from "./budget";
@@ -134,6 +136,29 @@ export interface TurnOptions {
   // photos ride only when both performers can see; otherwise neither side gets them and
   // the section carries no attached-photos line.
   tastingPerformer?: Performer;
+}
+
+// Dirty talk mode: whether the scene record says an intimate Together scene she chose is
+// running (prompt.ts intimateScene, the same test that adds IN BED to her prompt). A read
+// that fails answers no: the main performer.
+export async function intimateNow(db: D1Database): Promise<boolean> {
+  try {
+    const scene = await getCurrentState<SceneState>(db, "scene");
+    return !!scene && !!scene.state && intimateScene(scene.state);
+  } catch {
+    return false;
+  }
+}
+
+// The performer for this turn: the intimate one while an intimate scene runs, the mode is
+// on, it is named and its provider is configured; the main performer otherwise.
+export function pickPerformer(env: Env, settings: Settings, intimate: boolean): Performer {
+  const main: Performer = { provider: settings.provider, model: settings.model };
+  if (!intimate || settings.intimateEnabled === false) return main;
+  const provider = settings.intimateProvider;
+  const model = typeof settings.intimateModel === "string" ? settings.intimateModel.trim() : "";
+  if (!provider || !model || !providerConfigured(env, provider)) return main;
+  return { provider, model };
 }
 
 // Who generates: the live performer by default, the tasting performer for side B.
@@ -619,10 +644,14 @@ export async function prepareTurn(
   // tasting turn, the page's Retry, an /open turn, a first text, a voice turn).
   const tastingReplay = replay ? null : await pendingTastingGate(db, conversationId, key, tasting, pickId);
 
-  const performer: Performer = { provider: settings.provider, model: settings.model };
+  // Dirty talk mode (2026-09-27): an intimate Together scene she chose runs on the intimate
+  // performer (Anthropic and OpenAI steer away from explicit scenes); the main performer
+  // comes back the turn the scene stops reading as one. A tasting keeps its two performers.
+  const intimate = !tasting && await intimateNow(db);
+  const performer: Performer = pickPerformer(env, settings, intimate);
   const generates = !replay && !tastingReplay && !pickId;
-  if (generates && !providerConfigured(env, settings.provider)) {
-    throw new ApiHttpError(503, "provider_not_configured", `${settings.provider} is not configured`, false);
+  if (generates && !providerConfigured(env, performer.provider)) {
+    throw new ApiHttpError(503, "provider_not_configured", `${performer.provider} is not configured`, false);
   }
 
   // 4. context (read only), then 3. budget from the real prompt size; nothing is written yet
@@ -633,14 +662,14 @@ export async function prepareTurn(
     opener,
     env,
     hisFace: opts?.hisFace,
-    ...(sideB ? { performers: [performer, sideB] } : {}),
+    performers: sideB ? [performer, sideB] : [performer],
   });
   const statePart = opener ? assembled.systemParts.state + SYSTEM_SEPARATOR + openerBlock(openerNote) : assembled.systemParts.state;
   const system = assembled.systemParts.prefix + SYSTEM_SEPARATOR + statePart;
   const inputChars = system.length + assembled.messages.reduce((n, m) => n + m.content.length, 0);
   let estimate = 0;
   if (generates) {
-    estimate = estimateUsd(settings, settings.model, inputChars, settings.maxTokens);
+    estimate = estimateUsd(settings, performer.model, inputChars, settings.maxTokens);
     await assertBudget(db, settings, estimate);
   }
 
@@ -648,7 +677,7 @@ export async function prepareTurn(
     system,
     systemParts: { prefix: assembled.systemParts.prefix, state: statePart },
     messages: assembled.messages,
-    model: settings.model,
+    model: performer.model,
     maxTokens: settings.maxTokens,
     temperature: settings.temperature,
     effort: settings.effort,
@@ -1386,6 +1415,7 @@ export async function commitReply(
     replayed: false,
   };
   REPLY_TOGETHER.set(response, together);
+  REPLY_INTIMATE.set(response, !!assembled.state.scene && intimateScene(assembled.state.scene));
   return response;
 }
 
@@ -1394,6 +1424,8 @@ export async function commitReply(
 // response) never makes a voice note for one. A response it does not know reads the current
 // scene before any note is made.
 const REPLY_TOGETHER = new WeakMap<TurnResponse, boolean>();
+// Dirty talk mode: whether the reply was written inside an intimate scene she chose.
+const REPLY_INTIMATE = new WeakMap<TurnResponse, boolean>();
 
 async function sceneIsTogether(db: D1Database): Promise<boolean> {
   try {
@@ -1415,7 +1447,21 @@ export function afterReply(env: Env, ctx: ExecutionContext, db: D1Database, sett
   // Fix 2026-09-27: never a voice note in a Together scene (her [voice] marker was already
   // stripped from the text; only the note is not made).
   const together = REPLY_TOGETHER.get(response);
-  if (together !== true && voiceWanted(settings, voice)) {
+  // Dirty talk mode: in an intimate scene every line of hers is spoken in her own voice
+  // (ElevenLabs only, never the generic voice), her actions narrated; the page waits for the
+  // audio and plays it. This is not a voice note: voiceMode does not gate it.
+  const spokenLine = REPLY_INTIMATE.get(response) === true && settings.intimateVoice !== false && elevenLabsVoiceConfigured(env, settings);
+  if (spokenLine) {
+    const tags = /^eleven_v3/.test(String(settings.elevenLabsModel ?? ""));
+    const speech = spokenText(assistantRow.content, settings.intimateNarrate !== false, { tags });
+    if (speech) {
+      response.spoken = true;
+      ctx.waitUntil(
+        attachVoiceNote(env, db, { ...settings, voiceProvider: "elevenlabs" }, { messageId: assistantRow.id, conversationId: response.conversationId, text: speech, actor })
+          .catch((e: unknown) => console.warn("spoken line failed", errorClass(e))),
+      );
+    }
+  } else if (together !== true && voiceWanted(settings, voice)) {
     const known = together === false;
     ctx.waitUntil(
       (known ? Promise.resolve(false) : sceneIsTogether(db))

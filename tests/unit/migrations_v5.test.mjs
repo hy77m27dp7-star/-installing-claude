@@ -97,16 +97,16 @@ t("0009_v5.sql never UPDATEs, DELETEs or DROPs; every statement ends in a semico
   assert.ok(sql.length < 100_000);
 });
 
-test("the ledger's order: 0009 sorts after 0008 and is the last", () => {
+test("the ledger's order: 0009 sorts after 0008; only 0010 (dirty talk, settings only) follows it", () => {
   const idx = files.indexOf("0009_v5.sql");
   if (idx < 0) return;
   assert.equal(files[idx - 1], "0008_v4.sql");
-  assert.equal(idx, files.length - 1);
+  assert.deepEqual(files.slice(idx + 1), files.includes("0010_dirty_talk.sql") ? ["0010_dirty_talk.sql"] : []);
 });
 
 test("0001 to 0008 match git HEAD (the generated 0002 and 0005b are the build's)", (tc) => {
   for (const f of files) {
-    if (f === "0009_v5.sql" || f === "0002_seed.sql" || f === "0005b_voicebank_seed.sql") continue;
+    if (f === "0009_v5.sql" || f === "0010_dirty_talk.sql" || f === "0002_seed.sql" || f === "0005b_voicebank_seed.sql") continue;
     let committed;
     try {
       committed = execFileSync("git", ["show", "HEAD:migrations/" + f], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
