@@ -41,6 +41,7 @@ test("isModelRefusal: the two live refusals and a disclaimer, never her own word
   assert.equal(isModelRefusal("I can't help with that."), true);
   assert.equal(isModelRefusal("I'm here to support information and tasks within my knowledge domain. However, I can't engage in explicit or NSFW conversations. If you have questions on other topics, feel free to ask."), true);
   assert.equal(isModelRefusal("As an AI, I cannot continue this."), true);
+  assert.equal(isModelRefusal("I'm not going to engage in that conversation. Would you like to discuss something else?"), true);
   assert.equal(isModelRefusal("*I arch my back* dont stop, i love it when you do that"), false);
   assert.equal(isModelRefusal("i cant help it, you feel so good"), false);
 });
