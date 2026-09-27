@@ -26,8 +26,20 @@
 // effort; her [clip: ...] line starts a clip bound to the message after the reply is
 // committed (the message carries it in image_id / image_status, a photo or a clip, never
 // both), or is stripped with the flag clip_unavailable when clips are off or have no key.
+//
+// v5 (SPEC_V5): the check context carries what she sent (denied_send), her named people
+// (name_drift), this turn's rhythm (rhythm_missed) and the artists he knows or did not like
+// (the flag song_known_artist); two retry rules; her real-mode delay only while apart (in a
+// together scene she is in the room with him); the batch stamps the missing-song notice
+// once and holds a held scene's first weather; the provenance carries the clock, the time
+// since, the rhythm and the ids of every v5 section that rode.
 import { assembleContext, keywords } from "./context";
-import { SYSTEM_SEPARATOR, moodPhase } from "./prompt";
+import { SYSTEM_SEPARATOR, isInferredFact, moodPhase } from "./prompt";
+import { holdWeatherStmt, timeSinceSection } from "./clock";
+import { beatLines, beatLinesByWant } from "./arcs";
+import { sentForCheck } from "./honest";
+import { relationNorm } from "./world";
+import { artistNorm, isListedArtist, songToldStmt } from "./songs";
 import { getTextProvider, providerConfigured } from "./providers/index";
 import { repairText, runChecks } from "./checks";
 import { photoRequestRow } from "./images";
@@ -95,6 +107,9 @@ export const RETRY_RULES: Record<string, string> = {
   exemplar_verbatim: "do not reuse the example lines; say your own thing in your own words",
   ask_nag: "you already asked; do not bring it up again, let it go",
   third_person_action: "in your asterisk actions he is \"you\" and you are \"I\" or \"my\" (*looks at you*, *bites my lip*), never him, he, his, her or she; you are talking to him",
+  // v5 (sections 6 and 8)
+  denied_send: "you did send it (it is under WHAT YOU HAVE SENT HIM); never say you did not; own it, or say something true about it",
+  name_drift: "the people in your life keep their names; use the name they already have (see WHO AND WHERE)",
 };
 
 export interface TurnOptions {
@@ -322,6 +337,15 @@ export interface Draft {
   clip?: string | null;
 }
 
+function songIsListed(song: SongRef, listed: string[]): boolean {
+  try {
+    return isListedArtist(song, new Set(listed));
+  } catch (e) {
+    console.warn("song_known_artist skipped", errorClass(e));
+    return false;
+  }
+}
+
 // Markers off, checks on, mechanical repair applied when the checks asked for one. The
 // two v2 flags (song named twice, both callbacks forced in) never change the action.
 function evaluate(call: CallOk, checkCtx: CheckContext, callbacks: PromptCallback[]): Draft {
@@ -344,6 +368,11 @@ function evaluate(call: CallOk, checkCtx: CheckContext, callbacks: PromptCallbac
   }
   if (songNamedTwice(clean, song)) {
     checks.flags.push({ code: "song_marker_dup", severity: "flag", detail: "the prose names the song the marker sends" });
+  }
+  // v5 (section 9): her pick is an artist he already knows or did not like. A flag for his
+  // eye; SONGS AND HIM is what steers her.
+  if (song && checkCtx.knownArtists && checkCtx.knownArtists.length && songIsListed(song, checkCtx.knownArtists)) {
+    checks.flags.push({ code: "song_known_artist", severity: "flag", detail: "her pick is an artist he already knows or did not like" });
   }
   if (callbacks.length >= 2 && callbacks.slice(0, 2).every((cb) => callbackReferenced(clean, cb))) {
     checks.flags.push({ code: "callback_forced", severity: "flag", detail: "both offered callbacks landed in one reply" });
@@ -489,6 +518,50 @@ export interface Prepared {
   stateText: string;
 }
 
+// The v5 half of the check context (SPEC_V5 "Types"), each part a nicety.
+function v5CheckContext(assembled: AssembledContext): Pick<CheckContext, "sent" | "people" | "rhythm" | "knownArtists"> {
+  const state = assembled.state;
+  const out: Pick<CheckContext, "sent" | "people" | "rhythm" | "knownArtists"> = {};
+  if (state.sent && state.sent.length) {
+    const items = state.sent;
+    const storyNow = new Date(Date.parse(assembled.storyNow));
+    const tz = state.life.tz;
+    try {
+      out.sent = sentForCheck(items, Number.isFinite(storyNow.getTime()) ? storyNow : new Date(), tz, assembled.clock ?? null);
+    } catch (e) {
+      console.warn("check context: sent skipped", errorClass(e));
+    }
+  }
+  if (state.world && state.world.people.length) {
+    out.people = state.world.people
+      .filter((p) => p && p.named === 1 && typeof p.name === "string" && p.name.trim())
+      .map((p) => ({ name: p.name.trim(), relation: safeRelation(p.relation), named: true }));
+  }
+  if (state.rhythm) out.rhythm = { size: state.rhythm.size, action: state.rhythm.action };
+  if (state.songs) {
+    const names = [...state.songs.known, ...state.songs.disliked];
+    const norms: string[] = [];
+    for (const n of names) {
+      try {
+        const k = artistNorm(n);
+        if (k) norms.push(k);
+      } catch (e) {
+        console.warn("check context: artist skipped", errorClass(e));
+      }
+    }
+    if (norms.length) out.knownArtists = Array.from(new Set(norms));
+  }
+  return out;
+}
+
+function safeRelation(r: unknown): string | null {
+  try {
+    return relationNorm(r);
+  } catch {
+    return null;
+  }
+}
+
 // Everything before the model call: validation, the idempotency lookup, the pending-tasting
 // gate, the provider check, the context (read only), the budget from the real prompt size.
 // Nothing is written. Throws the same errors a turn always has.
@@ -597,6 +670,9 @@ export async function prepareTurn(
     recentSignatures: state.recentSignatures ?? [],
     opener,
     hisText: opener ? "" : userText,
+    // v5: what she sent (denied_send, on the story clock), her named people (name_drift),
+    // this turn's rhythm (rhythm_missed), the listed artists (song_known_artist).
+    ...v5CheckContext(assembled),
   };
 
   return {
@@ -813,12 +889,14 @@ function provenance(args: {
   callId: string | null;
   // v3.1 (JJ): how many of his reference photos rode on the call (0 = none).
   hisFaceShown: number;
+  // v5 (section 1): the story instant the turn was built at (ISO).
+  storyNow?: string;
 }): Record<string, unknown> {
   const s = args.state;
   const recall = s.recall ?? null;
   const g = s.grounding;
   const look = s.hisLook ?? null;
-  const mood = moodPhase(s.relationship, args.now, s.moodDaysDefault, s.relationshipSince ?? null);
+  const mood = provenanceValue("mood phase", () => moodPhase(s.relationship, args.now, s.moodDaysDefault, s.relationshipSince ?? null, s.clock ?? null), "gone" as ReturnType<typeof moodPhase>);
   return {
     promptVersion: args.promptVersion,
     provider: args.performer.provider,
@@ -870,6 +948,108 @@ function provenance(args: {
       shown: args.hisFaceShown > 0,
       photos: Math.max(0, args.hisFaceShown),
     },
+    // v5 (SPEC_V5 "The prompt"): ids and counts only, never text.
+    ...v5Provenance(s, args.storyNow ?? args.now.toISOString()),
+  };
+}
+
+function provenanceValue<T>(name: string, fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch (e) {
+    console.warn("provenance: " + name + " skipped", errorClass(e));
+    return fallback;
+  }
+}
+
+function finiteOr(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+function minutesOf(ms: number | null | undefined): number | null {
+  return typeof ms === "number" && Number.isFinite(ms) ? Math.round(ms / 60000) : null;
+}
+
+// The v5 provenance fields: the clock, the time since, the rhythm, and the ids of what rode
+// in HOW YOU READ HIM, WHAT YOU WANT (the beat runs), WHO AND WHERE, WHAT YOU HAVE SENT HIM,
+// SONGS AND HIM and the guesses sub-list. Each is computed the way its section renders.
+function v5Provenance(s: PromptState, storyNowIso: string): Record<string, unknown> {
+  const clock = s.clock ?? null;
+  const now = s.life && s.life.now instanceof Date ? s.life.now : new Date(Date.parse(storyNowIso));
+  const tz = s.life && s.life.tz ? s.life.tz : "America/New_York";
+  const opener = s.opener === true;
+  const mode = s.mode;
+
+  const t = s.timeSince ?? null;
+  const shown = t ? provenanceValue("time since", () => timeSinceSection(t, { mode, opener, minMinutes: finiteOr(s.gapLineMinMinutes, 120) }).trim().length > 0, false) : false;
+
+  // HOW YOU READ HIM: the reads the section lists (active at or above the minimum, highest
+  // first, at most viewsShown; the proven-wrong ones, at most two); none on an opener.
+  let viewIds: string[] = [];
+  if (s.views && !opener) {
+    const limit = Math.max(0, Math.trunc(finiteOr(s.viewsShown, 6)));
+    const min = finiteOr(s.viewMinConfidence, 0.4);
+    if (limit > 0) {
+      const active = s.views
+        .filter((v) => v && v.status === "active" && Number(v.confidence) >= min)
+        .slice()
+        .sort((a, b) => Number(b.confidence) - Number(a.confidence) || String(b.updated_at).localeCompare(String(a.updated_at)) || a.id.localeCompare(b.id))
+        .slice(0, limit)
+        .map((v) => v.id);
+      const wrong = (s.wrongViews ?? []).filter((v) => v && v.status === "proven_wrong").slice(0, 2).map((v) => v.id);
+      viewIds = [...active, ...wrong];
+    }
+  }
+
+  // WHAT YOU WANT: the runs whose line rode under a want the section shows.
+  const beatRunIds = provenanceValue("beat runs", () => {
+    const beats = s.beats ?? [];
+    const wants = s.wants ?? [];
+    if (!beats.length || !wants.length) return [] as string[];
+    const opts = { horizonDays: finiteOr(s.beatHorizonDays, 7), memoryDays: finiteOr(s.arcMemoryDays, 7), opener };
+    const byWant = beatLinesByWant(beats, now, tz, clock, opts);
+    const shownWants = new Set(wants.map((w) => w.id));
+    const out: string[] = [];
+    for (const v of beats) {
+      if (!v || !v.run || !v.beat) continue;
+      const wantId = v.beat.want_id || v.want?.id;
+      if (!wantId || !shownWants.has(wantId)) continue;
+      const lines = byWant.get(wantId);
+      const line = beatLines(v, now, tz, clock, opts)[0];
+      if (lines && line && lines.includes(line)) out.push(v.run.id);
+    }
+    return out;
+  }, [] as string[]);
+
+  // WHO AND WHERE: the picked people first, then places, at most worldShown lines.
+  let world = { personIds: [] as string[], placeIds: [] as string[] };
+  if (s.world) {
+    const limit = Math.max(0, Math.trunc(finiteOr(s.worldShown, 6)));
+    const personIds = s.world.picked.personIds.slice(0, limit);
+    const placeIds = s.world.picked.placeIds.slice(0, Math.max(0, limit - personIds.length));
+    world = { personIds, placeIds };
+  }
+
+  const sentIds = Array.from(new Set((s.sent ?? []).map((i) => i.messageId).filter((id): id is string => typeof id === "string" && id.length > 0)));
+  const songs = s.songs
+    ? { known: s.songs.known.length, disliked: s.songs.disliked.length, missingNotice: s.songs.missing ? s.songs.missing.messageId : null }
+    : { known: 0, disliked: 0, missingNotice: null };
+
+  return {
+    clock: {
+      enabled: clock ? clock.enabled : false,
+      frozen: clock ? clock.frozen : false,
+      storyNow: storyNowIso,
+      spanId: clock && clock.frozen && clock.open ? clock.open.id : null,
+    },
+    timeSince: { shown, hisAgoMin: minutesOf(t ? t.hisAgoMs : null), lastAgoMin: minutesOf(t ? t.lastAgoMs : null) },
+    rhythm: s.rhythm ?? null,
+    viewIds,
+    beatRunIds,
+    world,
+    sentIds,
+    songs,
+    inferredFactIds: s.justinFacts.filter(isInferredFact).map((f) => f.id),
   };
 }
 
@@ -1015,7 +1195,8 @@ export async function commitReply(
   let deliverAt: string | null = null;
   if (extra.deliverAt !== undefined) {
     deliverAt = extra.deliverAt;
-  } else if (!opener && settings.replyDelayMode === "real") {
+  } else if (!opener && settings.replyDelayMode === "real" && assembled.state.mode === "apart") {
+    // v5 (section 1, rule 7): in a together scene she is in the room with him; never delayed.
     const at = computeDeliverAt(assembled.state.life.threads, now, assembled.state.life.tz, clampDelayMinutes(settings.realDelayMaxMinutes), assistantId);
     if (at instanceof Date && Number.isFinite(at.getTime()) && at.getTime() > now.getTime()) deliverAt = at.toISOString();
   }
@@ -1079,6 +1260,7 @@ export async function commitReply(
     tasting,
     callId: null,
     hisFaceShown: assembled.hisFaceShown,
+    storyNow: assembled.storyNow,
   });
 
   // v3: the exemplar uses (AA), the memory touches and the recall row (BB), the asks she
@@ -1096,6 +1278,16 @@ export async function commitReply(
     }
     const askIds = askIdsBroughtUp(state, chosen.text);
     if (askIds.length) out.push(...stmtsOf("asks brought up", () => broughtUpStmts(db, askIds, at)));
+    // v5 (section 9): the missing-song notice rode on this turn; stamp it so it rides once.
+    const missing = state.songs && state.songs.missing ? state.songs.missing : null;
+    if (missing && missing.messageId) out.push(...stmtsOf("song told", () => [songToldStmt(db, missing.messageId, at)]));
+    // v5 (section 1): a held scene with no weather yet and this turn fetched some: hold it.
+    const clock = assembled.clock;
+    const weather = state.grounding ? state.grounding.weather : null;
+    if (clock && clock.enabled && clock.frozen && clock.open && !clock.open.weather_json && weather) {
+      const spanId = clock.open.id;
+      out.push(...stmtsOf("hold weather", () => [holdWeatherStmt(db, spanId, weather)]));
+    }
     return out;
   };
 

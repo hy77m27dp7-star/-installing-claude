@@ -12,6 +12,12 @@
 // v3 (SPEC_V3 "Export and import"): calls (EE), want log rows and asks (CC), corrections
 // (AA) and portrait approvals (DD) join the scroll. A v3 table that does not exist yet
 // (a database behind migration 0005) answers nothing, never a failure.
+//
+// v5 (SPEC_V5 "Export, import, the timeline"): a resolved dated step of hers (the owner's
+// run of a beat) joins the scroll at its due instant with the outcome words; never his part
+// in it. The timeline stays on the real clock (his display, not her memory: v5.1 deferred).
+import { outcomeWords } from "./arcs";
+import type { BeatOutcome } from "./arcs";
 import { listAssets, listHistory } from "./db";
 import { listMedia } from "./media";
 import type { LifeLog, LifeThread } from "./life";
@@ -19,7 +25,9 @@ import type { Env, HistoryRow, MediaRow, MessageRow, StateVersionRow, VisualAsse
 
 
 export type TimelineType = "history" | "photo" | "media" | "life" | "relationship" | "scene" | "first_text"
-  | "call" | "want" | "ask" | "correction" | "portrait";
+  | "call" | "want" | "ask" | "correction" | "portrait"
+  // v5
+  | "beat";
 
 export interface TimelineItem {
   // Unique on the timeline: "<type>:<row id>".
@@ -56,7 +64,7 @@ export const TIMELINE_MAX = 500;
 const TEXT_CHARS = 160;
 const THREAD_ROWS = 1000;
 const TYPE_ORDER: Record<TimelineType, number> = {
-  history: 0, relationship: 1, scene: 2, life: 3, photo: 4, media: 5, first_text: 6, call: 7, want: 8, ask: 9, correction: 10, portrait: 11,
+  history: 0, relationship: 1, scene: 2, life: 3, photo: 4, media: 5, first_text: 6, call: 7, want: 8, ask: 9, correction: 10, portrait: 11, beat: 12,
 };
 
 // ------------------------------------------------------------------ helpers
@@ -215,6 +223,28 @@ function portraitItems(assets: VisualAssetRow[]): TimelineItem[] {
     }));
 }
 
+// v5: a resolved owner run of one of her dated steps (the outcome and her note, never his
+// part or his note; those are his, not the scroll's).
+interface BeatRunLite { id: string; due_at: string; outcome: string | null; outcome_note: string | null; title: string }
+
+const BEAT_OUTCOME_SET: ReadonlySet<string> = new Set(["did_it", "missed", "went", "went_well", "went_badly", "chickened_out", "postponed"]);
+
+function beatItems(list: BeatRunLite[]): TimelineItem[] {
+  return list
+    .filter((r) => typeof r.outcome === "string" && BEAT_OUTCOME_SET.has(r.outcome))
+    .map((r) => {
+      const words = outcomeWords(r.outcome as BeatOutcome);
+      return item({
+        id: "beat:" + r.id,
+        at: r.due_at,
+        type: "beat",
+        title: r.title,
+        text: excerpt(words + (r.outcome_note && r.outcome_note.trim() ? ": " + r.outcome_note.trim() : "")),
+        link: "/state#wants",
+      });
+    });
+}
+
 function historyItems(list: HistoryRow[]): TimelineItem[] {
   return list.map((h) => item({
     id: "history:" + h.id,
@@ -327,7 +357,7 @@ export async function getTimeline(db: D1Database, _env: Env, opts: TimelineOptio
   // (life notes are placed at `occurred`, and a stand-in database evaluates no SQL).
   const cut = before ? before.iso : "9999-12-31T23:59:59.999Z";
 
-  const [history, assets, log, threads, versions, messages, media, calls, wantLog, wants, asks, corrections] = await Promise.all([
+  const [history, assets, log, threads, versions, messages, media, calls, wantLog, wants, asks, corrections, beatRuns] = await Promise.all([
     listHistory(db, "approved"),
     listAssets(db, "approved"),
     rows<LifeLog>(db, "SELECT * FROM life_log WHERE occurred < ?1 ORDER BY occurred DESC, created_at DESC LIMIT ?2", [cut, limit]),
@@ -349,6 +379,12 @@ export async function getTimeline(db: D1Database, _env: Env, opts: TimelineOptio
     rowsOrEmpty<WantLite>(db, "SELECT id, title FROM wants ORDER BY created_at DESC LIMIT ?1", [THREAD_ROWS]),
     rowsOrEmpty<AskLite>(db, "SELECT * FROM asks WHERE asked_at < ?1 ORDER BY asked_at DESC LIMIT ?2", [cut, limit]),
     rowsOrEmpty<CorrectionLite>(db, "SELECT * FROM corrections WHERE created_at < ?1 ORDER BY created_at DESC LIMIT ?2", [cut, limit]),
+    // v5 (a database behind 0009 answers nothing)
+    rowsOrEmpty<BeatRunLite>(
+      db,
+      "SELECT r.id AS id, r.due_at AS due_at, r.outcome AS outcome, r.outcome_note AS outcome_note, b.title AS title FROM beat_runs r JOIN arc_beats b ON b.id = r.beat_id WHERE r.reader = 'owner' AND r.status = 'resolved' AND r.due_at < ?1 ORDER BY r.due_at DESC LIMIT ?2",
+      [cut, limit],
+    ),
   ]);
 
   const all = [
@@ -362,6 +398,7 @@ export async function getTimeline(db: D1Database, _env: Env, opts: TimelineOptio
     ...askItems(asks),
     ...correctionItems(corrections),
     ...portraitItems(assets),
+    ...beatItems(beatRuns),
   ].filter((i) => {
     const t = ms(i.at);
     if (!Number.isFinite(t)) return false;

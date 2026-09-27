@@ -79,7 +79,7 @@ te("the */20 cron runs pushDueReplies before maybeTextFirst and returns both", (
 
 te("the */20 cron (review): the delayed-reply push runs with her quiet hours and never fails the tick; /api/push/latest takes only a reply that was held two minutes", () => {
   assert.ok(/inQuietHours\(p\.hour \* 60 \+ p\.minute, parseQuietHours\(settings\.herFirstQuietHours\)\)/.test(index), "quiet hours read in her timezone");
-  assert.ok(/pushDueReplies\(env, db, at, \{ quiet \}\)\.catch\(/.test(index), "a failure is caught, the first-text decision still runs");
+  assert.ok(/pushDueReplies\(env, db, at, \{ quiet(?:, frozen: clock\.frozen)? \}\)\.catch\(/.test(index), "a failure is caught, the first-text decision still runs (v5 adds frozen: clock.frozen)");
   assert.ok(/pushed_at IS NOT NULL AND pushed_at >= \?1 AND \(julianday\(deliver_at\) - julianday\(created_at\)\) \* 86400000 >= \?2/.test(api), "the skipped rows of a tick never win the tie");
   assert.ok(/redirect\("\/model\?spotify=" \+ spotifyCallbackCode\(e\) \+ "#spotify"\)/.test(api), "a refused Spotify callback goes back to the Model page, never a raw error page");
 });

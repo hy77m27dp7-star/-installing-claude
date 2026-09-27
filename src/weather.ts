@@ -295,6 +295,73 @@ export async function getWeather(_env: Env, db: D1Database, settings: WeatherSet
   return w;
 }
 
+// ------------------------------------------------------------------ v5: a past day's weather
+
+// The weather of one whole local day (SPEC_V5 section 1): what the nightly her-day step
+// keeps her day consistent with. Read once, never cached.
+export interface DayWeather {
+  day: string;
+  code: number;
+  words: string;
+  maxTemp: number;
+  minTemp: number;
+  precip: number;
+  units: WeatherUnits;
+}
+
+// Yesterday and today in her zone, daily values only.
+export function dayForecastUrl(lat: number, lon: number, tz: string, units: WeatherUnits): string {
+  const q = new URLSearchParams({
+    latitude: String(lat),
+    longitude: String(lon),
+    daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum",
+    past_days: "1",
+    forecast_days: "1",
+    timezone: tz && tz.trim() ? tz.trim() : DEFAULT_TZ,
+    temperature_unit: units === "celsius" ? "celsius" : "fahrenheit",
+  });
+  return FORECAST_URL + "?" + q.toString();
+}
+
+// The daily block: { daily: { time: ["2026-09-29", ...], weather_code: [..], temperature_2m_max: [..], ... } }.
+// Null when the day is not in it or its temperatures are missing.
+export function readDayWeather(json: unknown, day: string, units: WeatherUnits): DayWeather | null {
+  if (typeof json !== "object" || json === null) return null;
+  const daily = (json as { daily?: unknown }).daily;
+  if (typeof daily !== "object" || daily === null) return null;
+  const d = daily as Record<string, unknown>;
+  const times = Array.isArray(d.time) ? d.time : [];
+  const i = times.findIndex((t) => t === day);
+  if (i < 0) return null;
+  const at = (v: unknown): unknown => (Array.isArray(v) ? v[i] : undefined);
+  const max = at(d.temperature_2m_max);
+  const min = at(d.temperature_2m_min);
+  if (!finite(max) || !finite(min)) return null;
+  const codeRaw = at(d.weather_code);
+  const code = finite(codeRaw) ? Math.round(codeRaw) : -1;
+  const precipRaw = at(d.precipitation_sum);
+  return { day, code, words: wmoWords(code), maxTemp: max, minTemp: min, precip: finite(precipRaw) ? precipRaw : 0, units };
+}
+
+// Off -> null; the stub -> a fixed clear day; Open-Meteo -> one fetch within 3 s, null on any
+// failure or with no coordinates. No cache.
+export async function dayWeather(_env: Env, settings: WeatherSettings | null | undefined, day: string): Promise<DayWeather | null> {
+  const provider = weatherProviderOf(settings);
+  const units = weatherUnitsOf(settings);
+  if (provider === "off") return null;
+  if (provider === "stub") return { day, code: 0, words: "clear", maxTemp: 68, minTemp: 55, precip: 0, units };
+  const coords = herCoordinates(settings);
+  if (!coords) return null;
+  const tz = settings && typeof settings.timezone === "string" && settings.timezone.trim() ? settings.timezone.trim() : DEFAULT_TZ;
+  try {
+    const json = await fetchJson(dayForecastUrl(coords.lat, coords.lon, tz, units), FETCH_TIMEOUT_MS);
+    return readDayWeather(json, day, units);
+  } catch (e) {
+    console.warn("day weather skipped", e instanceof Error ? e.name : "error");
+    return null;
+  }
+}
+
 // Up to five places for a name, for the owner to pick from. The stub answers Stubtown
 // (none for a name starting "zzzz"); Open-Meteo otherwise. A failed call is a 502.
 // `count`: how many results to ask for (default GEOCODE_MAX; the places geocode asks for

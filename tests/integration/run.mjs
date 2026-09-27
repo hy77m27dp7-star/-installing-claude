@@ -21,6 +21,10 @@ const STATE_ARG = "tests/integration/.state";
 // blacklisted on the shared state by the v1 and v3 rejection checks.
 const STATE_ARG_V4 = "tests/integration/.state-v4";
 const STATE_DIR_V4 = STATE_DIR + "-v4";
+// v5 runs on its own fresh state too (see scenariosV5): the clock, the nightly pass and the
+// world are checked against the seed, not against what the earlier phases left.
+const STATE_ARG_V5 = "tests/integration/.state-v5";
+const STATE_DIR_V5 = STATE_DIR + "-v5";
 const STUB_ENV = { DEV_ACTOR_EMAIL, DEFAULT_PROVIDER: "stub", DEFAULT_IMAGE_PROVIDER: "stub" };
 
 const stamp = Date.now().toString(36);
@@ -2132,21 +2136,27 @@ async function scenariosV3(report) {
     assert.ok(!t.json.flags.some((f) => ["em_dash", "emoji", "markdown_structure"].includes(f.code)), JSON.stringify(t.json.flags));
   });
 
-  await report.check("PUT settings typoCueShare 0.05, then a conversation whose first turn key rolls typo_fix (computed with the same seed function) -> provenance.shapeCue typo_fix", async () => {
+  await report.check("PUT settings typoCueShare 0.05, then a conversation whose first turn key rolls typo_fix (computed with rhythmCue, the same seed) -> provenance.rhythm.extra and provenance.shapeCue typo_fix", async () => {
+    // v5 (SPEC_V5 section 5, "Tests added" 4): the rhythm cue replaced v3's shape cue; the
+    // typo extra is rolled from the same seed, and its share does not depend on voiceAllowed
+    // (voice sits after typo_fix in the extras table), so the prediction holds either way.
     const imperfection = await loadTs("imperfection");
-    assert.ok(imperfection && typeof imperfection.shapeCue === "function", "src/imperfection.ts loads under Node");
+    assert.ok(imperfection && typeof imperfection.rhythmCue === "function", "src/imperfection.ts loads under Node");
     await settingsPut({ typoCueShare: 0.05 });
     const day = new Date().toISOString().slice(0, 10);
+    const opts = { enabled: true, together: false, opener: false, intimate: false, voiceAllowed: true, typoShare: 0.05, substantive: false };
     let found = null;
     for (let i = 0; i < 400 && !found; i++) {
       const id = await newConversation("integration v3 cue " + i);
       const seed = day + ":" + id + ":cue:s1";
-      if (imperfection.shapeCue(seed, [], { voiceAllowed: true, typoShare: 0.05, enabled: true }) === "typo_fix") found = id;
+      const r = imperfection.rhythmCue(seed, [], opts);
+      if (r && r.extra === "typo_fix") found = id;
     }
     assert.ok(found, "a conversation whose first turn rolls typo_fix (about one in twenty)");
     const t = await turn(found, "hey", key("v3-cue-typo"));
     assert.equal(t.status, 200, t.text);
     const ctx = await contextOf(t.json.assistantMessage.id);
+    assert.ok(ctx.rhythm && ctx.rhythm.extra === "typo_fix", "rhythm: " + JSON.stringify(ctx.rhythm));
     assert.equal(ctx.shapeCue, "typo_fix", "shapeCue: " + JSON.stringify(ctx.shapeCue));
     await settingsPut({ typoCueShare: 0 });
   });
@@ -2943,6 +2953,21 @@ async function gateScenarios(report) {
     }
   });
 
+  await report.check("ACCESS_AUD set: the v5 routes are gated too -> 401", async () => {
+    for (const path of V5_ROUTES_GET) {
+      const r = await api("GET", path);
+      assert.equal(r.status, 401, path + " -> " + r.status + " " + r.text.slice(0, 100));
+    }
+    for (const path of V5_ROUTES_POST) {
+      const r = await api("POST", path, {});
+      assert.equal(r.status, 401, path + " -> " + r.status + " " + r.text.slice(0, 100));
+    }
+    for (const [method, path] of V5_ROUTES_OTHER) {
+      const r = await api(method, path, method === "DELETE" ? undefined : {});
+      assert.equal(r.status, 401, method + " " + path + " -> " + r.status + " " + r.text.slice(0, 100));
+    }
+  });
+
   await report.check("ACCESS_AUD set: v2 media paths, the timeline, the character export and the cron routes are gated -> 401", async () => {
     for (const path of ["/media/audio/m_nothing", "/media/inbox/m_nothing/0", "/media/library/md_nothing", "/api/timeline", "/api/export/character", "/api/export/character.md", "/api/drift", "/api/life", "/api/push/latest", "/sw.js", "/manifest.webmanifest"]) {
       const r = await api("GET", path);
@@ -3697,7 +3722,9 @@ async function scenariosV4(report) {
     const p = await pendingProposal("relationship", "seeing each other");
     await approve(p.id);
     const s1 = (await state()).relationship.state;
-    assert.equal(s1.status, "seeing each other", JSON.stringify(s1));
+    // v5 (SPEC_V5 section 4, "Tests added" 3): a proposal moves the ladder one rung, so a
+    // strangers record proposed "seeing each other" reads talking.
+    assert.equal(s1.status, "talking", JSON.stringify(s1));
     assert.equal(s1.his_name, "Justin");
     assert.equal(s1.trust, before.trust, "trust kept");
     assert.ok(String(s1.frontier).includes("seeing each other"));
@@ -3706,7 +3733,7 @@ async function scenariosV4(report) {
     const pm = await pendingProposal("relationship", "warm");
     await approve(pm.id);
     const s2 = (await state()).relationship.state;
-    assert.equal(s2.status, "seeing each other", "nothing lost");
+    assert.equal(s2.status, "talking", "nothing lost");
     assert.equal(s2.his_name, "Justin");
     assert.equal(s2.mood, "warm");
     const clear = await api("PUT", "/api/state/relationship", { state: { ...s2, mood: null, mood_set_at: null, mood_days: null, cooling_off_until: null }, note: "v4 mood cleared" });
@@ -3923,6 +3950,788 @@ async function scenariosV4(report) {
   });
 }
 
+// ------------------------------------------------------------------ v5 scenarios (SPEC_V5 sections 1 to 9)
+
+// Its own phase on a FRESH local state (main() applies 0001 to 0009 to a third directory and
+// boots with --test-scheduled and --var SPOTIFY_STUB:1), with the caps raised and every
+// setting it touches put back. The order is the spec's: the settings table, the clock, the
+// nightly pass, arcs, her read of him, state that moves, the rhythm, honest to the record,
+// memory hygiene, the stable world, the song loop, the export round trip, the system counts,
+// the UI smoke. Every model call runs on the stub (the local overlay sets nightlyProvider).
+const V5_ROUTES_GET = ["/api/clock", "/api/nightly", "/api/beats", "/api/wants/w_nothing/beats", "/api/views", "/api/world", "/api/sent", "/api/known-artists"];
+const V5_ROUTES_POST = [
+  "/api/nightly/run", "/api/wants/w_nothing/beats", "/api/beats/ab_nothing/resolve", "/api/views/hv_nothing/retire", "/api/world/facts",
+  "/api/people/pe_nothing/rename", "/api/messages/m_nothing/song-feedback", "/api/known-artists",
+];
+const V5_ROUTES_OTHER = [["PUT", "/api/beats/ab_nothing"], ["DELETE", "/api/world/facts/wf_nothing"], ["DELETE", "/api/known-artists/ka_nothing"]];
+const V5_SETTINGS_TABLE = {
+  storyClockEnabled: [true, false, "yes"],
+  gapLineMinMinutes: [120, 15, 14],
+  nightlyStoryEnabled: [true, false, 1],
+  nightlyProvider: ["anthropic", "stub", "mistral"],
+  nightlyModel: ["claude-sonnet-5", "claude-opus-5", ""],
+  hygieneModel: ["claude-haiku-4-5", "claude-sonnet-5", "x".repeat(201)],
+  nightlyBudgetUsd: [0.25, 5, 5.01],
+  herDayItemsMax: [2, 0, 4],
+  nightlyBeatsMax: [3, 10, 11],
+  beatHorizonDays: [7, 30, 0],
+  arcMemoryDays: [7, 1, 31],
+  viewsShown: [6, 0, 13],
+  viewMinConfidence: [0.4, 1, 1.01],
+  viewsPerNight: [3, 6, 7],
+  frictionDaysDefault: [4, 14, 0],
+  sentShown: [12, 30, 31],
+  sentWindowDays: [7, 60, 0],
+  hygieneEnabled: [true, false, "no"],
+  worldShown: [6, 20, 21],
+  knownArtistsShown: [40, 200, 201],
+};
+const V5_TZ = "America/New_York";
+
+// Her local calendar day (New York) `offset` days from now, as YYYY-MM-DD.
+function nyDay(offset = 0) {
+  const d = new Date(Date.now() + offset * 24 * 60 * 60 * 1000);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: V5_TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+}
+const nyDayOf = (iso) => new Intl.DateTimeFormat("en-CA", { timeZone: V5_TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
+const nyWeekdayOf = (iso) => new Intl.DateTimeFormat("en-US", { timeZone: V5_TZ, weekday: "long" }).format(new Date(iso));
+
+function payloadOf(p) {
+  try {
+    const outer = JSON.parse(p.payload_json || "{}");
+    return outer && typeof outer.payload === "object" && outer.payload ? outer.payload : {};
+  } catch {
+    return {};
+  }
+}
+
+async function nightlyRun(body) {
+  const r = await api("POST", "/api/nightly/run", body);
+  assert.equal(r.status, 200, "nightly run: " + r.text);
+  return r.json;
+}
+const stepOf = (result, step) => result.steps.find((s) => s.step === step);
+
+async function proposalById(id) {
+  return waitFor("proposal " + id, async () => {
+    const r = await api("GET", "/api/proposals?status=pending");
+    return r.status === 200 ? r.json.find((p) => p.id === id) || null : null;
+  }, 10_000, 300);
+}
+
+async function modelRunsOfKind(kind) {
+  return ((await api("GET", "/api/export")).json.modelRuns ?? []).filter((m) => m.kind === kind);
+}
+
+// The per-turn state text a reply was built from. GET /api/messages/:id/context answers the
+// provenance JSON only; the state text sits in message_context.state_text, which the export
+// carries (messageContext), so it is read from there when the context does not carry it.
+async function stateTextFor(messageId, ctx) {
+  const inline = ctx ? stateTextOf(ctx) : null;
+  if (inline !== null) return inline;
+  const exp = await api("GET", "/api/export");
+  assert.equal(exp.status, 200, "export: " + exp.text.slice(0, 200));
+  const row = (exp.json.messageContext ?? []).find((r) => r.message_id === messageId);
+  assert.ok(row && typeof row.state_text === "string" && row.state_text, "the state text of " + messageId + " is stored");
+  return row.state_text;
+}
+
+// A turn in `conversationId` and its context, the state text read from it.
+async function turnWithContext(conversationId, content, label) {
+  const t = await turn(conversationId, content, key(label));
+  assert.equal(t.status, 200, t.text);
+  const ctx = await contextOf(t.json.assistantMessage.id);
+  return { t, ctx, stateText: await stateTextFor(t.json.assistantMessage.id, ctx) };
+}
+
+async function sceneState() {
+  return (await state()).scene.state;
+}
+
+async function putScene(patch, note) {
+  const s = await sceneState();
+  return api("PUT", "/api/state/scene", { state: { ...s, ...patch }, note });
+}
+
+async function scenariosV5(report) {
+  const probe = await api("GET", "/api/clock");
+  if (probe.status === 404) {
+    console.log("v5: GET /api/clock -> 404 on this server; skipping the v5 block");
+    return;
+  }
+  const original = (await api("GET", "/api/settings")).json;
+  const restore = {};
+  for (const k of [
+    "dailyCapUsd", "monthlyCapUsd", "weatherProvider", "proposalsAutoApprove", "herFirstTextsPerDay", "herFirstQuietHours", "textureCuesEnabled",
+    "spotifyEnabled", "nightlyBudgetUsd", "replyDelayMode", ...Object.keys(V5_SETTINGS_TABLE),
+  ]) {
+    if (k in original) restore[k] = original[k];
+  }
+  // GET and PUT /api/settings answer through the local overlay, which sets nightlyProvider to
+  // the runner's stub: the stored value is the seed's "anthropic", written back as that.
+  restore.nightlyProvider = "anthropic";
+  await settingsPut({ dailyCapUsd: 200, monthlyCapUsd: 500, weatherProvider: "stub", proposalsAutoApprove: false, replyDelayMode: "instant" });
+  const conversationId = await newConversation("integration v5");
+  const ids = { place: null, want: null, micBeat: null, signUpBeat: null, view: null, mason: null, songMessage: null, knownArtist: null };
+
+  // ---------------------------------------------------------------- the settings table
+
+  await report.check("v5: PUT /api/settings accepts every v5 default and good value, refuses every bad value (the twenty keys); an unpriced nightlyModel is refused while the pass is on", async () => {
+    // nightlyProvider reads "stub" through the local overlay whatever is stored (the runner's
+    // nightly calls go to the stub): its row is checked by status only.
+    const overlaid = new Set(["nightlyProvider"]);
+    for (const [k, [def]] of Object.entries(V5_SETTINGS_TABLE)) if (!overlaid.has(k)) assert.deepEqual(original[k], def, k + " shipped as the default");
+    assert.equal(original.nightlyProvider, "stub", "the local overlay points the nightly pass at the stub");
+    for (const [key, [def, good, bad]] of Object.entries(V5_SETTINGS_TABLE)) {
+      const g = await api("PUT", "/api/settings", { [key]: good });
+      assert.equal(g.status, 200, key + " good: " + g.text);
+      if (!overlaid.has(key)) assert.deepEqual(g.json[key], good, key + " good round-trips");
+      const b = await api("PUT", "/api/settings", { [key]: bad });
+      assert.equal(b.status, 400, key + " bad " + JSON.stringify(bad) + ": " + b.text);
+      const d = await api("PUT", "/api/settings", { [key]: def });
+      assert.equal(d.status, 200, key + " default: " + d.text);
+      if (!overlaid.has(key)) assert.deepEqual(d.json[key], def, key + " default round-trips");
+    }
+    const unpriced = await api("PUT", "/api/settings", { nightlyModel: "nobody-priced-this" });
+    assert.equal(unpriced.status, 400, unpriced.text);
+    assert.ok(/nightlyModel/.test(unpriced.json.error), unpriced.json.error);
+    const hygiene = await api("PUT", "/api/settings", { hygieneModel: "nobody-priced-this" });
+    assert.equal(hygiene.status, 400, hygiene.text);
+  });
+
+  // ---------------------------------------------------------------- her clock (section 1)
+
+  await report.check("v5 clock: GET /api/clock -> enabled, not frozen", async () => {
+    assert.equal(probe.status, 200, probe.text);
+    assert.equal(probe.json.enabled, true);
+    assert.equal(probe.json.frozen, false);
+    assert.equal(probe.json.open, null);
+    assert.ok(Array.isArray(probe.json.recent));
+  });
+
+  await report.check("v5 clock: together with no place -> 400; at the harbour bench -> frozen at the version's created_at; a turn is held (provenance clock.frozen, storyNow = frozenAt; RIGHT NOW on the held weekday, no TIME SINCE); her first text stops on 'together'; apart -> resumed; a turn is not held", async () => {
+    const apart = await putScene({ status: "apart", location: null, time: null }, "v5 apart, no place");
+    assert.equal(apart.status, 200, apart.text);
+    const bad = await putScene({ status: "together", location: null }, "v5 together, no place");
+    assert.equal(bad.status, 400, bad.text);
+    assert.equal(bad.json.code, "validation");
+    assert.ok(/a together scene needs a place/.test(bad.json.error), bad.json.error);
+    const put = await putScene({ status: "together", location: "the harbour bench" }, "v5 together");
+    assert.equal(put.status, 200, put.text);
+    assert.equal(put.json.clock.frozen, true, JSON.stringify(put.json.clock));
+    const versions = await api("GET", "/api/state/versions/scene?limit=5");
+    const row = versions.json.find((v) => v.version === put.json.version);
+    assert.ok(row, "the new scene version");
+    const frozenAt = put.json.clock.open.frozenAt;
+    assert.equal(Date.parse(frozenAt), Date.parse(row.created_at), "frozenAt is the version's created_at");
+    assert.equal(put.json.clock.open.location, "the harbour bench");
+    const { ctx, stateText } = await turnWithContext(conversationId, "we sat down on the bench", "v5-held-turn");
+    assert.equal(ctx.clock.frozen, true, JSON.stringify(ctx.clock));
+    assert.equal(Date.parse(ctx.clock.storyNow), Date.parse(frozenAt));
+    assert.ok(ctx.clock.spanId, "the span id");
+    assert.ok(stateText.includes("RIGHT NOW"), "RIGHT NOW present");
+    assert.ok(stateText.includes("It is " + nyWeekdayOf(frozenAt)), "the held weekday");
+    assert.ok(!stateText.includes("TIME SINCE"), "never a gap line while together");
+    await settingsPut({ herFirstTextsPerDay: 2, herFirstQuietHours: "00:00-00:00" });
+    const first = await api("POST", "/api/herfirst/run", {});
+    assert.equal(first.status, 200, first.text);
+    assert.ok(typeof first.json.reason === "string" && first.json.reason.startsWith("together"), "reason: " + first.text);
+    await settingsPut({ herFirstTextsPerDay: original.herFirstTextsPerDay, herFirstQuietHours: original.herFirstQuietHours });
+    const back = await putScene({ status: "apart", location: null }, "v5 apart again");
+    assert.equal(back.status, 200, back.text);
+    assert.equal(back.json.clock.frozen, false);
+    assert.ok(back.json.clock.recent[0] && back.json.clock.recent[0].resumedAt, JSON.stringify(back.json.clock.recent));
+    const after = await turnWithContext(conversationId, "home now", "v5-apart-turn");
+    assert.equal(after.ctx.clock.frozen, false, JSON.stringify(after.ctx.clock));
+  });
+
+  // ---------------------------------------------------------------- the nightly story pass (section 1)
+
+  await report.check("v5 nightly: a place 'the shop', then POST /api/nightly/run her_day -> one life_update proposal (her_day true, occurred on the her-day key); with the auto-keep on -> a life_log row; a nightly model run; GET /api/nightly lists her_day done", async () => {
+    const place = await api("POST", "/api/life/threads", { kind: "place", title: "the shop", detail: "she does the windows" });
+    assert.equal(place.status, 201, place.text);
+    ids.place = place.json.id;
+    const runsBefore = (await modelRunsOfKind("nightly")).length;
+    const r = await nightlyRun({ steps: ["her_day"], force: true });
+    const her = stepOf(r, "her_day");
+    assert.equal(her.status, "done", JSON.stringify(her));
+    assert.equal(her.proposalIds.length, 1, JSON.stringify(her));
+    assert.match(r.day, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(r.day, nyDay(-1), "the her-day key is the last day that has ended, her time");
+    const p = await proposalById(her.proposalIds[0]);
+    assert.equal(p.kind, "life_update");
+    const payload = payloadOf(p);
+    assert.equal(payload.her_day, true);
+    assert.equal(nyDayOf(payload.occurred), r.day, "occurred falls on the her-day key");
+    assert.equal(payload.note, "stub day note");
+    const runs = await modelRunsOfKind("nightly");
+    assert.ok(runs.length > runsBefore, "a model run of kind nightly");
+    const run = runs.find((m) => /nightly:her_day/.test(m.flags_json || ""));
+    assert.ok(run, "flags carry nightly:her_day: " + JSON.stringify(runs.slice(-2)));
+    assert.equal(run.status, "ok");
+    assert.ok(Number(run.input_tokens) > 0, "usage recorded");
+    // The refile guard would skip the same night's text while it is pending: reject it, then
+    // run again with the auto-keep on.
+    const rej = await api("POST", `/api/proposals/${p.id}/decide`, { decision: "reject" });
+    assert.equal(rej.status, 200, rej.text);
+    await settingsPut({ proposalsAutoApprove: true });
+    try {
+      const again = await nightlyRun({ steps: ["her_day"], force: true });
+      assert.ok(again.kept >= 1, "kept automatically: " + JSON.stringify(again));
+      const life = await waitFor("the life_log note", async () => {
+        const l = await api("GET", "/api/life?limit=50");
+        return l.json.log.find((x) => x.note === "stub day note") || null;
+      }, 10_000, 300);
+      assert.equal(nyDayOf(life.occurred), again.day);
+    } finally {
+      await settingsPut({ proposalsAutoApprove: false });
+    }
+    const list = await api("GET", "/api/nightly");
+    assert.equal(list.status, 200, list.text);
+    assert.ok(list.json.runs.some((x) => x.step === "her_day" && x.day === r.day && x.status === "done"), JSON.stringify(list.json.runs.slice(0, 4)));
+  });
+
+  await report.check("v5 nightly: together again -> her_day and arcs skipped 'frozen'; views and hygiene not skipped for that reason; apart again", async () => {
+    const put = await putScene({ status: "together", location: "the harbour bench" }, "v5 held nightly");
+    assert.equal(put.status, 200, put.text);
+    try {
+      const r = await nightlyRun({ force: true });
+      assert.equal(r.frozen, true);
+      for (const s of ["her_day", "arcs"]) assert.ok(/^frozen/.test(stepOf(r, s).reason), s + ": " + JSON.stringify(stepOf(r, s)));
+      for (const s of ["views", "hygiene"]) assert.ok(!/^frozen/.test(stepOf(r, s).reason), s + ": " + JSON.stringify(stepOf(r, s)));
+    } finally {
+      const back = await putScene({ status: "apart", location: null }, "v5 apart after the held nightly");
+      assert.equal(back.status, 200, back.text);
+    }
+  });
+
+  await report.check("v5 nightly: nightlyBudgetUsd 0.000001 -> the paid her_day step skipped 'nightly budget'; restored", async () => {
+    await settingsPut({ nightlyBudgetUsd: 0.000001 });
+    try {
+      const r = await nightlyRun({ steps: ["her_day"], force: true });
+      const her = stepOf(r, "her_day");
+      assert.equal(her.status, "skipped", JSON.stringify(her));
+      assert.equal(her.reason, "nightly budget");
+    } finally {
+      await settingsPut({ nightlyBudgetUsd: 0.25 });
+    }
+  });
+
+  await report.check("v5 nightly: GET /__scheduled?cron=0+7+*+*+* -> the cron runs the nightly story pass (a nightly.story audit row)", async () => {
+    const before = (await auditRows(200)).filter((a) => a.action === "nightly.story").length;
+    const r = await scheduledCron("0 7 * * *");
+    assert.equal(r.status, 200, r.text.slice(0, 200));
+    const rows = await waitFor("a nightly.story audit row", async () => {
+      const list = (await auditRows(200)).filter((a) => a.action === "nightly.story");
+      return list.length > before ? list : null;
+    }, 30_000, 500);
+    assert.ok(rows.length > before);
+    assert.ok((await auditRows(200)).some((a) => a.action === "backup.run"), "the backup still runs first");
+  });
+
+  // ---------------------------------------------------------------- arcs (section 2)
+
+  await report.check("v5 arcs: a want and a beat due yesterday with one variant; the nightly arc step files one beat_outcome (the stub picks v1); approve -> resolved went_badly, a setback in want_log, and the next turn's state text carries 'Lately: the open mic'", async () => {
+    const want = await api("POST", "/api/wants", { title: "sing in front of people", why: "she wants to", stakes: "it stays in her room" });
+    assert.equal(want.status, 201, want.text);
+    ids.want = want.json.id;
+    const beat = await api("POST", `/api/wants/${ids.want}/beats`, { title: "the open mic", kind: "event", dueOn: nyDay(-1), dueTime: "20:00", variants: [{ outcome: "went_badly", note: "her voice cracked on the bridge" }] });
+    assert.equal(beat.status, 201, beat.text);
+    ids.micBeat = beat.json.beat.id;
+    assert.equal(beat.json.variants[0].id, "v1");
+    const r = await nightlyRun({ steps: ["arcs"], force: true });
+    const arcs = stepOf(r, "arcs");
+    assert.equal(arcs.status, "done", JSON.stringify(arcs));
+    assert.equal(arcs.proposalIds.length, 1, JSON.stringify(arcs));
+    const p = await proposalById(arcs.proposalIds[0]);
+    assert.equal(p.kind, "beat_outcome");
+    assert.equal(payloadOf(p).variant_id, "v1");
+    await approve(p.id);
+    const beats = await api("GET", `/api/wants/${ids.want}/beats`);
+    assert.equal(beats.status, 200, beats.text);
+    const mic = beats.json.beats.find((b) => b.beat.id === ids.micBeat);
+    assert.equal(mic.run.status, "resolved");
+    assert.equal(mic.run.outcome, "went_badly");
+    const log = await api("GET", `/api/wants/${ids.want}/log`);
+    assert.ok(log.json.some((l) => l.kind === "setback" && /the open mic/.test(l.note)), JSON.stringify(log.json));
+    const { stateText } = await turnWithContext(conversationId, "how was your week", "v5-lately");
+    assert.ok(stateText.includes("Lately: the open mic"), "the Lately line");
+  });
+
+  await report.check("v5 arcs: [[BEAT:<want>|sign up|<tomorrow>]] -> a want_beat proposal -> approve -> 'sign up' pending, and the next turn's state text carries 'Coming up: sign up, tomorrow'", async () => {
+    const tomorrow = nyDay(1);
+    const r = await turn(conversationId, `[[BEAT:sing in front of people|sign up|${tomorrow}]] you should sign up`, key("v5-beat"));
+    assert.equal(r.status, 200, r.text);
+    const p = await pendingProposal("want_beat", "sign up");
+    await approve(p.id);
+    const beats = await api("GET", `/api/wants/${ids.want}/beats`);
+    const sign = beats.json.beats.find((b) => b.beat.title === "sign up");
+    assert.ok(sign, JSON.stringify(beats.json.beats.map((b) => b.beat.title)));
+    assert.equal(sign.run.status, "pending");
+    assert.equal(sign.beat.due_on, tomorrow);
+    ids.signUpBeat = sign.beat.id;
+    const { stateText } = await turnWithContext(conversationId, "so are you doing it", "v5-coming");
+    assert.ok(stateText.includes("Coming up: sign up, tomorrow"), "the Coming up line");
+  });
+
+  await report.check("v5 arcs: [[OUTCOME:sign up|went]] -> a beat_outcome from the extractor -> approve -> resolved went and a progress row; POST /api/beats/:id/resolve on a resolved beat -> 409", async () => {
+    // The stub files [[BEAT]] as kind event, so the outcome is an event outcome.
+    const r = await turn(conversationId, "[[OUTCOME:sign up|went]] i did it", key("v5-outcome"));
+    assert.equal(r.status, 200, r.text);
+    const p = await pendingProposal("beat_outcome", "sign up");
+    await approve(p.id);
+    const beats = await api("GET", `/api/wants/${ids.want}/beats`);
+    const sign = beats.json.beats.find((b) => b.beat.id === ids.signUpBeat);
+    assert.equal(sign.run.status, "resolved");
+    assert.equal(sign.run.outcome, "went");
+    const log = await api("GET", `/api/wants/${ids.want}/log`);
+    assert.ok(log.json.some((l) => l.kind === "progress" && /sign up/.test(l.note)), JSON.stringify(log.json));
+    const again = await api("POST", `/api/beats/${ids.micBeat}/resolve`, { outcome: "went" });
+    assert.equal(again.status, 409, again.text);
+    assert.equal(again.json.code, "already_resolved");
+  });
+
+  // ---------------------------------------------------------------- her view of him (section 3)
+
+  await report.check("v5 views: two [[VIEW]] turns -> the nightly views step files one her_view -> approve -> one active read; the next turn's state text carries HOW YOU READ HIM with it; retire -> gone from the next turn; GET /api/memory/map carries views", async () => {
+    const viewConv = await newConversation("integration v5 views");
+    for (const [i, text] of ["[[VIEW]] i asked before i kissed you", "[[VIEW]] i answered as soon as i saw it"].entries()) {
+      const t = await turn(viewConv, text, key("v5-view-" + i));
+      assert.equal(t.status, 200, t.text);
+    }
+    const r = await nightlyRun({ steps: ["views"], force: true });
+    const views = stepOf(r, "views");
+    assert.equal(views.status, "done", JSON.stringify(views));
+    assert.equal(views.proposalIds.length, 1, JSON.stringify(views));
+    const p = await proposalById(views.proposalIds[0]);
+    assert.equal(p.kind, "her_view");
+    await approve(p.id);
+    const list = await api("GET", "/api/views");
+    assert.equal(list.status, 200, list.text);
+    assert.equal(list.json.views.length, 1, JSON.stringify(list.json.views));
+    ids.view = list.json.views[0].id;
+    assert.equal(list.json.views[0].view, "you answer fast when it matters");
+    const shown = await turnWithContext(viewConv, "so what do you think of me", "v5-view-shown");
+    assert.ok(shown.stateText.includes("HOW YOU READ HIM"), "the section rides");
+    assert.ok(shown.stateText.includes("you answer fast when it matters"));
+    assert.ok((shown.ctx.viewIds ?? []).includes(ids.view), JSON.stringify(shown.ctx.viewIds));
+    const retire = await api("POST", `/api/views/${ids.view}/retire`, { note: "not true" });
+    assert.equal(retire.status, 200, retire.text);
+    assert.equal(retire.json.status, "retired");
+    const gone = await turnWithContext(viewConv, "and now", "v5-view-gone");
+    assert.ok(!gone.stateText.includes("HOW YOU READ HIM"), "no read after the retire");
+    const map = await api("GET", "/api/memory/map");
+    assert.equal(map.status, 200, map.text);
+    assert.ok(Array.isArray(map.json.views) && map.json.views.some((v) => v.id === ids.view), "the map carries the reads");
+    assert.ok(map.json.knownArtists && Array.isArray(map.json.knownArtists.known));
+  });
+
+  // ---------------------------------------------------------------- state that moves (section 4)
+
+  await report.check("v5 state: [[REL:seeing each other]] on a strangers record -> approve -> talking, the version's note says it moved one step; again (with his name) -> friends", async () => {
+    const before = (await state()).relationship.state;
+    assert.equal(before.status, "strangers", "a fresh record");
+    const relConv = await newConversation("integration v5 relationship");
+    await turn(relConv, "[[REL:seeing each other]] ok", key("v5-rel-1"));
+    await approve((await pendingProposal("relationship", "seeing each other")).id);
+    const s1 = (await state()).relationship.state;
+    assert.equal(s1.status, "talking", JSON.stringify(s1));
+    const v = await api("GET", "/api/state/versions/relationship?limit=1");
+    assert.match(v.json[0].note || "", /moved one step/);
+    await turn(relConv, "[[REL:seeing each other|Justin]] ok", key("v5-rel-2"));
+    await approve((await pendingProposal("relationship", "his name is Justin")).id);
+    const s2 = (await state()).relationship.state;
+    assert.equal(s2.status, "friends", JSON.stringify(s2));
+    assert.equal(s2.his_name, "Justin");
+  });
+
+  await report.check("v5 state: [[REL:cooling off]] -> cooling off with status_before friends and the cooling-off paragraph; [[REL:friends]] -> friends, status_before null", async () => {
+    const relConv = await newConversation("integration v5 cooling");
+    await turn(relConv, "[[REL:cooling off]] fine", key("v5-rel-cool"));
+    await approve((await pendingProposal("relationship", "cooling off")).id);
+    const b1 = await state();
+    const s1 = b1.relationship.state;
+    assert.equal(s1.status, "cooling off", JSON.stringify(s1));
+    assert.equal(s1.status_before, "friends");
+    // Review fix: the 24-hour default writes the deadline the Now tab reads, and the server's
+    // live read says it runs.
+    assert.ok(Number.isFinite(Date.parse(s1.cooling_off_until)), "cooling_off_until: " + s1.cooling_off_until);
+    assert.equal(b1.relationship.live && b1.relationship.live.coolingOff, true, JSON.stringify(b1.relationship.live));
+    const { stateText } = await turnWithContext(relConv, "are we ok", "v5-rel-cool-turn");
+    assert.ok(stateText.includes("You are still cooling off"), "the cooling-off paragraph");
+    await turn(relConv, "[[REL:friends]] ok", key("v5-rel-friends"));
+    await approve((await pendingProposal("relationship", "they are friends")).id);
+    const b2 = await state();
+    const s2 = b2.relationship.state;
+    assert.equal(s2.status, "friends", JSON.stringify(s2));
+    assert.equal(s2.status_before, null);
+    // Review fix: a step out of cooling off ends it.
+    assert.equal(s2.cooling_off_set_at, null);
+    assert.equal(s2.cooling_off_until, null);
+    assert.equal(b2.relationship.live && b2.relationship.live.coolingOff, false, JSON.stringify(b2.relationship.live));
+    const { stateText: after } = await turnWithContext(relConv, "good", "v5-rel-friends-turn");
+    assert.ok(!after.includes("You are still cooling off"), "no cooling-off paragraph once they are friends");
+  });
+
+  await report.check("v5 state: [[FRICTION:the photo thing|2]] -> friction stamped; the next turn's state text has 'Friction: the photo thing (fresh' and its Relationship line has no friction key; [[NICK:Starbrite]] then [[NICK:trouble]] -> 'Starbrite; trouble'", async () => {
+    const relConv = await newConversation("integration v5 friction");
+    await turn(relConv, "[[FRICTION:the photo thing|2]] ok", key("v5-friction"));
+    await approve((await pendingProposal("relationship", "the photo thing")).id);
+    const s1 = (await state()).relationship.state;
+    assert.equal(s1.friction, "the photo thing");
+    assert.ok(s1.friction_set_at, "stamped");
+    assert.equal(s1.friction_days, 2);
+    const { stateText } = await turnWithContext(relConv, "about the photo", "v5-friction-turn");
+    assert.ok(stateText.includes("Friction: the photo thing (fresh"), "the friction line");
+    const relLine = stateText.split("\n").find((l) => l.startsWith("Relationship: "));
+    assert.ok(relLine, "the Relationship line");
+    const shown = JSON.parse(relLine.slice("Relationship: ".length));
+    for (const k of ["friction", "friction_set_at", "friction_days", "cooling_off_set_at", "cooling_off_hours", "status_before"]) assert.ok(!(k in shown), k + " hidden");
+    await turn(relConv, "[[NICK:Starbrite]] night", key("v5-nick-1"));
+    await approve((await pendingProposal("relationship", "Starbrite")).id);
+    await turn(relConv, "[[NICK:trouble]] night", key("v5-nick-2"));
+    await approve((await pendingProposal("relationship", "trouble")).id);
+    assert.equal((await state()).relationship.state.nicknames, "Starbrite; trouble");
+  });
+
+  // ---------------------------------------------------------------- reply rhythm (section 5)
+
+  await report.check("v5 rhythm: a plain turn -> provenance.rhythm with a size in the list and THIS MESSAGE (its shape; textureCuesEnabled false -> no rhythm and no THIS MESSAGE; restored", async () => {
+    const plain = await turnWithContext(conversationId, "what are you up to", "v5-rhythm");
+    assert.ok(plain.ctx.rhythm && ["one_word", "one_line", "two_lines", "three_lines", "longer"].includes(plain.ctx.rhythm.size), JSON.stringify(plain.ctx.rhythm));
+    assert.ok(plain.stateText.includes("THIS MESSAGE (its shape"), "the rhythm section");
+    await settingsPut({ textureCuesEnabled: false });
+    try {
+      const off = await turnWithContext(conversationId, "and now", "v5-rhythm-off");
+      assert.equal(off.ctx.rhythm ?? null, null);
+      assert.ok(!off.stateText.includes("THIS MESSAGE"), "no THIS MESSAGE");
+    } finally {
+      await settingsPut({ textureCuesEnabled: original.textureCuesEnabled ?? true });
+    }
+  });
+
+  await report.check("v5 rhythm: an [[ACTED]], an [[ACTED2]] and an [[ACTED3]] turn (speech of different shapes inside the same action bookends) -> no shape_uniform on the third", async () => {
+    const actedConv = await newConversation("integration v5 acted");
+    let last = null;
+    for (const m of ["[[ACTED]] no?", "[[ACTED2]] the shop", "[[ACTED3]] fine"]) {
+      last = await turn(actedConv, m, key("v5-acted"));
+      assert.equal(last.status, 200, last.text);
+    }
+    const flags = last.json.flags ?? [];
+    assert.ok(!flags.some((f) => f.code === "shape_uniform"), JSON.stringify(flags));
+  });
+
+  // ---------------------------------------------------------------- honest to the record (section 6)
+
+  await report.check("v5 honest: a [[SONG]] turn -> the next turn's state text carries WHAT YOU HAVE SENT HIM with 'Some Artist - Some Title'; a [[DENY]] turn -> denied_send on the first run, two runs, the stored reply is the retry's", async () => {
+    const sentConv = await newConversation("integration v5 sent");
+    const song = await turn(sentConv, "[[SONG]] send me something", key("v5-sent-song"));
+    assert.equal(song.status, 200, song.text);
+    const next = await turnWithContext(sentConv, "listening now", "v5-sent-next");
+    assert.ok(next.stateText.includes("WHAT YOU HAVE SENT HIM"), "the section");
+    assert.ok(next.stateText.includes("Some Artist - Some Title"), "the song");
+    assert.ok((next.ctx.sentIds ?? []).includes(song.json.assistantMessage.id), JSON.stringify(next.ctx.sentIds));
+    const sentList = await api("GET", "/api/sent");
+    assert.equal(sentList.status, 200, sentList.text);
+    assert.ok(sentList.json.items.some((i) => i.kind === "song" && i.label === "Some Artist - Some Title"));
+    const deny = await turnWithContext(sentConv, "[[DENY]] did you send me a song earlier", "v5-deny");
+    assert.equal(deny.ctx.retried, true, "denied_send forces a retry: " + JSON.stringify(deny.ctx.flags));
+    assert.equal(deny.ctx.runIds.length, 2, "two runs");
+    const runs = (await api("GET", "/api/export")).json.modelRuns ?? [];
+    const first = runs.find((m) => m.id === deny.ctx.runIds[0]);
+    assert.ok(first && /denied_send/.test(first.flags_json || ""), "denied_send on the first run: " + JSON.stringify(first));
+    assert.notEqual(deny.t.json.assistantMessage.content, "wait i never sent you a song. did i", "the stored reply is the retry's");
+  });
+
+  // ---------------------------------------------------------------- memory hygiene (section 7)
+
+  await report.check("v5 hygiene: 'Justin is 44' and 'Justin is forty-four' -> the nightly hygiene files one fact_merge with no model run for it -> approve -> one head whose source starts 'merged:', the other chain's head rejected 'merged into'", async () => {
+    for (const fact of ["Justin is 44", "Justin is forty-four"]) {
+      const f = await api("POST", "/api/facts", { scope: "justin", fact });
+      assert.equal(f.status, 201, f.text);
+    }
+    const mergeRunsBefore = (await modelRunsOfKind("nightly")).filter((m) => /hygiene_merge/.test(m.flags_json || "")).length;
+    const r = await nightlyRun({ steps: ["hygiene"], force: true });
+    const h = stepOf(r, "hygiene");
+    assert.equal(h.status, "done", JSON.stringify(h));
+    assert.equal(h.proposalIds.length, 1, JSON.stringify(h));
+    const p = await proposalById(h.proposalIds[0]);
+    assert.equal(p.kind, "fact_merge");
+    const mergeRunsAfter = (await modelRunsOfKind("nightly")).filter((m) => /hygiene_merge/.test(m.flags_json || "")).length;
+    assert.equal(mergeRunsAfter, mergeRunsBefore, "an exact duplicate needs no model");
+    await approve(p.id);
+    const facts = (await state()).facts.justin.filter((f) => /^Justin is (44|forty-four)$/.test(f.fact));
+    assert.equal(facts.length, 1, JSON.stringify(facts));
+    assert.ok(/^merged:/.test(facts[0].source || ""), facts[0].source);
+    const all = (await api("GET", "/api/export")).json.facts;
+    assert.ok(all.some((f) => f.status === "rejected" && /^merged into /.test(f.source || "")), "the merged chain's head");
+  });
+
+  await report.check("v5 hygiene: three LA wordings -> the stub merge -> one fact_merge -> approve -> one head", async () => {
+    for (const fact of ["Justin moved to LA in 2019", "He moved to LA back in 2019", "Justin moved to LA in 2019 for work"]) {
+      const f = await api("POST", "/api/facts", { scope: "justin", subject: "move", fact });
+      assert.equal(f.status, 201, f.text);
+    }
+    const r = await nightlyRun({ steps: ["hygiene"], force: true });
+    const h = stepOf(r, "hygiene");
+    assert.equal(h.status, "done", JSON.stringify(h));
+    const merges = [];
+    for (const id of h.proposalIds) {
+      const p = await proposalById(id);
+      if (p.kind === "fact_merge") merges.push(p);
+    }
+    assert.equal(merges.length, 1, JSON.stringify(merges.map((m) => m.proposal)));
+    await approve(merges[0].id);
+    const la = (await state()).facts.justin.filter((f) => /LA/.test(f.fact));
+    assert.equal(la.length, 1, JSON.stringify(la.map((f) => f.fact)));
+  });
+
+  await report.check("v5 hygiene: [[INFER:he works nights]] -> a justin_fact with said_by inferred -> approve -> inferred 1, and the next turn's state text lists it under 'Your guesses about him'", async () => {
+    const hyConv = await newConversation("integration v5 guesses");
+    await turn(hyConv, "[[INFER:he works nights]] late again", key("v5-infer"));
+    const p = await pendingProposal("justin_fact", "he works nights");
+    assert.equal(payloadOf(p).said_by, "inferred");
+    await approve(p.id);
+    const fact = (await state()).facts.justin.find((f) => f.fact === "he works nights");
+    assert.equal(fact.inferred, 1);
+    const { stateText, ctx } = await turnWithContext(hyConv, "yeah", "v5-infer-turn");
+    const at = stateText.indexOf("Your guesses about him");
+    assert.ok(at >= 0 && stateText.indexOf("he works nights", at) > at, "listed as a guess");
+    assert.ok((ctx.inferredFactIds ?? []).includes(fact.id));
+  });
+
+  await report.check("v5 review: PUT /api/facts/:id { inferred: false } makes her guess his own words (a new head, inferred 0); { inferred: true } on a fact of hers -> 400", async () => {
+    const guess = (await state()).facts.justin.find((f) => f.fact === "he works nights" && f.inferred === 1);
+    assert.ok(guess, "the guess from the check before");
+    const r = await api("PUT", "/api/facts/" + guess.id, { inferred: false });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.supersedes_id, guess.id);
+    const head = (await state()).facts.justin.find((f) => f.id === r.json.id);
+    assert.equal(head.inferred, 0);
+    const hers = (await state()).facts.avelie[0];
+    const bad = await api("PUT", "/api/facts/" + hers.id, { inferred: true });
+    assert.equal(bad.status, 400, bad.text);
+    // Back to her guess, as the checks after this one count it.
+    const back = await api("PUT", "/api/facts/" + head.id, { inferred: true });
+    assert.equal(back.status, 200, back.text);
+    assert.equal((await state()).facts.justin.find((f) => f.id === back.json.id).inferred, 1);
+  });
+
+  await report.check("v5 hygiene: [[HERSAYS:he hates mornings]] (evidence not in his message) -> approve -> the nightly hygiene -> a fact_mark -> approve -> inferred 1", async () => {
+    const hyConv = await newConversation("integration v5 hersays");
+    await turn(hyConv, "[[HERSAYS:he hates mornings]] ugh", key("v5-hersays"));
+    await approve((await pendingProposal("justin_fact", "he hates mornings")).id);
+    const r = await nightlyRun({ steps: ["hygiene"], force: true });
+    const h = stepOf(r, "hygiene");
+    let mark = null;
+    for (const id of h.proposalIds) {
+      const p = await proposalById(id);
+      if (p.kind === "fact_mark") mark = p;
+    }
+    assert.ok(mark, "a fact_mark: " + JSON.stringify(h));
+    await approve(mark.id);
+    const fact = (await state()).facts.justin.find((f) => f.fact === "he hates mornings");
+    assert.equal(fact.inferred, 1);
+  });
+
+  // ---------------------------------------------------------------- a stable world (section 8)
+
+  await report.check("v5 world: GET /api/world lists 'her mother' (named false) and Mason (named true) from 0009; renaming Mason's thread -> 409 name_locked; rename without confirm -> 400", async () => {
+    const w = await api("GET", "/api/world");
+    assert.equal(w.status, 200, w.text);
+    const mother = w.json.people.find((p) => p.name === "her mother");
+    const mason = w.json.people.find((p) => p.name === "Mason");
+    assert.ok(mother && Number(mother.named) === 0, JSON.stringify(mother));
+    assert.ok(mason && Number(mason.named) === 1, JSON.stringify(mason));
+    assert.equal(mason.active, false, "a person from her past");
+    ids.mason = mason.id;
+    const locked = await api("PUT", `/api/life/threads/${mason.thread_id}`, { title: "Jason" });
+    assert.equal(locked.status, 409, locked.text);
+    assert.equal(locked.json.code, "name_locked");
+    const noConfirm = await api("POST", `/api/people/${mason.id}/rename`, { name: "Jason" });
+    assert.equal(noConfirm.status, 400, noConfirm.text);
+  });
+
+  await report.check("v5 world: POST /api/world/facts for Mason -> 201; again -> 409; a turn mentioning Mason -> WHO AND WHERE with the fact; [[WORLD:Mason|he plays at the Big Easy]] -> approve -> listed", async () => {
+    const body = { entityKind: "person", entityId: ids.mason, fact: "he still has her hoodie" };
+    const f = await api("POST", "/api/world/facts", body);
+    assert.equal(f.status, 201, f.text);
+    const again = await api("POST", "/api/world/facts", body);
+    assert.equal(again.status, 409, again.text);
+    const worldConv = await newConversation("integration v5 world");
+    const { stateText, ctx } = await turnWithContext(worldConv, "whatever happened with Mason", "v5-mason");
+    assert.ok(stateText.includes("WHO AND WHERE"), "the section rides");
+    assert.ok(stateText.includes("he still has her hoodie"), "the fixed fact");
+    assert.ok((ctx.world?.personIds ?? []).includes(ids.mason), JSON.stringify(ctx.world));
+    await turn(worldConv, "[[WORLD:Mason|he plays at the Big Easy]] oh", key("v5-world-fact"));
+    await approve((await pendingProposal("world_fact", "Big Easy")).id);
+    const w = await api("GET", "/api/world");
+    const mason = w.json.people.find((p) => p.id === ids.mason);
+    assert.ok(mason.facts.some((x) => x.fact === "he plays at the Big Easy"), JSON.stringify(mason.facts));
+  });
+
+  await report.check("v5 world: [[PERSON:Diane|mother]] -> approve -> the mother thread renamed Diane, no new person thread, the people row named; [[PERSON:Linda|mother]] -> approve 400, pending with 'already has a name'; [[NAMEDRIFT]] -> name_drift retry", async () => {
+    const worldConv = await newConversation("integration v5 people");
+    const personThreads = async () => (await api("GET", "/api/life?status=active")).json.threads.filter((t) => t.kind === "person").length;
+    const before = await personThreads();
+    await turn(worldConv, "[[PERSON:Diane|mother]] my mom", key("v5-diane"));
+    await approve((await pendingProposal("life", "Diane")).id);
+    assert.equal(await personThreads(), before, "no new person thread");
+    const w = await api("GET", "/api/world");
+    const diane = w.json.people.find((p) => p.name === "Diane");
+    assert.ok(diane && Number(diane.named) === 1 && diane.relation_norm === "mother", JSON.stringify(diane));
+    assert.ok(!w.json.people.some((p) => p.name === "her mother"), "the placeholder row was named, not doubled");
+    await turn(worldConv, "[[PERSON:Linda|mother]] my mom", key("v5-linda"));
+    const linda = await pendingProposal("life", "Linda");
+    const refused = await api("POST", `/api/proposals/${linda.id}/decide`, { decision: "approve" });
+    assert.equal(refused.status, 400, refused.text);
+    const still = await proposalById(linda.id);
+    assert.ok(/already has a name/.test(still.decision_note || ""), still.decision_note);
+    const drift = await turnWithContext(worldConv, "[[NAMEDRIFT]] how is your mom", "v5-namedrift");
+    assert.equal(drift.ctx.retried, true, "name_drift forces a retry: " + JSON.stringify(drift.ctx.flags));
+    const runs = (await api("GET", "/api/export")).json.modelRuns ?? [];
+    const first = runs.find((m) => m.id === drift.ctx.runIds[0]);
+    assert.ok(first && /name_drift/.test(first.flags_json || ""), "name_drift on the first run: " + JSON.stringify(first));
+  });
+
+  // ---------------------------------------------------------------- the song loop (section 9)
+
+  await report.check("v5 songs: Spotify connected on the stub; [[SONG]] -> 'know it' -> listed known; the next turn's state text 'He already knows: Some Artist'; another [[SONG]] carries song_known_artist", async () => {
+    const connect = await apiRaw("GET", "/api/spotify/connect");
+    assert.equal(connect.status, 302, connect.text);
+    const st = new URL(connect.headers.get("location")).searchParams.get("state");
+    const done = await apiRaw("GET", "/api/spotify/callback?code=stub&state=" + st);
+    assert.equal(done.status, 302, done.text);
+    assert.equal((await api("GET", "/api/spotify")).json.connected, true);
+    await settingsPut({ spotifyEnabled: true });
+    const songConv = await newConversation("integration v5 songs");
+    const song = await turn(songConv, "[[SONG]] send me something", key("v5-song"));
+    assert.equal(song.status, 200, song.text);
+    ids.songMessage = song.json.assistantMessage.id;
+    const fb = await api("POST", `/api/messages/${ids.songMessage}/song-feedback`, { kind: "known" });
+    assert.equal(fb.status, 200, fb.text);
+    assert.equal(fb.json.kind, "known");
+    ids.knownArtist = fb.json.id;
+    const list = await api("GET", "/api/known-artists");
+    assert.ok(list.json.known.some((a) => a.artist === "Some Artist"), JSON.stringify(list.json));
+    const next = await turnWithContext(songConv, "ok", "v5-song-next");
+    assert.ok(next.stateText.includes("He already knows: Some Artist"), "the known line");
+    const again = await turn(songConv, "[[SONG]] another", key("v5-song-again"));
+    assert.ok((again.json.flags ?? []).some((f) => f.code === "song_known_artist"), JSON.stringify(again.json.flags));
+    const noSong = await api("POST", `/api/messages/${song.json.userMessage.id}/song-feedback`, { kind: "known" });
+    assert.equal(noSong.status, 400, noSong.text);
+  });
+
+  await report.check("v5 songs: [[SONGNF]] -> not_found within 10 s; the next turn's state text carries 'is not anywhere you can find it now' and song_told_at is set; the turn after does not carry it", async () => {
+    const nfConv = await newConversation("integration v5 notfound");
+    const r = await turn(nfConv, "[[SONGNF]] play it again", key("v5-songnf"));
+    assert.equal(r.status, 200, r.text);
+    const id = r.json.assistantMessage.id;
+    await waitFor("not_found", async () => {
+      const x = await api("GET", `/api/messages/${id}`);
+      return x.json && x.json.spotify_status === "not_found" ? x.json : null;
+    }, 10_000, 300);
+    const told = await turnWithContext(nfConv, "wait what song was that", "v5-songnf-told");
+    assert.ok(told.stateText.includes("is not anywhere you can find it now"), "the notice rides once");
+    const row = await api("GET", `/api/messages/${id}`);
+    assert.ok(row.json.song_told_at, "stamped");
+    const after = await turnWithContext(nfConv, "ok", "v5-songnf-after");
+    assert.ok(!after.stateText.includes("is not anywhere you can find it now"), "only once");
+  });
+
+  await report.check("v5 songs: [[KNOWN:Some Artist|disliked]] -> a known_artist proposal -> approve -> listed as disliked; DELETE -> gone", async () => {
+    const kConv = await newConversation("integration v5 known");
+    await turn(kConv, "[[KNOWN:Some Artist|disliked]] not for me", key("v5-known"));
+    await approve((await pendingProposal("known_artist", "Some Artist")).id);
+    const list = await api("GET", "/api/known-artists");
+    const row = list.json.disliked.find((a) => a.artist === "Some Artist");
+    assert.ok(row, JSON.stringify(list.json));
+    const del = await api("DELETE", `/api/known-artists/${row.id}`);
+    assert.equal(del.status, 200, del.text);
+    assert.deepEqual(del.json, { ok: true });
+    const gone = await api("GET", "/api/known-artists");
+    assert.ok(![...gone.json.known, ...gone.json.disliked].some((a) => a.id === row.id));
+    const owner = await api("POST", "/api/known-artists", { artist: "The National", kind: "known" });
+    assert.equal(owner.status, 201, owner.text);
+    assert.equal(owner.json.source, "owner");
+  });
+
+  // ---------------------------------------------------------------- the export round trip
+
+  await report.check("v5 export: GET /api/export carries the eight new tables; POST /api/import of it counts them; a second export matches", async () => {
+    const exp = await api("GET", "/api/export");
+    assert.equal(exp.status, 200, exp.text);
+    const keys = ["storyClock", "nightlyRuns", "arcBeats", "beatRuns", "herViews", "people", "worldFacts", "knownArtists"];
+    for (const k of keys) assert.ok(Array.isArray(exp.json[k]) && exp.json[k].length >= 1, k + ": " + JSON.stringify(exp.json[k]).slice(0, 120));
+    assert.ok(exp.json.facts.some((f) => f.inferred === 1), "facts.inferred exported");
+    assert.ok(exp.json.messages.some((m) => typeof m.song_told_at === "string" && m.song_told_at), "messages.song_told_at exported");
+    const imp = await api("POST", "/api/import", exp.json);
+    assert.equal(imp.status, 200, imp.text);
+    for (const k of keys) assert.equal(imp.json.counts[k], exp.json[k].length, k);
+    assert.ok(!imp.json.counts.storyClockCleared, "a payload that carries storyClock replaces it, never clears it");
+    const again = await api("GET", "/api/export");
+    for (const k of keys) assert.equal(again.json[k].length, exp.json[k].length, k + " after the round trip");
+  });
+
+  // ---------------------------------------------------------------- the system counts
+
+  await report.check("v5 system: GET /api/system counts carry the v5 numbers", async () => {
+    const sys = await api("GET", "/api/system");
+    assert.equal(sys.status, 200, sys.text);
+    const c = sys.json.counts;
+    for (const k of ["clockFrozen", "clockSpans", "beatsPending", "beatsResolved", "viewsActive", "factsInferred", "peopleNamed", "worldFacts", "knownArtists"]) assert.equal(typeof c[k], "number", k);
+    assert.equal(c.clockFrozen, 0);
+    assert.ok(c.clockSpans >= 2, "two held spans");
+    assert.ok(c.beatsResolved >= 2);
+    assert.ok(c.factsInferred >= 2);
+    assert.ok(c.peopleNamed >= 2, "Mason and Diane");
+    assert.ok(c.worldFacts >= 2);
+    assert.match(c.lastNightlyDay || "", /^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  // ---------------------------------------------------------------- the UI smoke
+
+  await report.check("v5 UI smoke: every page and script answers 200 with its content type; the v5 ids are served; node --check on every public/js file", async () => {
+    for (const p of V4_PAGES) {
+      const r = await fetch(BASE + p);
+      const text = await r.text();
+      assert.equal(r.status, 200, p + " -> " + r.status);
+      assert.ok((r.headers.get("content-type") || "").includes("text/html"), p + " " + r.headers.get("content-type"));
+      assert.ok(!/\sstyle=/.test(text), p + " carries a style attribute");
+      const csp = r.headers.get("content-security-policy") || "";
+      assert.ok(/default-src 'self'/.test(csp) && !/unsafe-inline/.test(csp), p + " CSP: " + csp);
+      if (p === "/") assert.ok(text.includes('id="clockChip"'), "the clock chip");
+      if (p === "/memory") assert.ok(text.includes('id="memoryViews"') && text.includes('id="memoryArtists"'), "her read and his ears");
+      if (p === "/model") for (const id of ["storyCard", "nightlyCard", "nightlyRun", "nightlyRuns"]) assert.ok(text.includes('id="' + id + '"'), id);
+    }
+    for (const s of V4_SCRIPTS) {
+      const r = await fetch(BASE + s);
+      assert.equal(r.status, 200, s + " -> " + r.status);
+      assert.ok(/javascript/.test(r.headers.get("content-type") || ""), s + " " + r.headers.get("content-type"));
+      await r.arrayBuffer();
+    }
+    const css = await fetch(BASE + "/css/app.css");
+    assert.equal(css.status, 200);
+    assert.ok(/text\/css/.test(css.headers.get("content-type") || ""));
+    const { execFileSync } = await import("node:child_process");
+    const { readdirSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const dir = join(ROOT, "public", "js");
+    for (const f of readdirSync(dir).filter((x) => x.endsWith(".js"))) execFileSync(process.execPath, ["--check", join(dir, f)], { stdio: "pipe" });
+    return "pages " + V4_PAGES.length + ", scripts " + V4_SCRIPTS.length;
+  });
+
+  // ---------------------------------------------------------------- put back what the block touched
+
+  await report.check("v5: every setting back to what the block found; the scene apart", async () => {
+    const back = await settingsPut(restore);
+    for (const k of Object.keys(restore)) if (k !== "nightlyProvider") assert.deepEqual(back[k], restore[k], k);
+    const s = await sceneState();
+    assert.notEqual(String(s.status).toLowerCase(), "together");
+    assert.equal((await api("GET", "/api/clock")).json.frozen, false);
+  });
+}
+
 // ------------------------------------------------------------------ main
 
 // True when anything at all answers on the test port.
@@ -4069,6 +4878,43 @@ async function main() {
     });
     console.log(`wrangler dev (v4) ready on ${BASE} (${Date.now() - t4} ms)\n`);
     await scenariosV4(report);
+
+    // v5 phase (2026-09-26): a FRESH state again (0001 to 0009), so the clock, the nightly
+    // pass, the canon people of 0009 and the ladder are read against the seed.
+    // --test-scheduled for the 0 7 cron; SPOTIFY_STUB for the song loop.
+    await stopWrangler(wrangler);
+    if (await answering()) throw new Error("the v4 server is still answering on " + BASE + " after shutdown");
+    console.log(`\nintegration v5: fresh state at ${STATE_DIR_V5}`);
+    removeDir(STATE_DIR_V5);
+    const tm5 = Date.now();
+    const migrate5 = await runCommand(["d1", "migrations", "apply", "avelie", "--local", "--persist-to", STATE_ARG_V5], { env: { CI: "1" } });
+    if (migrate5.code !== 0) {
+      console.log(migrate5.output);
+      throw new Error("v5 migrations failed with exit code " + migrate5.code);
+    }
+    console.log(`v5 migrations applied (${Date.now() - tm5} ms)`);
+    const t5 = Date.now();
+    wrangler = startWrangler([
+      "--port", String(PORT), "--local", "--persist-to", STATE_ARG_V5, "--test-scheduled",
+      "--var", "APP_ENV:" + APP_ENV_TAG,
+      "--var", "ACCESS_AUD:",
+      "--var", `DEV_ACTOR_EMAIL:${DEV_ACTOR_EMAIL}`,
+      "--var", "DEFAULT_PROVIDER:stub",
+      "--var", "DEFAULT_IMAGE_PROVIDER:stub",
+      "--var", "OPENAI_API_KEY:dummy-for-settings-only",
+      "--var", "SPOTIFY_STUB:1",
+    ], STUB_ENV);
+    await waitFor("wrangler dev (v5, fresh state) on " + BASE, async () => {
+      if (wrangler.hasExited()) throw new Error("wrangler dev exited before it was ready");
+      const r = await api("GET", "/api/me");
+      return r.status === 200 && r.json && r.json.env === APP_ENV_TAG;
+    }, BOOT_TIMEOUT_MS, 500).catch((e) => {
+      console.log("wrangler output (tail):");
+      console.log(wrangler.tail());
+      throw e;
+    });
+    console.log(`wrangler dev (v5) ready on ${BASE} (${Date.now() - t5} ms)\n`);
+    await scenariosV5(report);
 
     // Third phase, same port and state, with the production gate switched on. The gated
     // server cannot be told apart by /api/me (401), so nothing may answer before it boots.

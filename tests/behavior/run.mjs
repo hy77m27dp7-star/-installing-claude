@@ -114,6 +114,8 @@ const KNOWN_FLAGS = new Set([
   "caption_tail", "length_pattern", "price_unknown", "song_marker_dup", "callback_forced", "media_unknown", "truncated",
   // v3 (SPEC_V3): the voice bank, the asks, the imperfection engine, the tastings.
   "written_joke", "exemplar_verbatim", "ask_nag", "shape_uniform", "over_polish", "retry_skipped", "tasting_void",
+  // v5 (SPEC_V5): a denied send, a renamed mother, a missed rhythm, a pick of a listed artist.
+  "denied_send", "name_drift", "rhythm_missed", "song_known_artist",
 ]);
 
 const PRIOR_HISTORY_RE = /\b(last time|remember when|like before|the other night|the other day we|missed you|when we met|our (?:first|last) (?:date|night|time)|as usual|you always|like always|again already|since we)\b/i;

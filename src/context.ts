@@ -8,9 +8,15 @@
 // assembleContext computes before generation: the pending user row id on an idempotent
 // resume, else "s" + the next seq of the conversation. A retry reuses the same request, so
 // the exemplars and the cue are identical on the retry.
-import { PROMPT_VERSION, SYSTEM_SEPARATOR, buildSystemPrompt, compactPrefix, coolingOff, moodPhase, sceneMode, stablePrefix, stateSections } from "./prompt";
+//
+// v5 (SPEC_V5): the story clock is read first (Justin's rule: time runs while apart and
+// holds inside a together scene), and every story consumer of the turn reads `storyNow`;
+// the new per-turn state (her read of him, dated beats, the people and places in this,
+// what she sent him, the songs he knows, the time since they last talked) joins the reads,
+// each a nicety; the rhythm cue replaces the v3 shape cue.
+import { PROMPT_VERSION, SYSTEM_SEPARATOR, buildSystemPrompt, compactPrefix, intimateScene, moodPhase, sceneMode, stablePrefix, stateSections } from "./prompt";
 import { DEFAULT_SETTINGS, dayKey, getCurrentState, listAssets, listFacts, listHistory, listRecentStoryMessages, listUnknowns, nextSeq } from "./db";
-import { listLog, listThreads, localParts, safeTimezone } from "./life";
+import { listLog, listThreads, localParts, safeTimezone, whereSheIs } from "./life";
 import { pickCallbacks } from "./callbacks";
 import { listMedia } from "./media";
 import { parseInboxImages } from "./images";
@@ -21,12 +27,37 @@ import { listCorrections } from "./corrections";
 import { loadWeights, pickProvisional, rankFacts, rankHistory, rankThreads, recentRecallCount } from "./memory";
 import { listAsks, listWantLogRecent, listWants } from "./wants";
 import { outfitNow, todayRows } from "./grounding";
-import { getWeather } from "./weather";
-import { shapeCue, signature } from "./imperfection";
+import { CACHE_FRESH_MS, getWeather } from "./weather";
+import { hisTextIsSubstantive, rhythmAsShapeCue, rhythmCue, signature } from "./imperfection";
+// v5: the clock (L1), beats (L2), her read of him (L3), state that moves (L4), the record,
+// the world and the songs (L6), places and portraits (unchanged modules).
+import {
+  clockWordsFor, disabledClock, heldGrounding, lastExchange as readLastExchange, loadStoryClock, localDayKeyOf, storyAgeDays,
+  storyNow as storyNowOf, storyWindowStart, timeSince,
+} from "./clock";
+import type { LastExchange, StoryClock } from "./clock";
+import { listBeatViews } from "./arcs";
+import type { BeatView } from "./arcs";
+import { listViews, recentWrongViews } from "./views";
+import type { HerViewRow } from "./views";
+import { coolingOffNow } from "./standing";
+import { listPeople, listWorldFacts, mentionedEntities, syncPeople } from "./world";
+import type { PersonRow, WorldFactRow } from "./world";
+import { listSent } from "./honest";
+import type { SentItem } from "./honest";
+import { listKnownArtists, missingSongNotice } from "./songs";
+import type { KnownArtistRow } from "./songs";
+import { listPlaces, syncPlaces } from "./places";
+import type { PlaceRow } from "./places";
+import { personThreadId } from "./portraits";
 import { FACE_CADENCE_UNREADABLE, himRefs, isHisFirstTurn, loadHisLook, performersCanSee, shouldShowFace, turnsSinceFaceShown } from "./hisFace";
 import type { ImageRef } from "./vision";
-import type { AssembledContext, AskRow, ChatMessage, Correction, Env, HisLook, HistoryRow, MediaRow, OutfitNow, PromptCallback, PromptState, RecallPick, RelationshipState, SceneState, Settings, ShapeCue, SystemMode, VisualAssetRow, VoiceLine, WantLogRow, WantRow, WeatherNow, SaidHere, FactRow } from "./types";
-import type { LifeThread } from "./life";
+import type {
+  AssembledContext, AskRow, ChatMessage, Correction, Env, HisLook, HistoryRow, MediaRow, OutfitNow, PromptCallback, PromptGrounding, PromptSongs,
+  PromptState, PromptWorld, RecallPick, RelationshipState, Rhythm, SceneState, Settings, ShapeCue, SystemMode, TimeSince, VisualAssetRow, VoiceLine,
+  WantLogRow, WantRow, WeatherNow,
+} from "./types";
+import type { LifeLog, LifeThread } from "./life";
 
 const STOP = new Set(["the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with", "is", "it", "was", "i", "you", "he", "she", "we", "they", "that", "this", "my", "your", "her", "his", "me", "so", "do", "not", "just", "like", "what", "about", "have", "had", "be", "are", "were", "from", "as", "if", "then", "than", "too", "very", "ok", "okay", "yeah", "no", "yes"]);
 
@@ -44,6 +75,14 @@ const WANT_LOG_ROWS = 3;
 const WANT_SETTLED_DAYS = 14;
 const WEATHER_TIMEOUT_MS = 3500;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// v5: the rhythm window (section 5), the reads of him and the proven-wrong window (section
+// 3), the beats read (section 2), the messages the world looks for names in (section 8).
+const RHYTHM_WINDOW = 3;
+const VIEWS_READ = 30;
+const WRONG_VIEWS_DAYS = 7;
+const WRONG_VIEWS_SHOWN = 2;
+const BEATS_READ = 200;
+const MENTION_WINDOW = 8;
 
 export function keywords(text: string): Set<string> {
   const out = new Set<string>();
@@ -117,6 +156,16 @@ export interface LoadOptions {
   // block softens once it has been going a while).
   storyRows?: number;
   recall?: boolean;
+  // v5 (SPEC_V5 section 1): the story clock of the turn (absent: no clock, v4's real time),
+  // the last exchange across every conversation (TIME SINCE), and the real instant the turn
+  // runs at (`now` is the story instant; the reads that are his, not hers, use this one).
+  clock?: StoryClock;
+  lastExchange?: LastExchange | null;
+  realNow?: Date;
+  // v5 (section 8): the last messages with who wrote each (hers: her lines), so a relation
+  // word ("my mom") pulls in her mother only from her lines, or from his after "your".
+  // Absent: the plain recentTexts are read as his.
+  mentionTexts?: Array<{ hers: boolean; text: string }>;
 }
 
 // Threads the prompt may know about: live ones and finished ones (a done event is still
@@ -183,8 +232,74 @@ export { saidLine, saidKey, dedupeSaid, listSaidRows, buildSaidHere } from "./sa
 import { buildSaidHere, listSaidRows } from "./said";
 import type { SaidRow } from "./said";
 
+// v5 (section 8): the threads that are in her day: today's life notes (her local day of the
+// story instant) and any beat due today or tomorrow whose title names a person or place of hers.
+function dayThreadIdsFor(threads: LifeThread[], log: LifeLog[], beats: BeatView[], now: Date, tz: string): string[] {
+  const zone = safeTimezone(tz);
+  const today = localDayKeyOf(now, zone);
+  const tomorrow = localDayKeyOf(new Date(now.getTime() + DAY_MS), zone);
+  const out = new Set<string>();
+  for (const row of log) {
+    if (!row || !row.thread_id) continue;
+    const t = Date.parse(row.occurred);
+    if (Number.isFinite(t) && localDayKeyOf(new Date(t), zone) === today) out.add(row.thread_id);
+  }
+  const named = threads.filter((t) => (t.kind === "person" || t.kind === "place") && typeof t.title === "string" && t.title.trim().length >= 3);
+  for (const v of beats) {
+    if (!v || !v.beat || !v.run || v.run.status !== "pending") continue;
+    const at = Date.parse(v.run.due_at);
+    if (!Number.isFinite(at)) continue;
+    const day = localDayKeyOf(new Date(at), zone);
+    if (day !== today && day !== tomorrow) continue;
+    const title = String(v.beat.title ?? "").toLowerCase();
+    for (const t of named) {
+      const words = t.title.trim().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (new RegExp("\\b" + words + "\\b").test(title)) out.add(t.id);
+    }
+  }
+  return Array.from(out);
+}
+
+// v5 (section 8): the place she is at: the scene's location together, her schedule's label apart.
+function dayPlaceTitlesFor(mode: string, scene: SceneState, threads: LifeThread[], now: Date, tz: string): string[] {
+  if (mode === "together") {
+    const loc = typeof scene.location === "string" ? scene.location.trim() : "";
+    return loc ? [loc] : [];
+  }
+  const here = attempt("whereSheIs", () => whereSheIs(threads, now, tz), null as ReturnType<typeof whereSheIs> | null);
+  return here && here.busy && here.label && here.label.trim() ? [here.label.trim()] : [];
+}
+
+// v5 (section 8): the portrait descriptions of her people, by thread id: every approved
+// portrait by the thread its notes name, and every person thread by the portrait it carries.
+function portraitsByThread(assets: VisualAssetRow[], threads: LifeThread[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  const byId = new Map<string, VisualAssetRow>();
+  for (const a of assets) {
+    if (!a || a.role !== "portrait" || a.approval_status !== "approved") continue;
+    byId.set(a.id, a);
+    const tid = personThreadId(a.notes);
+    if (tid && typeof a.prompt === "string" && a.prompt.trim()) out[tid] = a.prompt.trim();
+  }
+  for (const t of threads) {
+    if (t.kind !== "person" || !t.portrait_asset_id) continue;
+    const a = byId.get(t.portrait_asset_id);
+    if (a && typeof a.prompt === "string" && a.prompt.trim()) out[t.id] = a.prompt.trim();
+  }
+  return out;
+}
+
+function artistName(r: KnownArtistRow): string {
+  return typeof r.artist === "string" ? r.artist.trim() : "";
+}
+
 export async function loadPromptState(db: D1Database, recentText = "", opts: LoadOptions = {}): Promise<PromptState> {
+  // v5: `now` is the story instant (the real now unless a together scene holds the moment);
+  // `realNow` is the wall clock for the reads that are his (the sends window, the missing
+  // song, the proven-wrong window).
   const now = opts.now ?? new Date();
+  const realNow = opts.realNow ?? now;
+  const clock: StoryClock | null = opts.clock ?? null;
   const tz = opts.tz && opts.tz.trim() ? opts.tz.trim() : DEFAULT_TZ;
   const settings = opts.settings ?? DEFAULT_SETTINGS;
   const conversationId = opts.conversationId ?? null;
@@ -196,8 +311,14 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
   const wantsShown = Math.min(20, intSetting(settings.wantsShown, 5));
   const recallEvery = opts.recall === false ? 0 : intSetting(settings.provisionalRecallEvery, 0);
   const seed = callbackSeed(now, conversationId);
+  // v5 numbers (the defaults when a stored table predates them).
+  const viewsShown = Math.min(12, intSetting(settings.viewsShown, 6));
+  const sentShown = Math.min(30, intSetting(settings.sentShown, 12));
+  const sentWindowDays = Math.max(1, Math.min(60, intSetting(settings.sentWindowDays, 7)));
+  const knownArtistsShown = Math.min(200, intSetting(settings.knownArtistsShown, 40));
+  const worldShown = Math.min(20, intSetting(settings.worldShown, 6));
 
-  const [facts, historyAll, unknowns, rel, scene, threadsAll, log, media, approvedLines, usedIds, corrections, weights, wantsAll, asks, today, approvedAssets, recallCount, hisLook, saidRows] = await Promise.all([
+  const [facts, historyAll, unknowns, rel, scene, threadsAll, log, media, approvedLines, usedIds, corrections, weights, wantsAll, asks, today, approvedAssets, recallCount, hisLook, saidRows, views, wrongViews, beats, worldFacts, sent, knownRows, missing] = await Promise.all([
     listFacts(db),
     listHistory(db),
     listUnknowns(db, "open"),
@@ -224,44 +345,76 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     nicety("his look", loadHisLook(db, settings), null as HisLook | null),
     // v3.2: what was said in this conversation and is not approved yet.
     nicety("said here", conversationId ? listSaidRows(db, conversationId) : Promise.resolve([] as SaidRow[]), [] as SaidRow[]),
+    // v5 (section 3): her reads of him and the ones he proved wrong in the last week.
+    nicety("views", viewsShown > 0 ? listViews(db, "active", VIEWS_READ) : Promise.resolve([] as HerViewRow[]), [] as HerViewRow[]),
+    nicety("wrong views", viewsShown > 0 ? recentWrongViews(db, new Date(realNow.getTime() - WRONG_VIEWS_DAYS * DAY_MS).toISOString(), WRONG_VIEWS_SHOWN) : Promise.resolve([] as HerViewRow[]), [] as HerViewRow[]),
+    // v5 (section 2): the dated beats on her wants, with the owner's runs.
+    nicety("beats", listBeatViews(db, { status: "active", limit: BEATS_READ }), [] as BeatView[]),
+    // v5 (section 8): the fixed facts about her people and places.
+    nicety("world facts", listWorldFacts(db, { status: "approved" }), [] as WorldFactRow[]),
+    // v5 (section 6): what she sent him, on the wall clock's window.
+    // Review fix: the window is story time (held spans do not use it up).
+    nicety("sent", sentShown > 0 ? listSent(db, { now: realNow, windowDays: sentWindowDays, limit: sentShown, since: clock ? storyWindowStart(clock, sentWindowDays * DAY_MS) : null }) : Promise.resolve([] as SentItem[]), [] as SentItem[]),
+    // v5 (section 9): the artists he knows or did not like, and a pick of hers that is not anywhere.
+    nicety("known artists", knownArtistsShown > 0 ? listKnownArtists(db, undefined, knownArtistsShown) : Promise.resolve([] as KnownArtistRow[]), [] as KnownArtistRow[]),
+    nicety("missing song", knownArtistsShown > 0 ? missingSongNotice(db, realNow) : Promise.resolve(null), null as Awaited<ReturnType<typeof missingSongNotice>>),
+  ]);
+
+  // v5 (section 8): her people and places, synced from the threads just read (a write only
+  // when something moved), each a nicety.
+  const [people, places] = await Promise.all([
+    nicety("people", syncPeople(db, threadsAll).then(() => listPeople(db)), [] as PersonRow[]),
+    nicety("places", syncPlaces(db, threadsAll).then(() => listPlaces(db)), [] as PlaceRow[]),
   ]);
 
   const recentKeywords = keywords(recentText);
   const justinAll = facts.filter((f) => f.scope === "justin" || f.scope === "shared");
+  const avelieAll = facts.filter((f) => f.scope === "avelie");
   // A fact about him can only exist because they talked: it ends the stranger mode just as
   // a history entry does, so the prompt never says both at once. A faded fact still counts.
   const hasSharedHistory = historyAll.length > 0 || justinAll.length > 0;
   const living = livingThreads(threadsAll);
 
   // v3 (BB): what mattered and what came up recently stays; what a person would have let
-  // go is not in the prompt (and comes back the moment it is touched).
-  const justinFacts = attempt("rankFacts", () => rankFacts(justinAll, weights, recentKeywords, now, settings).kept, justinAll);
-  const history = attempt("rankHistory", () => rankHistory(historyAll, weights, recentKeywords, now, settings).kept, selectHistory(historyAll, recentText));
-  const threads = attempt("rankThreads", () => rankThreads(living, weights, recentKeywords, now, settings).kept, living);
+  // go is not in the prompt (and comes back the moment it is touched). v5: the ages are
+  // story time, so nothing fades inside a held scene (section 7, Justin's rule).
+  const memSettings = clock ? { ...settings, ageDaysOf: (iso: string): number => storyAgeDays(clock, iso) } : settings;
+  const justinFacts = attempt("rankFacts", () => rankFacts(justinAll, weights, recentKeywords, now, memSettings).kept, justinAll);
+  const history = attempt("rankHistory", () => rankHistory(historyAll, weights, recentKeywords, now, memSettings).kept, selectHistory(historyAll, recentText));
+  const threads = attempt("rankThreads", () => rankThreads(living, weights, recentKeywords, now, memSettings).kept, living);
 
   const mode = sceneMode(scene.state.status);
-  const cooling = coolingOff(rel.state.cooling_off_until, now);
-  const phase = moodPhase(rel.state, now, numSetting(settings.moodDaysDefault, 3), rel.row.created_at);
+  // v5: the cooling off and the mood phase on story time (section 4, section 1).
+  const cooling = attempt("coolingOffNow", () => coolingOffNow(rel.state, now, clock), false);
+  const phase = attempt("moodPhase", () => moodPhase(rel.state, now, numSetting(settings.moodDaysDefault, 3), rel.row.created_at, clock), "gone" as ReturnType<typeof moodPhase>);
   const mood = phase === "gone" ? "" : (typeof rel.state.mood === "string" ? rel.state.mood.trim() : "");
 
   // v3 (BB): the one half-remembered detail; never on an opener or a first text, never
   // while the setting is 0 (the shipped default).
   let recall: RecallPick | null = null;
   if (recallEvery > 0 && !opener) {
-    recall = attempt("pickProvisional", () => pickProvisional(justinAll, weights, recentKeywords, now, settings, recallCount, cooling, hasSharedHistory, opener) ?? null, null);
+    recall = attempt("pickProvisional", () => pickProvisional(justinAll, weights, recentKeywords, now, memSettings, recallCount, cooling, hasSharedHistory, opener) ?? null, null);
   }
 
-  // v3 (GG): the shape cue, rolled against the signatures of her last two replies.
+  // v3 (GG): the signatures of her last two replies (shape_uniform reads them).
   const recentSignatures = attempt("signatures", () => (opts.recentAssistantTexts ?? []).slice(-SIGNATURE_WINDOW).map((t) => signature(t)), [] as string[]);
-  let cue: ShapeCue | null = null;
+  // v5 (section 5): the rhythm cue on every turn while the cues are on (never for a call),
+  // rolled against her last three replies and his message; the v3 shape cue is its mapping.
+  let rhythm: Rhythm | null = null;
   if (opts.cues !== false) {
     const voiceAllowed = settings.voiceMode !== "off" && opts.env !== undefined && attempt("voiceConfigured", () => voiceConfigured(opts.env as Env, settings), false);
-    cue = attempt("shapeCue", () => shapeCue(seed + ":cue:" + turnKey, recentSignatures, {
+    const pendingText = opener ? "" : opts.hisText ?? "";
+    rhythm = attempt("rhythmCue", () => rhythmCue(seed + ":cue:" + turnKey, (opts.recentAssistantTexts ?? []).slice(-RHYTHM_WINDOW), {
+      enabled: settings.textureCuesEnabled !== false,
+      together: mode === "together",
+      opener,
+      intimate: intimateScene(scene.state),
       voiceAllowed,
       typoShare: numSetting(settings.typoCueShare, 0),
-      enabled: settings.textureCuesEnabled !== false,
+      substantive: hisTextIsSubstantive(pendingText),
     }), null);
   }
+  const cue: ShapeCue | null = attempt("rhythmAsShapeCue", () => rhythmAsShapeCue(rhythm), null);
 
   // v3 (AA): the tags this turn matches and the bank lines that fit them.
   let tags: string[] = [];
@@ -280,21 +433,29 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
 
   // v3 (DD): what she is wearing today, from today's approved photo or today's outfit row.
   // Only her scene photos: a master, a portrait, a clip or (v3.1) a reference photo of him
-  // never says what she wore.
+  // never says what she wore. v5 (section 1): while a together scene is held, the held
+  // snapshot (the weather, the outfit and today's rows of that moment, everything inside
+  // the span stamped at it) and the scene's own time words.
+  const city = typeof settings.herCity === "string" ? settings.herCity.trim() : "";
   const sceneAssets = approvedAssets.filter((a) => a.role === "scene");
-  const outfit = attempt("outfitNow", () => outfitNow(sceneAssets, today, now, tz), null as unknown as OutfitNow);
-  const grounding = {
-    city: typeof settings.herCity === "string" ? settings.herCity.trim() : "",
-    weather: opts.weather ?? null,
-    outfit,
-    today,
-  };
+  let grounding: PromptGrounding;
+  let clockWords: string | null = null;
+  const open = clock && clock.enabled && clock.frozen && clock.open ? clock.open : null;
+  const held = open && clock ? attempt("heldGrounding", () => heldGrounding(open, { assets: approvedAssets, rows: today }, clock), null) : null;
+  if (held && clock) {
+    grounding = { city, weather: held.weather ?? opts.weather ?? null, outfit: held.outfit, today: held.today };
+    clockWords = attempt("clockWordsFor", () => clockWordsFor(scene.state, clock), null);
+  } else {
+    const outfit = attempt("outfitNow", () => outfitNow(sceneAssets, today, now, tz), null as unknown as OutfitNow);
+    grounding = { city, weather: opts.weather ?? null, outfit, today };
+  }
 
   let callbacks: PromptCallback[] = [];
   try {
     // v3 (CC): the picker also sees her wants and the open asks, and knows an opener when it
     // sees one (an unanswered ask never opens a first text). Passed as a variable, not a
-    // literal, so a picker that ignores the extra keys still typechecks.
+    // literal, so a picker that ignores the extra keys still typechecks. v5: the dated beats
+    // (section 2) and the story clock for every age it measures (section 1).
     const cbArgs = {
       history: historyAll,
       threads,
@@ -306,6 +467,10 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
       wants,
       wantLog,
       asks,
+      beats,
+      clock,
+      // Her calendar for a pending beat's day word (the picker falls back to UTC without it).
+      tz,
     };
     callbacks = pickCallbacks(cbArgs).slice(0, 2);
   } catch (e) {
@@ -314,12 +479,53 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     callbacks = [];
   }
 
+  // v5 (section 8): the people and places in this: named in the last messages or his
+  // pending text, or in her day.
+  const mentionTexts = opts.mentionTexts
+    ? opts.mentionTexts.slice(-MENTION_WINDOW)
+    : (opts.recentTexts ?? []).slice(-MENTION_WINDOW).map((text) => ({ hers: false, text }));
+  const texts = [...mentionTexts, ...(opener || !opts.hisText ? [] : [{ hers: false, text: opts.hisText }])];
+  const picked = attempt("mentionedEntities", () => mentionedEntities({
+    people,
+    places,
+    texts,
+    dayThreadIds: dayThreadIdsFor(threadsAll, log, beats, now, tz),
+    dayPlaceTitles: dayPlaceTitlesFor(mode, scene.state, threadsAll, now, tz),
+  }), { personIds: [] as string[], placeIds: [] as string[] });
+  const world: PromptWorld = {
+    people,
+    places,
+    threads: living,
+    facts: worldFacts,
+    portraits: portraitsByThread(approvedAssets, threadsAll),
+    picked,
+  };
+
+  // v5 (section 9): the artists by name, newest first (the list is read newest first).
+  const songs: PromptSongs | null = knownArtistsShown > 0
+    ? {
+      known: knownRows.filter((r) => r.kind === "known").map(artistName).filter(Boolean),
+      disliked: knownRows.filter((r) => r.kind === "disliked").map(artistName).filter(Boolean),
+      missing: missing ? { messageId: missing.messageId, artist: missing.artist, title: missing.title } : null,
+    }
+    : null;
+
+  // v5 (section 1): how long since they last talked, on the story clock (the section builder
+  // decides whether it renders: apart only, never on an opener, never under the minimum).
+  let timeSinceValue: TimeSince | null = null;
+  if (clock && opts.lastExchange) {
+    const last = opts.lastExchange;
+    timeSinceValue = attempt("timeSince", () => timeSince(clock, last, tz), null);
+  }
+
   return {
     hasSharedHistory,
     fixedFacts: facts.filter((f) => f.scope === "fixed"),
-    avelieFacts: facts.filter((f) => f.scope === "avelie"),
+    avelieFacts: avelieAll,
     justinFacts,
-    saidHere: buildSaidHere(saidRows, justinFacts, facts.filter((f) => f.scope === "avelie")),
+    // v5 (section 7): the said lines drop anything already kept, compared against EVERY
+    // approved fact of each scope, not only the ones firm this turn.
+    saidHere: buildSaidHere(saidRows, justinAll, avelieAll),
     storyRows: typeof opts.storyRows === "number" && Number.isFinite(opts.storyRows) ? Math.max(0, Math.trunc(opts.storyRows)) : 0,
     history,
     unknowns,
@@ -349,6 +555,24 @@ export async function loadPromptState(db: D1Database, recentText = "", opts: Loa
     correctionsShown,
     // v3.1 (JJ)
     hisLook,
+    // v5
+    clock,
+    timeSince: timeSinceValue,
+    clockWords,
+    gapLineMinMinutes: numSetting(settings.gapLineMinMinutes, 120),
+    ...(viewsShown > 0 ? { views, wrongViews } : {}),
+    viewsShown,
+    viewMinConfidence: numSetting(settings.viewMinConfidence, 0.4),
+    beats,
+    beatHorizonDays: numSetting(settings.beatHorizonDays, 7),
+    arcMemoryDays: numSetting(settings.arcMemoryDays, 7),
+    world,
+    worldShown,
+    ...(sentShown > 0 ? { sent } : {}),
+    songs,
+    knownArtistsShown,
+    rhythm,
+    frictionDaysDefault: numSetting(settings.frictionDaysDefault, 4),
   };
 }
 
@@ -370,6 +594,29 @@ async function weatherFor(env: Env | undefined, db: D1Database, settings: Settin
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+// v5 (section 1, skeptic 11): the clock of a turn, read first and never costing the turn.
+async function clockFor(db: D1Database, settings: Settings, realNow: Date): Promise<StoryClock> {
+  return nicety("story clock", loadStoryClock(db, settings, realNow), disabledClock(realNow));
+}
+
+// Whether this turn may fetch the weather. Apart (or no clock): always, as v4. While a
+// together scene is held: only when the open span has no weather yet AND the real now is
+// within CACHE_FRESH_MS of the moment the scene froze, so a held scene never shows the real
+// weather of a later hour or day (then the commit holds what was fetched).
+export function weatherAllowed(clock: StoryClock, realNow: Date): boolean {
+  if (!clock.enabled || !clock.frozen || !clock.open) return true;
+  if (clock.open.weather_json) return false;
+  const frozenAt = Date.parse(clock.open.frozen_at);
+  if (!Number.isFinite(frozenAt)) return false;
+  const age = realNow.getTime() - frozenAt;
+  return age >= 0 && age <= CACHE_FRESH_MS;
+}
+
+// The last messages with who wrote each, for the people and places in this (section 8).
+function mentionRows(rows: Array<{ role: string; content: string }>): Array<{ hers: boolean; text: string }> {
+  return rows.slice(-MENTION_WINDOW).map((r) => ({ hers: r.role === "assistant", text: r.content }));
 }
 
 export interface AssembleOptions {
@@ -403,16 +650,23 @@ export async function assembleContext(
   opts: AssembleOptions = {},
 ): Promise<AssembledContext> {
   const opener = opts.opener === true;
-  const [recentAll, seq, weather, sinceFace] = await Promise.all([
+  // v5 (section 1): the real now is the parameter; the story clock is read first (never
+  // throws), and every story consumer below reads the story instant.
+  const realNow = now;
+  const clock = await clockFor(db, settings, realNow);
+  const storyNow = storyNowOf(clock);
+  const [recentAll, seq, weather, sinceFace, last] = await Promise.all([
     listRecentStoryMessages(db, conversationId, settings.contextRecentMessages),
     pendingMessageId ? Promise.resolve(0) : nextSeq(db, conversationId),
-    weatherFor(opts.env, db, settings, now),
+    weatherAllowed(clock, realNow) ? weatherFor(opts.env, db, settings, realNow) : Promise.resolve(null),
     // v3.1 (JJ): her replies since his photos last rode along here, plus this turn: Infinity
     // when never (the row says null). A failed read (the his_face_seq column not there yet,
     // before 0007) counts as just shown (FACE_CADENCE_UNREADABLE, 0), the cheap failure: the
     // Apart cadence then waits for the migration instead of the photos riding on every
     // Apart turn (v3.1 fix 2; the first turn, Together turns and a mention still show them).
     nicety("his face cadence", turnsSinceFaceShown(db, conversationId), FACE_CADENCE_UNREADABLE),
+    // v5 (section 1): the last exchange across every conversation (TIME SINCE).
+    nicety("last exchange", readLastExchange(db, pendingMessageId, realNow), null as LastExchange | null),
   ]);
   const turnKey = pendingMessageId ?? "s" + seq;
   const recentRows = recentAll.filter((r) => r.content.trim().length > 0 && r.id !== pendingMessageId);
@@ -427,7 +681,11 @@ export async function assembleContext(
   const recentAssistantTexts = recentRows.filter((r) => r.role === "assistant").slice(-5).map((r) => r.content);
   const state = await loadPromptState(db, recentText, {
     storyRows: recentRows.length,
-    now,
+    now: storyNow,
+    realNow,
+    clock,
+    lastExchange: last,
+    mentionTexts: mentionRows(recentRows),
     tz: settings.timezone,
     conversationId,
     recentTexts: [...recentRows.slice(-CALLBACK_RECENT).map((r) => r.content), pendingUserText],
@@ -480,6 +738,8 @@ export async function assembleContext(
     turnKey,
     opener,
     hisFaceShown,
+    clock,
+    storyNow: storyNow.toISOString(),
   };
 }
 
@@ -515,16 +775,25 @@ export async function assembleSystemOnly(
   mode: SystemMode = "compact",
   opts: { env?: Env } = {},
 ): Promise<SystemOnly> {
-  const [recentAll, seq, weather] = await Promise.all([
+  // v5 (section 1): the same clock as a turn, with no pending row.
+  const realNow = now;
+  const clock = await clockFor(db, settings, realNow);
+  const storyNow = storyNowOf(clock);
+  const [recentAll, seq, weather, last] = await Promise.all([
     listRecentStoryMessages(db, conversationId, settings.contextRecentMessages),
     nextSeq(db, conversationId),
-    weatherFor(opts.env, db, settings, now),
+    weatherAllowed(clock, realNow) ? weatherFor(opts.env, db, settings, realNow) : Promise.resolve(null),
+    nicety("last exchange", readLastExchange(db, null, realNow), null as LastExchange | null),
   ]);
   const recentRows = recentAll.filter((r) => r.content.trim().length > 0);
   const recentText = recentRows.slice(-8).map((r) => r.content).join(" ");
   const recentAssistantTexts = recentRows.filter((r) => r.role === "assistant").slice(-5).map((r) => r.content);
   const promptState = await loadPromptState(db, recentText, {
-    now,
+    now: storyNow,
+    realNow,
+    clock,
+    lastExchange: last,
+    mentionTexts: mentionRows(recentRows),
     tz: settings.timezone,
     conversationId,
     recentTexts: recentRows.slice(-CALLBACK_RECENT).map((r) => r.content),

@@ -5,6 +5,10 @@
 // v3 (SPEC_V3 II): the console is a judgment job and runs on the proposal performer
 // (settings.proposalProvider and proposalModel), never on her performer, so judgment stays
 // on Claude while a fine-tuned texter is live. The counts gain the v3 tables.
+//
+// v5 (SPEC_V5 "Routes added"): the counts gain her clock (held or not, the spans), the
+// beats, her reads of him, the guesses about him, her named people, the fixed facts of her
+// world, the artists he knows and the last night the story pass ran, in their own batch.
 import { CONSTITUTION_VERSION } from "./generated/constitution";
 import { PROMPT_VERSION, operatorSystemPrompt } from "./prompt";
 import { assertBudget, costMicro, estimateUsd, usageSummary } from "./budget";
@@ -54,7 +58,22 @@ export async function systemInfo(env: Env, db: D1Database, settings: Settings): 
     "SELECT COUNT(*) AS n FROM visual_assets WHERE role = 'callface' AND approval_status = 'approved'",
     "SELECT COUNT(*) AS n FROM spotify_auth WHERE id = 'owner' AND status = 'connected'",
   ];
-  const [counts, spend, rel, scene, v3Counts, finetune, v4Counts] = await Promise.all([
+  // v5 counts (SPEC_V5 "Routes added"), their own batch: a database behind migration 0009
+  // answers zeros (and no last night). Counted from the tables as they stand; the clock is
+  // held when a span is open and the owner has not switched the clock off.
+  const v5Sql = [
+    "SELECT COUNT(*) AS n FROM story_clock WHERE resumed_at IS NULL",
+    "SELECT COUNT(*) AS n FROM story_clock",
+    "SELECT COUNT(*) AS n FROM beat_runs r JOIN arc_beats b ON b.id = r.beat_id WHERE b.status = 'active' AND r.status IN ('pending', 'proposed')",
+    "SELECT COUNT(*) AS n FROM beat_runs WHERE status = 'resolved'",
+    "SELECT COUNT(*) AS n FROM her_views WHERE status = 'active'",
+    "SELECT COUNT(*) AS n FROM facts WHERE status = 'approved' AND inferred = 1",
+    "SELECT COUNT(*) AS n FROM people WHERE named = 1",
+    "SELECT COUNT(*) AS n FROM world_facts WHERE status = 'approved'",
+    "SELECT COUNT(*) AS n FROM known_artists",
+    "SELECT MAX(day) AS day FROM nightly_runs",
+  ];
+  const [counts, spend, rel, scene, v3Counts, finetune, v4Counts, v5Counts] = await Promise.all([
     db.batch<{ n: number }>(countSql.map((s) => db.prepare(s))),
     usageSummary(db, settings),
     getCurrentState<RelationshipState>(db, "relationship"),
@@ -62,10 +81,14 @@ export async function systemInfo(env: Env, db: D1Database, settings: Settings): 
     db.batch<{ n: number }>(v3Sql.map((s) => (s.includes("?1") ? db.prepare(s).bind(dayKey()) : db.prepare(s)))).catch(() => null),
     finetuneStatus(db, settings).catch(() => null),
     db.batch<{ n: number }>(v4Sql.map((s) => db.prepare(s))).catch(() => null),
+    db.batch<{ n?: number; day?: string | null }>(v5Sql.map((s) => db.prepare(s))).catch(() => null),
   ]);
   const n = (i: number): number => Number(counts[i]?.results[0]?.n ?? 0);
   const v = (i: number): number => Number(v3Counts?.[i]?.results[0]?.n ?? 0);
   const w = (i: number): number => Number(v4Counts?.[i]?.results[0]?.n ?? 0);
+  const x = (i: number): number => Number(v5Counts?.[i]?.results[0]?.n ?? 0);
+  const lastDay = v5Counts?.[9]?.results[0]?.day;
+  const clockOn = (settings as unknown as Record<string, unknown>).storyClockEnabled !== false;
   return {
     constitutionVersion: CONSTITUTION_VERSION,
     promptVersion: PROMPT_VERSION,
@@ -93,6 +116,17 @@ export async function systemInfo(env: Env, db: D1Database, settings: Settings): 
       placesWithPicture: w(0),
       callFaceClips: w(1),
       spotifyConnected: w(2) > 0 ? 1 : 0,
+      // v5 (SPEC_V5 "Routes added")
+      clockFrozen: clockOn && x(0) > 0 ? 1 : 0,
+      clockSpans: x(1),
+      beatsPending: x(2),
+      beatsResolved: x(3),
+      viewsActive: x(4),
+      factsInferred: x(5),
+      peopleNamed: x(6),
+      worldFacts: x(7),
+      knownArtists: x(8),
+      lastNightlyDay: typeof lastDay === "string" && lastDay ? lastDay : null,
     },
     spend: {
       todayUsd: spend.todayUsd,

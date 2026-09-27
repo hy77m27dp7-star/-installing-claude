@@ -88,7 +88,8 @@ test("the ledger's order: 0008 sorts after 0007 and nothing sorts after 0008", (
   const idx = files.indexOf("0008_v4.sql");
   if (idx < 0) return;
   assert.equal(files[idx - 1], "0007_his_face.sql");
-  assert.equal(idx, files.length - 1, "0008 is the last migration");
+  const after = files.slice(idx + 1);
+  assert.ok(after.length === 0 || (after.length === 1 && after[0] === "0009_v5.sql"), "0008 is the last v4 migration; only v5's 0009 sorts after it: " + after.join(", "));
 });
 
 test("the frozen migrations 0001 to 0007 match git HEAD", (tc) => {

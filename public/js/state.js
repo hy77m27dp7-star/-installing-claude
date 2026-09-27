@@ -1,10 +1,28 @@
 // State: the approved record. Now, Life, Wants, History, Facts, Memory, Voice, Notes,
 // Unknowns, Inbox, Rulebook, Export.
+// v5 (SPEC_V5 sections 2, 4, 7, 8): dated beats on each want, friction on the Now tab, the
+// people's locks, Rename and fixed facts on the Life tab, the guess chip on facts, and the
+// Inbox labels of the seven new kinds.
 import { api, apiForm, h, chip, clear, download, flash, flagCodes, fmtDate, fmtTime, fromLocalInput, parseJson, today, toLocalInput, ago, truncate } from "./api.js";
 
 const $ = (id) => document.getElementById(id);
 const TABS = ["now", "life", "wants", "history", "facts", "memory", "voice", "notes", "unknowns", "inbox", "rulebook", "export"];
-const KINDS = ["avelie_fact", "justin_fact", "relationship", "scene", "history", "private_language", "opinion_change", "unknown", "life", "life_update", "want", "want_update", "ask", "ask_update", "grounding"];
+const KINDS = ["avelie_fact", "justin_fact", "relationship", "scene", "history", "private_language", "opinion_change", "unknown", "life", "life_update", "want", "want_update", "ask", "ask_update", "grounding",
+  "want_beat", "beat_outcome", "her_view", "fact_merge", "fact_mark", "world_fact", "known_artist"];
+// The Inbox chip for a kind; a kind not listed reads as its own name.
+const KIND_LABEL = {
+  want_beat: "beat", beat_outcome: "beat outcome", her_view: "her read", fact_merge: "same fact",
+  fact_mark: "guess", world_fact: "world fact", known_artist: "his ears",
+};
+// v5 section 2: the beat kinds and the outcomes each takes (src/arcs.ts STEP_OUTCOMES,
+// EVENT_OUTCOMES, HIS_PARTS).
+const BEAT_OUTCOMES = { step: ["did_it", "missed", "postponed"], event: ["went", "went_well", "went_badly", "chickened_out", "postponed"] };
+const HIS_PARTS = ["none", "encouraged", "asked", "came", "forgot"];
+const BEAT_VARIANTS_MAX = 4;
+const words = (v) => String(v || "").replace(/_/g, " ");
+// v5 section 4: the lateral states beside the ladder (src/standing.ts lateralOf).
+const LATERAL_RE = [/\b(?:broke up|broken up|split up|ended it|it'?s over)\b|^over$/, /\bon a break\b/, /\bcooling off\b/];
+const FRICTION_NONE = /^(?:none|healed|no friction|nothing)$/i;
 const LIFE_KINDS = [["routine", "Routines"], ["event", "Events"], ["person", "People"], ["place", "Places"], ["arc", "Arcs"]];
 // Monday first on screen; the numbers follow JavaScript's getDay (Sunday = 0).
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -95,6 +113,8 @@ const EDITORS = [
 ];
 
 let settingsCache = null;
+// GET /api/clock, read with the Now tab: the friction phase runs on story time.
+let nowClock = null;
 
 async function loadSettingsOnce() {
   if (settingsCache) return settingsCache;
@@ -104,7 +124,8 @@ async function loadSettingsOnce() {
 
 async function loadNow() {
   try {
-    const [bundle] = await Promise.all([api("GET", "/api/state"), loadSettingsOnce()]);
+    const [bundle, clock] = await Promise.all([api("GET", "/api/state"), api("GET", "/api/clock").catch(() => null), loadSettingsOnce()]);
+    nowClock = clock && typeof clock === "object" ? clock : null;
     for (const ed of EDITORS) {
       fillEditor(ed, bundle[ed.entity]);
       loadVersions(ed);
@@ -203,7 +224,19 @@ function moodPhase(st, versionCreatedAt) {
   return "gone";
 }
 
+// Whether a cooling off runs, as src/standing.ts coolingOffNow reads it: the story-time pair
+// when it is there, else the deadline. Only when the server sent no `live` view.
+function coolingLocal(st) {
+  const setAt = st && st.cooling_off_set_at ? String(st.cooling_off_set_at) : "";
+  const hours = Number(st && st.cooling_off_hours);
+  if (setAt && Number.isFinite(Date.parse(setAt)) && Number.isFinite(hours) && hours > 0) return storyElapsed(setAt) < hours * 3600000;
+  const until = st && st.cooling_off_until ? Date.parse(st.cooling_off_until) : NaN;
+  return Number.isFinite(until) && until > Date.now();
+}
+
 // Mood, mood days and cooling off: fields of the relationship state with their own controls.
+// `version.live` (GET /api/state, PUT /api/state/relationship) is the server's own read of the
+// cooling off and the friction phase on story time; the page computes them only without it.
 function fillMood(st, version) {
   $("moodInput").value = st.mood ? String(st.mood) : "";
   $("moodDays").value = st.mood_days !== undefined && st.mood_days !== null ? String(st.mood_days) : "";
@@ -212,9 +245,103 @@ function fillMood(st, version) {
   clear(chips);
   const phase = moodPhase(st, version && version.created_at);
   if (phase) chips.append(chip(phase, phase === "gone" ? "" : phase === "fresh" ? "amber" : "accent"));
-  const until = st.cooling_off_until ? Date.parse(st.cooling_off_until) : NaN;
-  if (Number.isFinite(until) && until > Date.now()) chips.append(chip("cooling off", "amber"));
+  const live = version && version.live && typeof version.live === "object" ? version.live : null;
+  const cooling = live ? live.coolingOff === true : coolingLocal(st);
+  if (cooling) chips.append(chip("cooling off", "amber"));
+  fillFriction(st, version);
 }
+
+// ------------------------------------------------------------ friction (v5 section 4)
+
+// Real time since `fromIso` minus the held spans GET /api/clock lists (src/clock.ts
+// storyElapsedMs, on the spans the page can see).
+function storyElapsed(fromIso) {
+  const from = Date.parse(fromIso || "");
+  const now = Date.now();
+  if (!Number.isFinite(from) || now <= from) return 0;
+  let held = 0;
+  const c = nowClock;
+  if (c && c.enabled !== false && Array.isArray(c.recent)) {
+    for (const sp of c.recent) {
+      const start = Date.parse(sp && sp.frozenAt);
+      const end = sp && sp.resumedAt ? Date.parse(sp.resumedAt) : now;
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      held += Math.max(0, Math.min(now, end) - Math.max(from, start));
+    }
+  }
+  return Math.max(0, now - from - held);
+}
+
+function frictionPhase(st, versionCreatedAt) {
+  const f = String((st && st.friction) || "").trim();
+  if (!f || FRICTION_NONE.test(f)) return null;
+  const own = Number(st.friction_days);
+  const def = Number(settingsCache && settingsCache.frictionDaysDefault);
+  const days = Number.isFinite(own) && own >= 1 && own <= 14 ? own : Number.isFinite(def) && def >= 1 && def <= 14 ? def : 4;
+  const t = storyElapsed(st.friction_set_at || versionCreatedAt || null) / (days * 86400000);
+  if (t < 0.5) return "fresh";
+  if (t < 1) return "healing";
+  if (t < 2) return "faint";
+  return "healed";
+}
+
+function lateralOf(status) {
+  const t = String(status || "").trim().toLowerCase();
+  return LATERAL_RE.some((re) => re.test(t));
+}
+
+function fillFriction(st, version) {
+  const input = $("frictionInput");
+  if (!input) return;
+  const f = st.friction && !FRICTION_NONE.test(String(st.friction).trim()) ? String(st.friction) : "";
+  input.value = f;
+  $("frictionDays").value = st.friction_days !== undefined && st.friction_days !== null ? String(st.friction_days) : "";
+  const chips = $("frictionChips");
+  clear(chips);
+  const live = version && version.live && typeof version.live === "object" ? version.live : null;
+  const phase = live ? (typeof live.friction === "string" && live.friction ? live.friction : null) : frictionPhase(st, version && version.created_at);
+  if (phase) chips.append(chip(phase, phase === "fresh" ? "amber" : phase === "healed" ? "" : "accent"));
+  const lateral = lateralOf(st.status);
+  $("statusBeforeField").classList.toggle("hidden", !lateral);
+  $("statusBefore").value = lateral && st.status_before ? String(st.status_before) : "";
+  if (lateral) chips.append(chip(String(st.status), "amber"));
+}
+
+async function saveFriction(clearIt) {
+  const slot = $("frictionStatus");
+  const buttons = [$("frictionSave"), $("frictionClear")];
+  const text = clearIt ? "" : $("frictionInput").value.trim();
+  const daysRaw = clearIt ? "" : $("frictionDays").value.trim();
+  const days = daysRaw ? Number(daysRaw) : null;
+  if (daysRaw && (!Number.isInteger(days) || days < 1 || days > 14)) { flash(slot, "friction days 1 to 14", "danger"); return; }
+  for (const b of buttons) b.disabled = true;
+  try {
+    const bundle = await api("GET", "/api/state");
+    const cur = bundle.relationship && bundle.relationship.state ? bundle.relationship.state : {};
+    const next = { ...cur };
+    if (!text) {
+      for (const k of ["friction", "friction_set_at", "friction_days"]) delete next[k];
+    } else {
+      // A changed friction is stamped again by the server; the same one keeps its stamp.
+      if (String(cur.friction || "").trim().toLowerCase() !== text.toLowerCase()) delete next.friction_set_at;
+      next.friction = text;
+      if (days === null) delete next.friction_days;
+      else next.friction_days = days;
+    }
+    const r = await api("PUT", "/api/state/relationship", { state: next, note: clearIt ? "friction cleared" : "friction" });
+    fillEditor(EDITORS[0], r);
+    fillMood(r.state || next, r);
+    flash(slot, "saved v" + r.version, "ok");
+    loadVersions(EDITORS[0]);
+  } catch (e) {
+    flash(slot, e.code, "danger");
+  } finally {
+    for (const b of buttons) b.disabled = false;
+  }
+}
+
+if ($("frictionSave")) $("frictionSave").addEventListener("click", () => saveFriction(false));
+if ($("frictionClear")) $("frictionClear").addEventListener("click", () => saveFriction(true));
 
 // `patch` overwrites fields; `remove` drops them from the state (a cleared mood takes
 // mood_set_at and mood_days with it; the server sets mood_set_at again on the next mood).
@@ -244,9 +371,13 @@ $("moodSave").addEventListener("click", () => {
   const daysRaw = $("moodDays").value.trim();
   const days = daysRaw ? Number(daysRaw) : null;
   if (daysRaw && (!Number.isInteger(days) || days < 1 || days > 14)) { flash($("moodStatus"), "mood days 1 to 14", "danger"); return; }
-  const patch = { mood: orNull($("moodInput").value), cooling_off_until: fromLocalInput($("coolInput").value) };
+  const until = fromLocalInput($("coolInput").value);
+  const patch = { mood: orNull($("moodInput").value), cooling_off_until: until };
   if (days !== null) patch.mood_days = days;
-  saveMood(patch, days === null ? ["mood_days"] : [], "mood");
+  // An empty cooling-off field ends any cooling off, the story-time pair too.
+  const remove = days === null ? ["mood_days"] : [];
+  if (until === null) remove.push("cooling_off_set_at", "cooling_off_hours");
+  saveMood(patch, remove, "mood");
 });
 $("moodClear").addEventListener("click", () => {
   $("moodInput").value = "";
@@ -327,6 +458,9 @@ let lifeStatus = "active";
 let lifeTz = "America/New_York";
 let lifeData = { threads: [], log: [] };
 let threadWeights = null;
+// GET /api/world (v5 section 8): people by their thread id, places by their title.
+let world = { people: new Map(), places: new Map() };
+const renamePending = new Set();
 let portraitCandidates = new Map();
 const portraitPending = new Set();
 
@@ -344,12 +478,14 @@ async function loadLife() {
   const box = $("lifeGroups");
   clear(box);
   try {
-    const [r, settings, weights, assets] = await Promise.all([
+    const [r, settings, weights, assets, worldView] = await Promise.all([
       api("GET", "/api/life?status=" + lifeStatus),
       loadSettingsOnce(),
       loadWeightMap("thread"),
       api("GET", "/api/assets").catch(() => null),
+      api("GET", "/api/world").catch(() => null),
     ]);
+    world = indexWorld(worldView);
     if (settings && typeof settings.timezone === "string" && settings.timezone) lifeTz = settings.timezone;
     lifeData = { threads: Array.isArray(r.threads) ? r.threads : [], log: Array.isArray(r.log) ? r.log : [] };
     threadWeights = weights;
@@ -361,6 +497,101 @@ async function loadLife() {
   for (const [kind, label] of LIFE_KINDS) box.append(lifeGroup(kind, label, lifeData.threads.filter((t) => t.kind === kind)));
   renderLog();
   loadToday();
+}
+
+// The same normalisation src/places.ts uses for a title: lowercase, one space.
+function titleNorm(t) {
+  return String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function indexWorld(v) {
+  const out = { people: new Map(), places: new Map() };
+  if (!v || typeof v !== "object") return out;
+  for (const p of Array.isArray(v.people) ? v.people : []) if (p && p.thread_id) out.people.set(String(p.thread_id), p);
+  for (const p of Array.isArray(v.places) ? v.places : []) if (p && p.title) out.places.set(titleNorm(p.title), p);
+  return out;
+}
+
+function personOf(t) {
+  return t && t.kind === "person" && t.id ? world.people.get(String(t.id)) || null : null;
+}
+
+function placeOf(t) {
+  return t && t.kind === "place" ? world.places.get(titleNorm(t.title)) || null : null;
+}
+
+// Fixed facts about a person or a place (v5 section 8): each with Remove, and an Add field.
+function worldFacts(entityKind, entity, slot) {
+  const list = h("div", { class: "stack tight" });
+  const facts = (Array.isArray(entity.facts) ? entity.facts : []).filter((f) => f && f.status !== "retired");
+  if (!facts.length) list.append(h("div", { class: "chips" }, chip("no fixed facts")));
+  for (const f of facts) {
+    const remove = h("button", {
+      type: "button", class: "btn small danger quiet", text: "Remove",
+      onclick: async () => {
+        remove.disabled = true;
+        try {
+          await api("DELETE", "/api/world/facts/" + encode(f.id));
+          loadLife();
+        } catch (e) {
+          remove.disabled = false;
+          flash(slot, e.code, "danger");
+        }
+      },
+    });
+    list.append(h("div", { class: "row world-fact" }, chip("fixed", "accent"), h("span", { class: "grow small", text: f.fact }), remove));
+  }
+  const field = h("input", { type: "text", placeholder: "Fact", maxlength: "300", "aria-label": "Fixed fact" });
+  const add = h("button", {
+    type: "button", class: "btn small", text: "Add fact",
+    onclick: async () => {
+      const fact = field.value.trim();
+      if (!fact) { flash(slot, "fact", "danger"); return; }
+      add.disabled = true;
+      try {
+        await api("POST", "/api/world/facts", { entityKind, entityId: entity.id, fact });
+        loadLife();
+      } catch (e) {
+        add.disabled = false;
+        flash(slot, e.code, "danger");
+      }
+    },
+  });
+  field.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add.click(); } });
+  return h("div", { class: "d stack tight" }, h("span", { class: "k small muted", text: "Fixed facts" }), list, h("div", { class: "row" }, h("span", { class: "grow" }, field), add));
+}
+
+// The owner's Rename: the first press opens the field, the second press sends it.
+function renameBlock(person, slot) {
+  const field = h("input", { type: "text", placeholder: "Name", maxlength: "300", value: person.name || "", "aria-label": "New name" });
+  const box = h("div", { class: "row hidden" }, h("span", { class: "grow" }, field));
+  const confirm = h("button", {
+    type: "button", class: "btn small danger", text: "Confirm rename",
+    onclick: async () => {
+      const name = field.value.trim();
+      if (!name) { flash(slot, "name", "danger"); return; }
+      confirm.disabled = true;
+      try {
+        await api("POST", "/api/people/" + encode(person.id) + "/rename", { name, confirm: "rename" });
+        renamePending.delete(person.id);
+        loadLife();
+      } catch (e) {
+        confirm.disabled = false;
+        flash(slot, e.code, "danger");
+      }
+    },
+  });
+  box.append(confirm);
+  const open = h("button", {
+    type: "button", class: "btn small", text: "Rename", "aria-expanded": "false",
+    onclick: () => {
+      const show = box.classList.contains("hidden");
+      box.classList.toggle("hidden", !show);
+      open.setAttribute("aria-expanded", String(show));
+      if (show) field.focus();
+    },
+  });
+  return { open, box };
 }
 
 // Portrait candidates by person: rows with role portrait whose notes name the thread.
@@ -449,11 +680,19 @@ function threadRow(t) {
   });
   const summary = threadSummary(t);
   const weighted = threadWeights && WEIGHTED_THREADS.has(t.kind) && t.status === "active";
+  // v5 section 8: a named person is locked (a placeholder can be named once); Rename is his.
+  const person = personOf(t);
+  const place = placeOf(t);
+  const lockChip = person ? (person.named ? chip("locked", "accent") : chip("name", "amber")) : null;
+  const rename = person ? renameBlock(person, slot) : null;
   return h("div", { class: "thread-row" },
-    h("div", { class: "t" }, t.title, " ", h("span", { class: "chips" }, summary, chip("v" + t.version), t.status !== "active" ? chip(t.status, "amber") : null)),
-    h("div", { class: "actions" }, edit, toggle, slot),
+    h("div", { class: "t" }, t.title, " ", h("span", { class: "chips" }, summary, lockChip, chip("v" + t.version), t.status !== "active" ? chip(t.status, "amber") : null)),
+    h("div", { class: "actions" }, edit, rename ? rename.open : null, toggle, slot),
     t.detail ? h("div", { class: "d", text: t.detail }) : null,
+    rename ? h("div", { class: "d" }, rename.box) : null,
     weighted ? h("div", { class: "d" }, weightSelect("thread", t.id, threadWeights.get(String(t.id)), slot)) : null,
+    person ? worldFacts("person", person, slot) : null,
+    place ? worldFacts("place", place, slot) : null,
     t.kind === "person" && t.status === "active" ? portraitBlock(t, slot) : null,
     editor);
 }
@@ -527,7 +766,10 @@ function makePortraitForm(t, slot) {
 function threadEditor(t, done, cancel) {
   const kind = t.kind;
   const slot = h("span", { class: "chips" });
-  const title = h("input", { type: "text", placeholder: kind === "person" ? "Name" : "Title", maxlength: "200", value: t.title || "" });
+  const title = h("input", { type: "text", placeholder: kind === "person" ? "Name" : "Title", maxlength: "200", value: t.title || "", "aria-label": kind === "person" ? "Name" : "Title" });
+  // A named person's name only changes through Rename (the server answers 409 name_locked).
+  const lockedPerson = personOf(t);
+  if (lockedPerson && lockedPerson.named) title.readOnly = true;
   const detailPlaceholder = { person: "Status", place: "What it looks like", arc: "Where it stands", event: "Detail", routine: "Detail" }[kind] || "Detail";
   const detail = h("textarea", { placeholder: detailPlaceholder, maxlength: "4000", value: t.detail || "" });
   const relation = kind === "person" ? h("input", { type: "text", placeholder: "Relation", maxlength: "100", value: t.relation || "" }) : null;
@@ -748,15 +990,36 @@ let wantsData = { wants: [], asks: [] };
 filterGroup("wantsFilter", "status", (v) => { wantsStatus = v; loadWants(); });
 filterGroup("asksFilter", "status", (v) => { asksStatus = v; renderAsks(); });
 
+// Every want's beats, read once per load (GET /api/beats?status=all) and handed to its card.
+let beatsByWant = null;
+
 async function loadWants() {
   const box = $("wantsList");
   clear(box);
+  let beats = null;
   try {
-    const r = await api("GET", "/api/wants?status=" + encodeURIComponent(wantsStatus));
+    const [r, settings, allBeats] = await Promise.all([
+      api("GET", "/api/wants?status=" + encodeURIComponent(wantsStatus)),
+      loadSettingsOnce(),
+      api("GET", "/api/beats?status=all&limit=500").catch(() => null),
+    ]);
     wantsData = { wants: listOf(r && r.wants !== undefined ? r.wants : r, ["wants"]), asks: listOf(r && r.asks, ["asks"]) };
+    // The beats read in her timezone even when the Life tab was never opened.
+    if (settings && typeof settings.timezone === "string" && settings.timezone) lifeTz = settings.timezone;
+    beats = allBeats;
   } catch (e) {
     flash(status("wants"), e.code, "danger");
     return;
+  }
+  beatsByWant = null;
+  if (beats) {
+    beatsByWant = new Map();
+    for (const v of listOf(beats, ["beats"])) {
+      const id = v && v.beat ? v.beat.want_id : null;
+      if (!id) continue;
+      if (!beatsByWant.has(id)) beatsByWant.set(id, []);
+      beatsByWant.get(id).push(v);
+    }
   }
   if (!wantsData.wants.length) box.append(h("div", { class: "chips" }, chip("none")));
   for (const w of wantsData.wants) box.append(wantCard(w));
@@ -851,7 +1114,256 @@ function wantCard(w) {
     kv.length ? h("div", { class: "kv" }, kv) : null,
     active ? noteField : null,
     h("div", { class: "row" }, actions, showLog, slot),
-    logBox);
+    logBox,
+    beatsBlock(w));
+}
+
+// ------------------------------------------------------------ beats (v5 section 2)
+
+// "Thu Oct 1 8:00pm" for the run's instant in her timezone; the date alone when the beat
+// has no time of day.
+function beatWhen(view) {
+  const b = view.beat || {};
+  const at = view.run && view.run.due_at ? view.run.due_at : b.due_at;
+  const d = new Date(at || "");
+  if (Number.isNaN(d.getTime())) return [b.due_on, b.due_time].filter(Boolean).join(" ");
+  const opts = { timeZone: lifeTz, weekday: "short", month: "short", day: "numeric" };
+  if (b.due_time) Object.assign(opts, { hour: "numeric", minute: "2-digit", hour12: true });
+  try {
+    return new Intl.DateTimeFormat("en-US", opts).format(d).replace(/,/g, "").replace(/\s?(AM|PM)$/, (m, p) => p.toLowerCase());
+  } catch {
+    return [b.due_on, b.due_time].filter(Boolean).join(" ");
+  }
+}
+
+function outcomeSelect(kind, value, label) {
+  const list = BEAT_OUTCOMES[kind] || BEAT_OUTCOMES.step;
+  const sel = h("select", { "aria-label": label || "Outcome" }, list.map((o) => h("option", { value: o, text: words(o) })));
+  if (value && list.includes(value)) sel.value = value;
+  return sel;
+}
+
+// Up to four variant rows: an outcome limited to the kind's outcomes and a note.
+function variantsEditor(kind, initial) {
+  const box = h("div", { class: "stack tight" });
+  const rows = [];
+  let curKind = kind;
+  const addRow = (v) => {
+    if (rows.length >= BEAT_VARIANTS_MAX) return;
+    const sel = outcomeSelect(curKind, v && v.outcome, "Variant outcome");
+    const note = h("input", { type: "text", placeholder: "Note", maxlength: "300", value: (v && v.note) || "", "aria-label": "Variant note" });
+    const row = { sel, note, el: null };
+    const remove = h("button", {
+      type: "button", class: "btn small ghost", text: "Remove",
+      onclick: () => { rows.splice(rows.indexOf(row), 1); row.el.remove(); addBtn.disabled = rows.length >= BEAT_VARIANTS_MAX; },
+    });
+    row.el = h("div", { class: "row variant-row" }, sel, h("span", { class: "grow" }, note), remove);
+    rows.push(row);
+    list.append(row.el);
+    addBtn.disabled = rows.length >= BEAT_VARIANTS_MAX;
+  };
+  const list = h("div", { class: "stack tight" });
+  const addBtn = h("button", { type: "button", class: "btn small", text: "Add variant", onclick: () => addRow(null) });
+  for (const v of Array.isArray(initial) ? initial : []) addRow(v);
+  box.append(h("span", { class: "k small muted", text: "Variants" }), list, h("div", { class: "row" }, addBtn));
+  return {
+    el: box,
+    setKind(k) {
+      curKind = k;
+      for (const r of rows) {
+        const keep = r.sel.value;
+        const fresh = outcomeSelect(k, keep, "Variant outcome");
+        r.sel.replaceWith(fresh);
+        r.sel = fresh;
+      }
+    },
+    value() {
+      return rows.map((r) => ({ outcome: r.sel.value, note: r.note.value.trim() })).filter((v) => v.note);
+    },
+    // A variant row he added and left without a note (the server needs one).
+    missingNote() {
+      return rows.some((r) => !r.note.value.trim());
+    },
+  };
+}
+
+// The Add beat form, or the Edit form of one beat (kind fixed once the beat exists).
+function beatForm(w, view, done, cancel) {
+  const b = view ? view.beat : null;
+  const slot = h("span", { class: "chips" });
+  const title = h("input", { type: "text", placeholder: "Title", maxlength: "200", value: b ? b.title : "", "aria-label": "Beat title" });
+  const kind = h("select", { "aria-label": "Kind", disabled: !!b }, h("option", { value: "step", text: "step" }), h("option", { value: "event", text: "event" }));
+  kind.value = b && b.kind === "event" ? "event" : "step";
+  const date = h("input", { type: "date", value: b ? b.due_on : "", "aria-label": "Date" });
+  const time = h("input", { type: "time", value: b && b.due_time ? b.due_time : "", "aria-label": "Time" });
+  const variants = variantsEditor(kind.value, view ? view.variants : []);
+  kind.addEventListener("change", () => variants.setKind(kind.value));
+  const save = h("button", {
+    type: "button", class: "btn primary small", text: "Save",
+    onclick: async () => {
+      const t = title.value.trim();
+      if (!t) { flash(slot, "title", "danger"); return; }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date.value)) { flash(slot, "date", "danger"); return; }
+      if (variants.missingNote()) { flash(slot, "note", "danger"); return; }
+      const body = { title: t, dueOn: date.value, dueTime: time.value ? time.value.slice(0, 5) : null, variants: variants.value() };
+      save.disabled = true;
+      try {
+        if (b) await api("PUT", "/api/beats/" + encode(b.id), body);
+        else await api("POST", "/api/wants/" + encode(w.id) + "/beats", { ...body, kind: kind.value });
+        done();
+      } catch (e) {
+        save.disabled = false;
+        flash(slot, e.code, "danger");
+      }
+    },
+  });
+  const cancelBtn = h("button", { type: "button", class: "btn small ghost", text: "Cancel", onclick: cancel });
+  return h("div", { class: "stack tight beat-form" },
+    h("div", { class: "grid-form" },
+      h("label", { class: "field" }, "Title", title),
+      h("label", { class: "field" }, "Kind", kind),
+      h("label", { class: "field" }, "Date", date),
+      h("label", { class: "field" }, "Time", time)),
+    variants.el,
+    h("div", { class: "row" }, save, cancelBtn, slot));
+}
+
+// Resolve: the outcome (a variant's when he picks one), a note, and his part.
+function resolveForm(view, done, cancel) {
+  const b = view.beat;
+  const slot = h("span", { class: "chips" });
+  const outcome = outcomeSelect(b.kind, null, "Outcome");
+  const vars = Array.isArray(view.variants) ? view.variants : [];
+  const variant = vars.length
+    ? h("select", { "aria-label": "Variant" }, h("option", { value: "", text: "no variant" }), vars.map((v) => h("option", { value: v.id, text: v.id + " " + words(v.outcome) })))
+    : null;
+  if (variant) {
+    variant.addEventListener("change", () => {
+      const v = vars.find((x) => x.id === variant.value);
+      if (v) { outcome.value = v.outcome; note.value = v.note || ""; }
+    });
+  }
+  const note = h("input", { type: "text", placeholder: "Note", maxlength: "300", "aria-label": "Outcome note" });
+  const part = h("select", { "aria-label": "His part" }, HIS_PARTS.map((p) => h("option", { value: p, text: words(p) })));
+  const hisNote = h("input", { type: "text", placeholder: "His note", maxlength: "160", "aria-label": "His note" });
+  const save = h("button", {
+    type: "button", class: "btn primary small", text: "Resolve",
+    onclick: async () => {
+      const body = { outcome: outcome.value, hisPart: part.value };
+      if (note.value.trim()) body.note = note.value.trim();
+      if (variant && variant.value) body.variantId = variant.value;
+      if (hisNote.value.trim()) body.hisNote = hisNote.value.trim();
+      save.disabled = true;
+      try {
+        await api("POST", "/api/beats/" + encode(b.id) + "/resolve", body);
+        done();
+      } catch (e) {
+        save.disabled = false;
+        flash(slot, e.code, "danger");
+      }
+    },
+  });
+  const cancelBtn = h("button", { type: "button", class: "btn small ghost", text: "Cancel", onclick: cancel });
+  return h("div", { class: "stack tight beat-form" },
+    h("div", { class: "grid-form" },
+      variant ? h("label", { class: "field" }, "Variant", variant) : null,
+      h("label", { class: "field" }, "Outcome", outcome),
+      h("label", { class: "field" }, "Note", note),
+      h("label", { class: "field" }, "His part", part),
+      h("label", { class: "field" }, "His note", hisNote)),
+    h("div", { class: "row" }, save, cancelBtn, slot));
+}
+
+function beatRow(w, view, reload) {
+  const b = view.beat;
+  const run = view.run;
+  const slot = h("span", { class: "chips" });
+  const panel = h("div", { class: "beat-panel hidden" });
+  const closePanel = () => { panel.classList.add("hidden"); clear(panel); };
+  const openPanel = (el) => { clear(panel); panel.append(el); panel.classList.remove("hidden"); };
+  const cancelled = b.status === "cancelled";
+  const resolved = run && run.status === "resolved";
+  const statusWord = cancelled ? "cancelled" : run ? run.status : "pending";
+  const statusKind = cancelled ? "" : statusWord === "resolved" ? "ok" : statusWord === "proposed" ? "amber" : statusWord === "skipped" ? "" : "accent";
+  const buttons = [];
+  if (!cancelled && !resolved) {
+    buttons.push(
+      h("button", { type: "button", class: "btn small", text: "Edit", onclick: () => openPanel(beatForm(w, view, reload, closePanel)) }),
+      h("button", { type: "button", class: "btn small", text: "Resolve", onclick: () => openPanel(resolveForm(view, reload, closePanel)) }));
+    const cancelBtn = h("button", {
+      type: "button", class: "btn small danger quiet", text: "Cancel",
+      onclick: async () => {
+        if (!confirmLabel("Cancel beat?")) return;
+        cancelBtn.disabled = true;
+        try {
+          await api("PUT", "/api/beats/" + encode(b.id), { status: "cancelled" });
+          reload();
+        } catch (e) {
+          cancelBtn.disabled = false;
+          flash(slot, e.code, "danger");
+        }
+      },
+    });
+    buttons.push(cancelBtn);
+  }
+  return h("div", { class: "beat-row" + (cancelled ? " cancelled" : "") },
+    h("div", { class: "beat-main" },
+      h("span", { class: "beat-title", text: b.title }),
+      h("span", { class: "chips" },
+        chip(b.kind),
+        h("span", { class: "beat-when", text: beatWhen(view) }),
+        run && Number(run.shifted_ms) > 0 ? chip("moved", "amber") : null,
+        chip(statusWord, statusKind),
+        resolved && run.outcome ? chip(words(run.outcome), "accent") : null,
+        resolved && run.his_part ? chip("him: " + words(run.his_part)) : null,
+        Array.isArray(view.variants) && view.variants.length ? chip(view.variants.length + " variants") : null)),
+    resolved && run.outcome_note ? h("div", { class: "beat-note small", text: run.outcome_note }) : null,
+    buttons.length ? h("div", { class: "row" }, buttons, slot) : slot,
+    panel);
+}
+
+function beatsBlock(w) {
+  const list = h("div", { class: "beat-list" });
+  const formBox = h("div", { class: "hidden" });
+  // The first render takes the beats loadWants read for every want at once; a reload after
+  // an edit reads this want's own.
+  let initial = beatsByWant ? beatsByWant.get(w.id) || [] : null;
+  const reload = async () => {
+    clear(list);
+    closeForm();
+    let beats = [];
+    if (initial) {
+      beats = initial;
+      initial = null;
+    } else {
+      try {
+        const r = await api("GET", "/api/wants/" + encode(w.id) + "/beats?status=all");
+        beats = listOf(r, ["beats"]);
+      } catch (e) {
+        list.append(chip(e.code || "error", "danger"));
+        return;
+      }
+    }
+    if (!beats.length) list.append(h("div", { class: "chips" }, chip("no beats")));
+    for (const v of beats) if (v && v.beat) list.append(beatRow(w, v, reload));
+  };
+  const closeForm = () => { formBox.classList.add("hidden"); clear(formBox); if (add) add.disabled = false; };
+  const add = w.status === "active" || w.status === "paused"
+    ? h("button", {
+      type: "button", class: "btn small", text: "Add beat",
+      onclick: () => {
+        add.disabled = true;
+        clear(formBox);
+        formBox.append(beatForm(w, null, reload, closeForm));
+        formBox.classList.remove("hidden");
+      },
+    })
+    : null;
+  reload();
+  return h("div", { class: "stack tight beats" },
+    h("div", { class: "row between" }, h("span", { class: "k small muted", text: "Beats" }), add),
+    formBox,
+    list);
 }
 
 function renderAsks() {
@@ -1238,6 +1750,8 @@ function factCard(f) {
   const fact = h("textarea", { placeholder: "Fact", value: f.fact || "" });
   const disclosed = h("input", { type: "checkbox", checked: !!f.disclosed });
   const provisional = h("input", { type: "checkbox", checked: !!f.provisional });
+  // A fact about him can be her guess or his own words; he unticks it once he has said it.
+  const guess = f.scope === "justin" || f.scope === "shared" ? h("input", { type: "checkbox", checked: Number(f.inferred) === 1 || f.inferred === true }) : null;
   const slot = h("span", { class: "chips" });
   const versions = h("div", { class: "stack tight hidden" });
   const save = h("button", {
@@ -1247,12 +1761,14 @@ function factCard(f) {
       if (!text) { flash(slot, "fact", "danger"); return; }
       save.disabled = true;
       try {
-        await api("PUT", "/api/facts/" + encode(f.id), {
+        const body = {
           fact: text,
           subject: orNull(subject.value),
           disclosed: disclosed.checked,
           provisional: provisional.checked,
-        });
+        };
+        if (guess) body.inferred = guess.checked;
+        await api("PUT", "/api/facts/" + encode(f.id), body);
         loadFacts();
       } catch (e) {
         save.disabled = false;
@@ -1283,6 +1799,7 @@ function factCard(f) {
   return h("div", { class: "card stack tight" },
     h("div", { class: "row" },
       chip("v" + f.version),
+      Number(f.inferred) === 1 || f.inferred === true ? chip("guess", "guess") : null,
       f.source ? chip(f.source) : null,
       h("span", { class: "muted small", text: fmtTime(f.updated_at || f.created_at) }),
       weighted ? weightSelect("fact", f.id, factWeights.get(String(f.id)), slot) : null),
@@ -1290,7 +1807,8 @@ function factCard(f) {
     fact,
     h("div", { class: "row" },
       h("label", { class: "check" }, disclosed, "Disclosed"),
-      h("label", { class: "check" }, provisional, "Provisional")),
+      h("label", { class: "check" }, provisional, "Provisional"),
+      guess ? h("label", { class: "check" }, guess, "Guess") : null),
     h("div", { class: "row" }, save, showVersions, del, slot),
     versions);
 }
@@ -1321,9 +1839,13 @@ async function toggleVersionList(kind, id, box, slot, reload, label) {
           }
         },
       });
+      // v5 section 7: a merged chain reads as it is ("merged into ...", "merged: ...").
+      const merged = typeof v.source === "string" && /^merged\b/.test(v.source) ? chip(truncate(v.source, 48), "amber") : null;
       box.append(h("div", { class: "row version-row" },
         chip("v" + v.version, v.status === "approved" ? "accent" : ""),
         chip(v.status),
+        Number(v.inferred) === 1 ? chip("guess", "guess") : null,
+        merged,
         h("span", { class: "grow small", text: label(v) }),
         restore));
     }
@@ -1794,7 +2316,7 @@ function proposalCard(p) {
   const slot = h("span", { class: "chips" });
   const editText = h("textarea", { placeholder: "Proposal", value: p.proposal || "" });
   const kinds = KINDS.includes(p.kind) ? KINDS : [p.kind, ...KINDS];
-  const editKind = h("select", null, kinds.map((k) => h("option", { value: k, selected: k === p.kind, text: k })));
+  const editKind = h("select", { "aria-label": "Kind" }, kinds.map((k) => h("option", { value: k, selected: k === p.kind, text: KIND_LABEL[k] || k })));
   editKind.value = p.kind;
   const editBox = h("div", { class: "stack tight hidden" });
   const buttons = [];
@@ -1836,7 +2358,7 @@ function proposalCard(p) {
 
   return h("div", { class: "card stack" },
     h("div", { class: "row" },
-      chip(p.kind, "accent"),
+      chip(KIND_LABEL[p.kind] || p.kind, "accent"),
       p.confidence ? chip(p.confidence, p.confidence === "high" ? "ok" : p.confidence === "low" ? "amber" : "") : null,
       p.scope ? chip(p.scope) : null,
       h("span", { class: "muted small", text: fmtTime(p.created_at) })),

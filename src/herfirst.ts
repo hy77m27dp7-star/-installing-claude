@@ -12,13 +12,14 @@
 // None of this is a retention hook: there is no "miss you", no streak, nothing sadder for
 // the app being closed. The note forbids exactly those lines; the checks catch the rest.
 import { runTurn } from "./chat";
-import { auditStmt, createConversation, listConversations } from "./db";
+import { isTogether, loadStoryClock, storyElapsedMs } from "./clock";
+import { auditStmt, createConversation, getCurrentState, listConversations } from "./db";
 import { ApiHttpError } from "./errors";
 import { listThreads, localParts, safeTimezone, seededUnit, whereSheIs } from "./life";
 import { providerConfigured } from "./providers/index";
 import { sendPush } from "./push";
 import type { PushSendResult } from "./push";
-import type { Env, MessageRow, Settings, TurnResponse } from "./types";
+import type { Env, MessageRow, SceneState, Settings, TurnResponse } from "./types";
 
 export interface FirstTextArgs {
   enabled: boolean;
@@ -253,6 +254,19 @@ export async function maybeTextFirst(env: Env, db: D1Database, settings: Setting
   const off = gateReason(neutral);
   if (off !== null) return { ...base, reason: off };
 
+  // v5 (SPEC_V5 section 1, Justin's rule): she is in the room with him while a scene is
+  // together, and nothing happens to her while one is held. Both gates come before the day's
+  // count and the cap (skeptic 23), and before any conversation is opened.
+  let sceneStatus: unknown = null;
+  try {
+    sceneStatus = (await getCurrentState<SceneState>(db, "scene")).state.status;
+  } catch {
+    sceneStatus = null;
+  }
+  if (isTogether(sceneStatus)) return { ...base, reason: "together: they are in the same place" };
+  const clock = await loadStoryClock(db, settings, at);
+  if (clock.frozen) return { ...base, reason: "frozen: a together scene is held" };
+
   const countToday = await countFor(db, day);
   base.countToday = countToday;
   const capped = gateReason({ ...neutral, countToday });
@@ -268,6 +282,11 @@ export async function maybeTextFirst(env: Env, db: D1Database, settings: Setting
   const last = conv.created ? { lastMessageAt: null, lastTwoAreHers: false, hisTurn: false } : await lastMessages(db, conv.id);
   if (last.hisTurn) return { ...base, reason: "his last message has no reply yet; that is a reply, not a first text" };
 
+  // The age of the last message is story time: a scene he ended after days does not read
+  // as days of quiet (SPEC_V5 skeptic recheck).
+  const lastMessageAt = last.lastMessageAt
+    ? new Date(at.getTime() - storyElapsedMs(clock, last.lastMessageAt.toISOString(), at.toISOString()))
+    : null;
   const seed = `${at.toISOString().slice(0, 16)}:${conv.id}`;
   const decision = decideFirstText({
     enabled: true,
@@ -277,7 +296,7 @@ export async function maybeTextFirst(env: Env, db: D1Database, settings: Setting
     tz,
     quietHours: settings.herFirstQuietHours,
     busy: where.busy,
-    lastMessageAt: last.lastMessageAt,
+    lastMessageAt,
     lastTwoAreHers: last.lastTwoAreHers,
     seed,
   });

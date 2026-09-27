@@ -9,6 +9,12 @@
 // v3 (SPEC_V3 "Export and import"): the package gains her approved voice lines (AA), the
 // active corrections (AA), her wants and the asks (CC). A database behind migration 0005
 // answers empty lists for them.
+//
+// v5 (SPEC_V5 "Export"): the package gains her dated steps (each beat with its owner run's
+// outcome and her note; never his part or his note: the package never carries him) and her
+// world (her people with their fixed facts, her places' fixed facts). Never her reads of
+// him, never the artists he knows, never the nightly ledger. A database behind 0009
+// answers empty lists.
 import { ADAPTATIONS, CONSTITUTION_VERSION } from "./generated/constitution";
 import { getCurrentState, listAssets, listFacts, listHistory, listUnknowns, sha256Hex } from "./db";
 import { listLog, listThreads, parseSchedule } from "./life";
@@ -111,6 +117,40 @@ export interface CharacterAsk {
   askedAt: string;
 }
 
+// v5
+export interface CharacterBeat {
+  id: string;
+  wantId: string;
+  wantTitle: string | null;
+  title: string;
+  kind: string;
+  dueOn: string;
+  dueTime: string | null;
+  status: string;
+  variants: Array<{ id: string; outcome: string; note: string }>;
+  // The owner run: its status, and once resolved the outcome and her note. Nothing of his.
+  run: { status: string; outcome: string | null; note: string | null; resolvedAt: string | null } | null;
+}
+
+export interface CharacterWorldFact {
+  id: string;
+  fact: string;
+}
+
+export interface CharacterPerson {
+  id: string;
+  name: string;
+  relation: string | null;
+  named: boolean;
+  facts: CharacterWorldFact[];
+}
+
+export interface CharacterPlace {
+  id: string;
+  title: string;
+  facts: CharacterWorldFact[];
+}
+
 export interface CharacterPackage {
   format: "avelie-character";
   version: 1;
@@ -134,6 +174,52 @@ export interface CharacterPackage {
   corrections: CharacterCorrection[];
   wants: CharacterWant[];
   asks: CharacterAsk[];
+  // v5
+  arcBeats: CharacterBeat[];
+  world: { people: CharacterPerson[]; places: CharacterPlace[] };
+}
+
+// v5 rows: the columns the package reads, never his part in a step or his note on it.
+interface BeatJoinRow {
+  id: string; want_id: string; want_title: string | null; title: string; kind: string; due_on: string; due_time: string | null;
+  status: string; variants_json: string | null; run_status: string | null; outcome: string | null; outcome_note: string | null; resolved_at: string | null;
+}
+interface PersonLite { id: string; name: string; relation: string | null; named: number }
+interface PlaceLite { id: string; title: string }
+interface WorldFactLite { id: string; entity_kind: string; entity_id: string; fact: string }
+
+function variantsOf(json: string | null): Array<{ id: string; outcome: string; note: string }> {
+  if (typeof json !== "string" || !json.trim()) return [];
+  try {
+    const v: unknown = JSON.parse(json);
+    if (!Array.isArray(v)) return [];
+    const out: Array<{ id: string; outcome: string; note: string }> = [];
+    for (const x of v) {
+      if (typeof x !== "object" || x === null) continue;
+      const o = x as Record<string, unknown>;
+      if (typeof o.id === "string" && typeof o.outcome === "string" && typeof o.note === "string") out.push({ id: o.id, outcome: o.outcome, note: o.note });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function beat(r: BeatJoinRow): CharacterBeat {
+  return {
+    id: r.id, wantId: r.want_id, wantTitle: r.want_title, title: r.title, kind: r.kind, dueOn: r.due_on, dueTime: r.due_time, status: r.status,
+    variants: variantsOf(r.variants_json),
+    run: r.run_status ? { status: r.run_status, outcome: r.outcome, note: r.outcome_note, resolvedAt: r.resolved_at } : null,
+  };
+}
+
+function worldOf(people: PersonLite[], places: PlaceLite[], facts: WorldFactLite[]): { people: CharacterPerson[]; places: CharacterPlace[] } {
+  const factsOf = (kind: string, id: string): CharacterWorldFact[] =>
+    facts.filter((f) => f.entity_kind === kind && f.entity_id === id).map((f) => ({ id: f.id, fact: f.fact }));
+  return {
+    people: people.map((p) => ({ id: p.id, name: p.name, relation: p.relation, named: Number(p.named) === 1, facts: factsOf("person", p.id) })),
+    places: places.map((p) => ({ id: p.id, title: p.title, facts: factsOf("place", p.id) })).filter((p) => p.facts.length > 0),
+  };
 }
 
 interface VoiceLineRow { id: string; text: string; tags_json: string; origin: string; status: string }
@@ -200,7 +286,10 @@ async function currentState<T extends RelationshipState | SceneState>(db: D1Data
 }
 
 export async function exportCharacterJson(db: D1Database, _env: Env): Promise<CharacterPackage> {
-  const [fixed, avelie, history, unknowns, threads, log, assets, media, relationship, scene, prefixHash, voiceLines, corrections, wants, asks] = await Promise.all([
+  const [
+    fixed, avelie, history, unknowns, threads, log, assets, media, relationship, scene, prefixHash, voiceLines, corrections, wants, asks,
+    beats, people, places, worldFacts,
+  ] = await Promise.all([
     listFacts(db, "fixed", "approved"),
     listFacts(db, "avelie", "approved"),
     listHistory(db, "approved"),
@@ -216,6 +305,14 @@ export async function exportCharacterJson(db: D1Database, _env: Env): Promise<Ch
     rowsOrEmpty<CorrectionRow>(db, "SELECT id, kind, note, original, rewrite, status, created_at FROM corrections WHERE status = 'active' ORDER BY created_at, id"),
     rowsOrEmpty<WantRow>(db, "SELECT id, title, why, stakes, next_step, progress, status, last_moved FROM wants WHERE status != 'dropped' ORDER BY created_at, id"),
     rowsOrEmpty<AskRow>(db, "SELECT id, text, status, asked_at FROM asks ORDER BY asked_at, id"),
+    // v5: the owner run's outcome and her note only (nothing of his).
+    rowsOrEmpty<BeatJoinRow>(
+      db,
+      "SELECT b.id, b.want_id, w.title AS want_title, b.title, b.kind, b.due_on, b.due_time, b.status, b.variants_json, r.status AS run_status, r.outcome, r.outcome_note, r.resolved_at FROM arc_beats b LEFT JOIN wants w ON w.id = b.want_id LEFT JOIN beat_runs r ON r.beat_id = b.id AND r.reader = 'owner' WHERE b.status = 'active' ORDER BY b.due_at, b.id",
+    ),
+    rowsOrEmpty<PersonLite>(db, "SELECT id, name, relation, named FROM people ORDER BY created_at, id"),
+    rowsOrEmpty<PlaceLite>(db, "SELECT id, title FROM places ORDER BY created_at, id"),
+    rowsOrEmpty<WorldFactLite>(db, "SELECT id, entity_kind, entity_id, fact FROM world_facts WHERE status = 'approved' ORDER BY created_at, id"),
   ]);
 
   const approvedFixed = fixed.filter((f) => f.status === "approved");
@@ -246,6 +343,8 @@ export async function exportCharacterJson(db: D1Database, _env: Env): Promise<Ch
     corrections: corrections.filter((c) => c.status === "active").map((c) => ({ id: c.id, kind: c.kind, note: c.note, original: c.original, rewrite: c.rewrite, createdAt: c.created_at })),
     wants: wants.filter((w) => w.status !== "dropped").map((w) => ({ id: w.id, title: w.title, why: w.why, stakes: w.stakes, nextStep: w.next_step, progress: w.progress, status: w.status, lastMoved: w.last_moved })),
     asks: asks.map((a) => ({ id: a.id, text: a.text, status: a.status, askedAt: a.asked_at })),
+    arcBeats: beats.filter((b) => b.status === "active").map(beat),
+    world: worldOf(people, places, worldFacts),
   };
 }
 
@@ -386,6 +485,22 @@ export function renderCharacterMarkdown(pkg: CharacterPackage): string {
 
   out.push("## What she asked him");
   out.push(lines((pkg.asks ?? []).map((a) => `- ${day(a.askedAt)}: ${plain(a.text)} (${a.status.replace(/_/g, " ")})`)) || "Nothing yet.");
+
+  out.push("## Her dated steps");
+  out.push(lines((pkg.arcBeats ?? []).map((b) => {
+    const when = plain(b.dueOn) + (b.dueTime ? " " + plain(b.dueTime) : "");
+    const how = b.run && b.run.status === "resolved" && b.run.outcome
+      ? "; " + b.run.outcome.replace(/_/g, " ") + (b.run.note ? ", " + plain(b.run.note) : "")
+      : b.run ? "; " + b.run.status : "";
+    return `- ${plain(b.title)}${b.wantTitle ? " (" + plain(b.wantTitle) + ")" : ""}, ${b.kind} on ${when}${how}`;
+  })) || "None.");
+
+  out.push("## Her people and places");
+  const world = pkg.world ?? { people: [], places: [] };
+  out.push(lines([
+    ...world.people.map((p) => `- ${plain(p.name)}${p.relation ? " (" + plain(p.relation) + ")" : ""}${p.facts.length ? ": " + p.facts.map((f) => plain(f.fact)).join("; ") : ""}`),
+    ...world.places.map((p) => `- ${plain(p.title)}: ${p.facts.map((f) => plain(f.fact)).join("; ")}`),
+  ]) || "None recorded.");
 
   out.push(`## Constitution adaptations (${pkg.adaptations.length})`);
   out.push(lines(pkg.adaptations.map((a) => `- ${a.id} (${a.file}): ${plain(a.to)}`)) || "None.");

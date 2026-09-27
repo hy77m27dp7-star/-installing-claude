@@ -53,6 +53,12 @@ export interface MemorySettings {
   memoryHalfLifeHighDays?: number;
   provisionalRecallEvery?: number;
   timezone?: string;
+  // v5 (SPEC_V5 sections 1 and 7, Justin's rule): the age in days of a stamp, read on HER clock.
+  // The callers pass `(iso) => storyAgeDays(clock, iso)` (src/context.ts for the turn, the memory
+  // map route after one loadStoryClock), so nothing fades inside a held together scene and the
+  // held days never count in the half-lives afterwards. This module never imports src/clock.ts
+  // (life.ts, which clock.ts imports, imports this one): the story age arrives as a function.
+  ageDaysOf?: ((iso: string) => number) | null;
 }
 
 export interface ResolvedMemorySettings {
@@ -62,6 +68,8 @@ export interface ResolvedMemorySettings {
   memoryHalfLifeMidDays: number;
   memoryHalfLifeHighDays: number;
   provisionalRecallEvery: number;
+  // v5: null reads the real clock (v4 behaviour).
+  ageDaysOf: ((iso: string) => number) | null;
 }
 
 export const MEMORY_DEFAULTS: ResolvedMemorySettings = {
@@ -71,6 +79,7 @@ export const MEMORY_DEFAULTS: ResolvedMemorySettings = {
   memoryHalfLifeMidDays: 45,
   memoryHalfLifeHighDays: 400,
   provisionalRecallEvery: 0,
+  ageDaysOf: null,
 };
 
 // Score bands (section BB).
@@ -141,6 +150,7 @@ export function memorySettings(s: MemorySettings | null | undefined): ResolvedMe
     memoryHalfLifeMidDays: int(s.memoryHalfLifeMidDays, d.memoryHalfLifeMidDays, 1, 3650),
     memoryHalfLifeHighDays: int(s.memoryHalfLifeHighDays, d.memoryHalfLifeHighDays, 1, 36500),
     provisionalRecallEvery: int(s.provisionalRecallEvery, d.provisionalRecallEvery, 0, 50),
+    ageDaysOf: typeof s.ageDaysOf === "function" ? s.ageDaysOf : null,
   };
 }
 
@@ -206,6 +216,21 @@ function ageInDays(lastTouched: string, now: Date): number {
   return Math.max(0, (now.getTime() - t) / DAY_MS);
 }
 
+// v5: the age on her clock when the caller gave one. An unreadable stamp answers 0 exactly as
+// ageInDays does; a function that throws or answers something that is not a number falls back
+// to the real age, so a broken clock never freezes or wipes her memory.
+function ageOf(lastTouched: string, now: Date, ageDaysOf: ((iso: string) => number) | null): number {
+  if (!ageDaysOf) return ageInDays(lastTouched, now);
+  if (!Number.isFinite(Date.parse(lastTouched))) return 0;
+  let a: number;
+  try {
+    a = ageDaysOf(lastTouched);
+  } catch {
+    return ageInDays(lastTouched, now);
+  }
+  return typeof a === "number" && Number.isFinite(a) ? Math.max(0, a) : ageInDays(lastTouched, now);
+}
+
 export function relevanceOf(text: string, recentKeywords: Set<string> | null | undefined): number {
   const kw = keywords(text);
   if (!kw.size || !recentKeywords || !recentKeywords.size) return 0;
@@ -224,7 +249,7 @@ export function scoreDetail(
 ): MemoryScore {
   const s = memorySettings(settings);
   const weight = clamp(Number.isFinite(w) ? w : 0.5, 0, 1);
-  const age = ageInDays(lastTouched, now);
+  const age = ageOf(lastTouched, now, s.ageDaysOf);
   const half = halfLifeDays(weight, s);
   const relevance = relevanceOf(text, recentKeywords);
   if (!s.memoryDecayEnabled) {
@@ -688,6 +713,8 @@ export interface MemoryMapFact {
   phase: MemoryPhase;
   returned: boolean;
   createdAt: string;
+  // v5 (SPEC_V5 section 7): true when the row's `inferred` is 1 (her guess, not his words).
+  inferred: boolean;
 }
 
 export interface MemoryMapHistory {
@@ -868,6 +895,7 @@ export async function memoryMap(db: D1Database, settings: MemorySettings | null 
       phase: phaseOf(sc),
       returned: returnedRecently(w, f.created_at, now),
       createdAt: f.created_at,
+      inferred: Number((f as FactRow & { inferred?: unknown }).inferred) === 1,
     });
   }
   facts.sort((a, b) => b.score - a.score || b.weight - a.weight || a.createdAt.localeCompare(b.createdAt));

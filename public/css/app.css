@@ -2267,3 +2267,55 @@ a.btn, a.btn:hover { text-decoration: none; }
 .song-card .song-remote { margin-left: 6px; }
 .song-card .song-remote-note:empty { display: none; }
 .song-card .song-remote-note { margin-left: 6px; }
+
+/* ------------------------------------------------------------ v5 (SPEC_V5 sections 1 to 9) */
+
+/* The held clock in the scene bar: an accent chip, hidden while her clock runs. */
+#clockChip { flex: none; font-variant-numeric: tabular-nums; font-weight: 600; letter-spacing: 0.02em; }
+#placeNeeded { justify-self: start; }
+
+/* An inferred fact: her guess, not his words. Dashed, like a thing not yet firm. */
+.chip.guess { border-style: dashed; border-color: var(--line-2); color: var(--text-2); font-style: italic; }
+
+/* The song card's two buttons: "know it" and "not for me", and the chip of the pressed one. */
+.song-feedback { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s-1); width: 100%; }
+.song-feedback .btn.small { min-height: 30px; padding: 0 var(--s-2); font-size: var(--fs-0); }
+.song-feedback .btn[aria-pressed="true"] { background: var(--accent-dim); border-color: rgba(34, 211, 238, 0.5); color: var(--accent-solid); }
+
+/* Beats on a want card. */
+.beats { border-top: 1px solid var(--line); padding-top: var(--s-2); }
+.beat-list { display: grid; }
+.beat-row { display: grid; gap: var(--s-1); padding: var(--s-2) 0; border-top: 1px solid var(--line); font-size: var(--fs-1); }
+.beat-row:first-child { border-top: none; }
+.beat-row.cancelled .beat-title { color: var(--muted); text-decoration: line-through; }
+.beat-row .beat-main { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); min-width: 0; }
+.beat-row .beat-title { font-weight: 600; overflow-wrap: anywhere; }
+.beat-row .beat-when { color: var(--text-2); font-size: var(--fs-0); font-variant-numeric: tabular-nums; }
+.beat-row .beat-note { color: var(--text-2); overflow-wrap: anywhere; }
+.beat-form { padding: var(--s-2) var(--s-3); border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--field); }
+.variant-row select { flex: none; }
+
+/* Her read of him on the Memory page. */
+.view-list { display: grid; }
+.view-row { display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: var(--s-1) var(--s-3); align-items: center; padding: var(--s-3) 0; border-top: 1px solid var(--line); }
+.view-row:first-child { border-top: none; }
+.view-row .text { overflow-wrap: anywhere; font-size: var(--fs-2); }
+.view-row .progress { width: 100%; }
+.view-row .chips, .view-row .row { grid-column: 1 / -1; }
+.view-row .when { color: var(--text-2); font-size: var(--fs-0); }
+.view-row.status-proven_wrong .text, .view-row.status-retired .text { color: var(--text-2); }
+.view-row .evidence { min-height: 30px; font-size: var(--fs-0); }
+
+/* His ears: the artists he knows or did not like. */
+.artist-list { display: grid; }
+.artist-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); padding: var(--s-2) 0; border-top: 1px solid var(--line); }
+.artist-row:first-child { border-top: none; }
+.artist-row .text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+
+/* Fixed facts under a person or a place on the Life tab. */
+.world-fact { gap: var(--s-2); }
+
+@media (max-width: 600px) {
+  .view-row { grid-template-columns: minmax(0, 1fr); }
+  .song-feedback .btn.small, .view-row .evidence { min-height: var(--tap); }
+}

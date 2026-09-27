@@ -14,6 +14,12 @@
 // messages and her replies go as written either way. Explicit exchanges are left out by
 // default (his answer to open question 2): a word-list detector below, plus the Drop mark
 // by hand; includeExplicit keeps them.
+//
+// v5 (SPEC_V5 "Export", skeptic 21): the three v5 sections about him (HOW YOU READ HIM,
+// SONGS AND HIM, TIME SINCE) go with the others; inside CURRENT STATE the Friction line goes
+// (a sore spot between them is about him), and inside WHAT YOU WANT every "  Lately: " beat
+// line loses its his-part sentence (HIS_PART_RE); her outcome and her note stay.
+import { HIS_PART_RE } from "./arcs";
 import { ALWAYS_ON, CONSTITUTION_VERSION, OVERLAY } from "./generated/constitution";
 import { PROMPT_VERSION, stablePrefix } from "./prompt";
 import { auditStmt, getSettings, putSettings } from "./db";
@@ -26,7 +32,10 @@ import type { Env, Flag, MessageRow, ProviderName, Settings } from "./types";
 const SECTION_SEP = "\n\n" + "-".repeat(60) + "\n\n";
 const PART_SEP = "\n\n";
 // v3.1 (JJ): WHAT HE LOOKS LIKE is about him too and goes with the other two by default.
-const STRIP_SECTIONS = ["WHAT YOU KNOW ABOUT HIM", "THINGS YOU HALF REMEMBER", "WHAT HE LOOKS LIKE"];
+const STRIP_SECTIONS = ["WHAT YOU KNOW ABOUT HIM", "THINGS YOU HALF REMEMBER", "WHAT HE LOOKS LIKE", "HOW YOU READ HIM", "SONGS AND HIM", "TIME SINCE"];
+// v5: the friction line of CURRENT STATE and the beat lines of WHAT YOU WANT.
+const FRICTION_LINE = "Friction: ";
+const LATELY_LINE = "  Lately: ";
 const RELATIONSHIP_LINE = "Relationship: ";
 const STRIP_KEYS = ["his_name", "nicknames", "private_language", "summary"];
 // The opener cue chat.ts stores for no message of his (an opener has no user row at all).
@@ -157,11 +166,22 @@ function stripRelationshipLine(line: string): string {
 
 // The strip transform (SPEC_V3 II): the two sections about him gone, the Relationship line
 // without his_name, nicknames, private_language and summary; every other section byte-identical.
+// v5: inside CURRENT STATE the Friction line is dropped; inside WHAT YOU WANT the his-part
+// sentence is cut from every Lately line.
 export function stripHimFromState(stateText: string): string {
   const sections = stateText.split(SECTION_SEP);
   const kept = sections
     .filter((s) => !STRIP_SECTIONS.some((h) => firstLine(s).startsWith(h)))
-    .map((s) => (firstLine(s).startsWith("CURRENT STATE") ? s.split("\n").map(stripRelationshipLine).join("\n") : s));
+    .map((s) => {
+      const head = firstLine(s);
+      if (head.startsWith("CURRENT STATE")) {
+        return s.split("\n").filter((line) => !line.trimStart().startsWith(FRICTION_LINE)).map(stripRelationshipLine).join("\n");
+      }
+      if (head.startsWith("WHAT YOU WANT")) {
+        return s.split("\n").map((line) => (line.startsWith(LATELY_LINE) ? line.replace(HIS_PART_RE, "") : line)).join("\n");
+      }
+      return s;
+    });
   return kept.join(SECTION_SEP);
 }
 

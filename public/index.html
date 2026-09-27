@@ -39,6 +39,7 @@
       </button>
       <span class="conv-title" id="convTitle"></span>
       <div class="bar-tools">
+        <span class="chip accent hidden" id="clockChip" role="status"></span>
         <div class="menu-wrap">
           <div class="seg small" role="group" aria-label="Scene">
             <button type="button" id="sceneTogether" aria-pressed="false">Together</button>
@@ -47,6 +48,7 @@
           <div class="popover hidden" id="placesPop">
             <div class="places" id="placesList"></div>
             <input type="text" id="placeInput" placeholder="Where" maxlength="200" aria-label="Where">
+            <span class="chip amber hidden" id="placeNeeded" role="status">place needed</span>
             <div class="row end">
               <button type="button" class="btn small ghost" id="placeCancel">Cancel</button>
               <button type="button" class="btn small primary" id="placeSet">Together</button>

@@ -25,9 +25,9 @@ const sha = (s) => createHash("sha256").update(s).digest("hex");
 const prefix = prompt.stablePrefix();
 const hasClips = /\nCLIPS\n/.test(prefix);
 
-test("PROMPT_VERSION ends in -p7: v4 adds no state section", () => {
-  assert.match(prompt.PROMPT_VERSION, /-p7$/);
-  assert.equal(prompt.PROMPT_VERSION, CONSTITUTION_VERSION + "-p7");
+test("PROMPT_VERSION ends in -p8 (SPEC_V5 moved it on; the prefix hash pinned below is unchanged)", () => {
+  assert.match(prompt.PROMPT_VERSION, /-p8$/);
+  assert.equal(prompt.PROMPT_VERSION, CONSTITUTION_VERSION + "-p8");
 });
 
 test("the stable prefix hash: the v3.3 value until the CLIPS overlay lands, the pinned v4 value after", (tc) => {
@@ -75,7 +75,7 @@ test("proposalSystemPrompt: the first sentence is still the stub's key; the scen
     return;
   }
   assert.ok(/"his_name": his first name when he said it or omitted/.test(text));
-  assert.ok(/"nicknames": a nickname that stuck or omitted/.test(text));
+  assert.ok(/"nicknames": a nickname that stuck(?: \(it joins the ones before it\))? or omitted/.test(text), "v5 (section Proposals) words the nickname as joining the ones before it");
   assert.ok(/"location": the place in a few words or omitted when it did not change/.test(text));
   assert.ok(/"present": the people there as a list of names or omitted/.test(text));
 });

@@ -8,6 +8,8 @@
 // the phone slide-in, the song card's status chip, Retry and play control with the
 // now-playing strip, the `us` chip, the video bubble, the place picker's prefill chain
 // and the place picture behind the thread.
+// v5 (SPEC_V5 sections 1, 4, 9): the held-clock chip in the scene bar, the `place needed`
+// chip on the Together form, and the song card's "know it" / "not for me" buttons.
 import {
   api, apiForm, h, chip, clear, fmtDate, fmtTime, fmtDuration, flagCodes, parseJson, registerServiceWorker, storeGet, storeSet, svgIcon,
 } from "./api.js";
@@ -114,6 +116,9 @@ const els = {
   phoneDrawerBody: $("phoneDrawerBody"),
   phoneClose: $("phoneClose"),
   nowPlaying: $("nowPlaying"),
+  // v5 (optional, so an older shell still runs)
+  clockChip: $("clockChip"),
+  placeNeeded: $("placeNeeded"),
 };
 
 const state = {
@@ -162,6 +167,10 @@ const state = {
   playerTicker: null,
   placeRows: null,
   placeRowsAt: 0,
+  // v5: the artists he marked, by artistNorm (read once per page from GET /api/known-artists).
+  knownArtists: null,
+  knownArtistsLoad: null,
+  clockSeq: 0,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -605,6 +614,7 @@ function songCard(m) {
     card.append(play, remote, remoteNote, embed);
     paintPlayButton(play);
   }
+  if (m.id && artist) card.append(songFeedback(m.id, artist));
   return card;
 }
 
@@ -621,6 +631,95 @@ window.addEventListener("avelie:remote", (e) => {
     else note.append(chip(d.code || "error", "danger"));
   }
 });
+
+// ------------------------------------------------------------ the song loop (v5 section 9)
+
+// The same normalisation src/songs.ts uses for artist_norm: lowercase, a leading "the "
+// dropped, & read as "and", everything but letters and digits one space; when nothing is
+// left after dropping "the " (an artist named "The !!!"), the name with its "the".
+function artistNorm(a) {
+  const lower = String(a || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const clean = (x) => x.replace(/&/g, " and ").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
+  return clean(lower.replace(/^the\s+/, "")) || clean(lower);
+}
+
+const FEEDBACK = [["known", "know it", "known"], ["disliked", "not for me", "not for me"]];
+
+function loadKnownArtists() {
+  if (state.knownArtistsLoad) return state.knownArtistsLoad;
+  state.knownArtistsLoad = (async () => {
+    const map = new Map();
+    try {
+      const r = await api("GET", "/api/known-artists");
+      for (const kind of ["known", "disliked"]) {
+        for (const row of r && Array.isArray(r[kind]) ? r[kind] : []) {
+          if (row && row.id) map.set(row.artist_norm || artistNorm(row.artist), { id: row.id, kind: row.kind || kind });
+        }
+      }
+    } catch {
+      /* the route is not there: the buttons still post */
+    }
+    state.knownArtists = map;
+    paintSongFeedback();
+    return map;
+  })();
+  return state.knownArtistsLoad;
+}
+
+function songFeedback(messageId, artist) {
+  const norm = artistNorm(artist);
+  const group = h("span", { class: "song-feedback", role: "group", "aria-label": "His ears", "data-artist": norm });
+  const slot = h("span", { class: "chips feedback-chip" });
+  for (const [kind, label] of FEEDBACK) {
+    const btn = h("button", { type: "button", class: "btn small quiet", "data-kind": kind, "aria-pressed": "false", text: label });
+    btn.addEventListener("click", () => pressFeedback(messageId, norm, kind, group));
+    group.append(btn);
+  }
+  group.append(slot);
+  paintFeedbackGroup(group);
+  if (!state.knownArtists) loadKnownArtists();
+  return group;
+}
+
+function paintFeedbackGroup(group) {
+  const row = state.knownArtists ? state.knownArtists.get(group.dataset.artist || "") : null;
+  const kind = row ? row.kind : null;
+  for (const btn of group.querySelectorAll("button[data-kind]")) btn.setAttribute("aria-pressed", String(btn.dataset.kind === kind));
+  const slot = group.querySelector(".feedback-chip");
+  if (!slot) return;
+  clear(slot);
+  const f = FEEDBACK.find((x) => x[0] === kind);
+  if (f) slot.append(chip(f[2], kind === "known" ? "accent" : "amber"));
+}
+
+function paintSongFeedback(norm) {
+  for (const g of document.querySelectorAll(".song-feedback")) {
+    if (norm === undefined || g.dataset.artist === norm) paintFeedbackGroup(g);
+  }
+}
+
+async function pressFeedback(messageId, norm, kind, group) {
+  const buttons = [...group.querySelectorAll("button[data-kind]")];
+  for (const b of buttons) b.disabled = true;
+  try {
+    await loadKnownArtists();
+    const cur = state.knownArtists ? state.knownArtists.get(norm) : null;
+    if (cur && cur.kind === kind) {
+      // A second press on the pressed one takes the artist off his list.
+      await api("DELETE", "/api/known-artists/" + encodeURIComponent(cur.id));
+      state.knownArtists.delete(norm);
+    } else {
+      const row = await api("POST", "/api/messages/" + encodeURIComponent(messageId) + "/song-feedback", { kind });
+      if (row && row.id) state.knownArtists.set(row.artist_norm || norm, { id: row.id, kind: row.kind || kind });
+    }
+    paintSongFeedback(norm);
+  } catch (e) {
+    const slot = group.querySelector(".feedback-chip");
+    if (slot) { clear(slot); slot.append(chip(e.code || "error", "danger")); }
+  } finally {
+    for (const b of buttons) b.disabled = false;
+  }
+}
 
 // One more read of the message after a moment: the add runs after the reply was stored.
 // Once per message per page load; a status still pending after that waits for a reload.
@@ -1987,26 +2086,74 @@ function renderScene() {
   els.sceneApart.setAttribute("aria-pressed", String(s === "apart"));
 }
 
+// v5 section 1: while a together scene holds her clock, the bar reads "held Tue 9:04pm".
+function heldLabel(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "held";
+  const tz = state.settings && typeof state.settings.timezone === "string" ? state.settings.timezone : undefined;
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", hour: "numeric", minute: "2-digit", hour12: true }).formatToParts(d);
+  } catch {
+    parts = new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", hour12: true }).formatToParts(d);
+  }
+  const get = (t) => (parts.find((p) => p.type === t) || {}).value || "";
+  return "held " + get("weekday") + " " + get("hour") + ":" + get("minute") + get("dayPeriod").toLowerCase();
+}
+
+function renderClock(view) {
+  if (!els.clockChip) return;
+  const held = view && view.enabled !== false && view.frozen === true && view.open && view.open.frozenAt;
+  els.clockChip.textContent = held ? heldLabel(view.open.frozenAt) : "";
+  els.clockChip.classList.toggle("hidden", !held);
+}
+
+async function loadClock(view) {
+  if (!els.clockChip) return;
+  const seq = ++state.clockSeq;
+  let v = view && typeof view === "object" ? view : null;
+  if (!v) {
+    try { v = await api("GET", "/api/clock"); } catch { v = null; }
+  }
+  if (seq === state.clockSeq) renderClock(v);
+}
+
+function showPlaceNeeded(on) {
+  if (els.placeNeeded) els.placeNeeded.classList.toggle("hidden", !on);
+}
+
 async function setScene(status, location) {
   const base = state.scene && typeof state.scene === "object" ? state.scene : {};
   const next = { ...base, status, location: location || null };
   if (status === "together" && location) storeSet(PLACE_KEY, location);
   els.sceneTogether.disabled = true;
   els.sceneApart.disabled = true;
+  showPlaceNeeded(false);
   let place;
+  let clock;
+  let needPlace = false;
   try {
     const r = await api("PUT", "/api/state/scene", { state: next, note: "toggle" });
     state.scene = r && r.state ? r.state : next;
     // v4: the route names the place it matched, with or without a picture.
     place = r && r.place !== undefined ? r.place : undefined;
+    // v5: the route carries the clock after its sync.
+    clock = r && r.clock && typeof r.clock === "object" ? r.clock : undefined;
     state.placeRows = null;
   } catch (e) {
-    showError(e.code || "error", false);
+    // v5 section 4: a together scene needs a place; the form says so and stays open.
+    if (status === "together" && e.status === 400) needPlace = true;
+    else showError(e.code || "error", false);
   } finally {
     els.sceneTogether.disabled = false;
     els.sceneApart.disabled = false;
     renderScene();
     applyPlaceBackground(place);
+    loadClock(clock);
+  }
+  if (needPlace) {
+    await openPlaces();
+    showPlaceNeeded(true);
   }
 }
 
@@ -2103,6 +2250,7 @@ async function loadLife() {
 
 async function openPlaces() {
   closeMenus();
+  showPlaceNeeded(false);
   els.placesPop.classList.remove("hidden");
   els.placeInput.value = state.scene && state.scene.status === "together" && state.scene.location ? String(state.scene.location) : "";
   clear(els.placesList);
@@ -2470,6 +2618,7 @@ async function init() {
     /* the gate answers before this page loads; nothing to register */
   }
   await Promise.all([loadConversations(), loadScene(), loadSettings()]);
+  loadClock();
   const stored = storeGet(STORE_KEY);
   const pick = state.conversations.find((c) => c.id === stored) || state.conversations[0];
   if (pick) await select(pick.id);

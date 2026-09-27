@@ -1,5 +1,7 @@
 // Model: settings (with the price table), her timing and voice, grounding, calls,
 // tastings, the texter meter, notifications, drift reports, voiceprint, usage, system.
+// v5 (SPEC_V5 "Settings added"): the twenty new settings, the Story card (her clock and
+// its status from GET /api/clock) and the Nightly card (a run by hand, the last runs).
 import { api, h, chip, clear, downloadUrl, flash, fmtDate, fmtTime, parseJson, registerServiceWorker, today, usd } from "./api.js";
 
 const $ = (id) => document.getElementById(id);
@@ -28,6 +30,13 @@ const FIELDS = [
   "callFaceProvider", "callFaceSourceAssetId", "hisFaceInPhotos", "listeningLineEnabled", "placeCostUsd",
   "spotifyEnabled", "spotifyPlaylistName", "spotifyPlaylistId", "spotifyPlayer",
   "elevenLabsModel", "elevenLabsTtsPricePer1kChars", "videoMarkerEnabled",
+  // v5 (SPEC_V5): her clock, the nightly story pass, beats, her read of him, friction, what
+  // she sent, the people and places, his ears.
+  "storyClockEnabled", "gapLineMinMinutes",
+  "nightlyStoryEnabled", "nightlyProvider", "nightlyModel", "hygieneModel", "nightlyBudgetUsd",
+  "herDayItemsMax", "nightlyBeatsMax", "beatHorizonDays", "arcMemoryDays",
+  "viewsShown", "viewMinConfidence", "viewsPerNight", "frictionDaysDefault",
+  "sentShown", "sentWindowDays", "hygieneEnabled", "worldShown", "knownArtistsShown",
 ];
 const NUMERIC = new Set([
   "temperature", "maxTokens", "typoCueShare", "imageCostUsd", "dailyCapUsd", "monthlyCapUsd", "realDelayMaxMinutes", "herFirstTextsPerDay",
@@ -38,11 +47,18 @@ const NUMERIC = new Set([
   "tastingDailyCapUsd", "finetuneMinExamples", "portraitCostUsd", "videoSeconds", "videoCostUsd",
   "hisFaceApartEvery", "hisFaceMax",
   "placeCostUsd", "elevenLabsTtsPricePer1kChars",
+  "gapLineMinMinutes", "nightlyBudgetUsd", "herDayItemsMax", "nightlyBeatsMax", "beatHorizonDays", "arcMemoryDays",
+  "viewsShown", "viewMinConfidence", "viewsPerNight", "frictionDaysDefault", "sentShown", "sentWindowDays",
+  "worldShown", "knownArtistsShown",
 ]);
 const BOOL = new Set([
   "proposalsEnabled", "proposalsAutoApprove", "driftCheckEnabled", "textureCuesEnabled", "correctionRewriteToBank", "memoryDecayEnabled", "tastingEnabled", "hisFaceInTogether",
   "hisFaceInPhotos", "listeningLineEnabled", "spotifyEnabled", "videoMarkerEnabled",
+  "storyClockEnabled", "nightlyStoryEnabled", "hygieneEnabled",
 ]);
+// v5: the nightly steps in the order the pass runs them (src/nightly.ts NIGHTLY_STEPS).
+const NIGHTLY_STEPS = ["her_day", "arcs", "views", "hygiene"];
+const STEP_KIND = { done: "ok", skipped: "amber", failed: "danger" };
 // Her first texts as the one button turns them on (SPEC_V4 section 6): two a day, quiet
 // from 23:30 to 08:30 in her timezone. The switches ship off; the button is the opt-in.
 const HER_TEXTS_PER_DAY = 2;
@@ -200,17 +216,23 @@ async function loadSettings() {
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
+  // A card's own Save (Spotify, Story, Nightly) submits this form from outside it: its result
+  // shows beside the button pressed too, not only at the top of the form.
+  const pressed = e.submitter && e.submitter !== $("saveBtn") ? e.submitter : null;
+  const near = pressed && pressed.parentElement ? pressed.parentElement.querySelector("[data-save-status]") : null;
+  const say = (text, kind) => { flash($("settings-status"), text, kind); if (near) flash(near, text, kind); };
+  const sayFail = (err) => { fail($("settings-status"), err); if (near) fail(near, err); };
   const btn = $("saveBtn");
   let patch;
   try {
     patch = collect();
   } catch (e0) {
-    fail($("settings-status"), e0);
+    sayFail(e0);
     return;
   }
   for (const k of NUMERIC) {
     if (k in patch && !Number.isFinite(patch[k])) {
-      flash($("settings-status"), k, "danger");
+      say(k, "danger");
       return;
     }
   }
@@ -218,25 +240,28 @@ form.addEventListener("submit", async (e) => {
   try {
     prices = collectPrices();
   } catch (e1) {
-    fail($("settings-status"), e1);
+    sayFail(e1);
     return;
   }
   if (JSON.stringify(normalizePrices(prices)) !== loadedPrices) patch.prices = prices;
   btn.disabled = true;
+  if (pressed) pressed.disabled = true;
   try {
     const s = await api("PUT", "/api/settings", patch);
     fill(s);
-    flash($("settings-status"), Object.keys(patch).length ? "saved" : "nothing to save", "ok");
+    say(Object.keys(patch).length ? "saved" : "nothing to save", "ok");
     loadUsage();
     loadSystem();
     loadGrounding();
     loadTexter();
     loadTastings();
     loadSpotify();
+    loadClock();
   } catch (e2) {
-    fail($("settings-status"), e2);
+    sayFail(e2);
   } finally {
     btn.disabled = false;
+    if (pressed) pressed.disabled = false;
   }
 });
 
@@ -954,6 +979,133 @@ async function loadSystem() {
   }
 }
 
+// ------------------------------------------------------------ story and nightly (v5)
+
+function heldWhen(iso, tz) {
+  const d = new Date(iso || "");
+  if (Number.isNaN(d.getTime())) return "";
+  const opts = { weekday: "short", hour: "numeric", minute: "2-digit", hour12: true };
+  let parts;
+  try { parts = new Intl.DateTimeFormat("en-US", { ...opts, timeZone: tz || undefined }).formatToParts(d); } catch { parts = new Intl.DateTimeFormat("en-US", opts).formatToParts(d); }
+  const get = (t) => (parts.find((p) => p.type === t) || {}).value || "";
+  return get("weekday") + " " + get("hour") + ":" + get("minute") + get("dayPeriod").toLowerCase();
+}
+
+function minutesLabel(n) {
+  const m = Math.max(0, Math.round(Number(n) || 0));
+  if (m < 60) return m + "m";
+  if (m < 60 * 48) return Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : "");
+  return Math.round(m / 1440) + "d";
+}
+
+async function loadClock() {
+  const box = $("clockStatus");
+  if (!box) return;
+  clear(box);
+  let c;
+  try {
+    c = await api("GET", "/api/clock");
+  } catch (e) {
+    box.append(chip(e.code || "error", "danger"));
+    return;
+  }
+  if (!c || typeof c !== "object") return;
+  const tz = loaded && typeof loaded.timezone === "string" ? loaded.timezone : "";
+  box.append(chip(c.enabled === false ? "clock off" : "clock on", c.enabled === false ? "" : "ok"));
+  if (c.frozen && c.open) {
+    box.append(chip("held " + heldWhen(c.open.frozenAt, tz), "accent"));
+    if (c.open.location) box.append(chip(String(c.open.location)));
+  } else if (c.enabled !== false) {
+    box.append(chip("running", "ok"));
+  }
+  const recent = Array.isArray(c.recent) ? c.recent.filter((r) => r && r.resumedAt) : [];
+  box.append(chip("held spans " + recent.length));
+  for (const r of recent.slice(0, 3)) {
+    box.append(chip(heldWhen(r.frozenAt, tz) + " " + minutesLabel(r.minutes) + (r.location ? " " + String(r.location) : "")));
+  }
+}
+
+function stepChip(step, status, reason) {
+  const el = chip(step.replace(/_/g, " ") + " " + (status || ""), STEP_KIND[status] || "");
+  if (reason) el.title = String(reason);
+  return el;
+}
+
+function renderNightlyResult(r) {
+  const box = $("nightlyResult");
+  if (!box) return;
+  clear(box);
+  if (!r || typeof r !== "object") return;
+  if (r.skipped) { box.append(chip(String(r.skipped), "amber")); return; }
+  if (r.day) box.append(chip(String(r.day)));
+  if (r.frozen) box.append(chip("held", "accent"));
+  for (const s of Array.isArray(r.steps) ? r.steps : []) {
+    box.append(stepChip(String(s.step || ""), String(s.status || ""), s.reason));
+    if (s.status !== "done" && s.reason) box.append(chip(String(s.reason).slice(0, 40)));
+  }
+  if (Number(r.spentUsd) > 0) box.append(chip(usd(r.spentUsd)));
+  if (Number(r.kept) > 0) box.append(chip("kept " + r.kept, "ok"));
+}
+
+async function loadNightly() {
+  const box = $("nightlyRuns");
+  if (!box) return;
+  clear(box);
+  let runs;
+  try {
+    const r = await api("GET", "/api/nightly?limit=28");
+    runs = r && Array.isArray(r.runs) ? r.runs : [];
+  } catch (e) {
+    box.append(chip(e.code || "error", "danger"));
+    return;
+  }
+  if (!runs.length) { box.append(h("div", { class: "chips" }, chip("none"))); return; }
+  const byDay = new Map();
+  for (const run of runs) {
+    const day = String(run.day || "");
+    if (!byDay.has(day)) byDay.set(day, new Map());
+    byDay.get(day).set(String(run.step || ""), run);
+  }
+  const days = [...byDay.keys()].sort().reverse();
+  for (const day of days) {
+    const steps = byDay.get(day);
+    const chips = [];
+    for (const step of NIGHTLY_STEPS) {
+      const run = steps.get(step);
+      if (!run) continue;
+      let reason = "";
+      const res = parseJson(run.result_json, null);
+      if (res && typeof res === "object" && typeof res.reason === "string") reason = res.reason;
+      chips.push(stepChip(step, String(run.status || ""), reason));
+    }
+    const last = [...steps.values()].map((r) => String(r.ran_at || "")).sort().pop();
+    box.append(h("div", { class: "report-row" },
+      h("div", { class: "row" }, h("span", { class: "mono small", text: day }), h("span", { class: "muted small", text: last ? fmtTime(last) : "" })),
+      h("div", { class: "chips" }, chips)));
+  }
+}
+
+function initNightly() {
+  const btn = $("nightlyRun");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    const box = $("nightlyResult");
+    if (box) { clear(box); box.append(chip("running", "accent")); }
+    try {
+      // Held open until the pass ends: every step inside the nightly budget and the caps.
+      renderNightlyResult(await api("POST", "/api/nightly/run", { force: true }));
+      loadNightly();
+      loadUsage();
+    } catch (e) {
+      if (box) clear(box);
+      fail(box || $("settings-status"), e);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 async function init() {
   try {
     await api("GET", "/api/me");
@@ -973,6 +1125,9 @@ async function init() {
   initHerTexts();
   initSpotify();
   loadSpotify();
+  loadClock();
+  initNightly();
+  loadNightly();
 }
 
 init();
