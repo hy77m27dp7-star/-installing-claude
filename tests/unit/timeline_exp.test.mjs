@@ -119,6 +119,11 @@ test("relationshipStory and sceneStory: compared with the given predecessor, or 
   assert.equal(sceneStory(j({ status: "Apart" }), j({ status: "together", location: "the pier" })), "Apart");
   assert.equal(sceneStory(j({ status: "none" }), j({ status: "apart" })), null);
   assert.equal(sceneStory("{broken", null), null);
+  const store = "the record store on Congress Street, at the used bins by the listening station, the big headphones on the hook";
+  assert.equal(sceneStory(j({ status: "together", location: store }), j({ status: "apart" })), "Together at the record store on Congress Street", "the place, not the stage directions");
+  assert.equal(sceneStory(j({ status: "together", location: "the record store on Congress Street, at the bins" }), j({ status: "together", location: store })), null, "the same place in other words");
+  assert.equal(sceneStory(j({ status: "together", location: "same scene" }), j({ status: "together", location: store })), null, "a filler location never moves the scene");
+  assert.equal(sceneStory(j({ status: "together", location: "k" }), j({ status: "apart" })), "Together", "never Together at k");
 });
 
 // The page read answers only the rows a real page would hold (newest first, cut at `limit`);

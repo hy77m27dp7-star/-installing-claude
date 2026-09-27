@@ -58,11 +58,22 @@ export function dropLead(s: string, words: readonly string[] = ["at", "in", "on"
   return s.replace(re, "");
 }
 
-// The words a place gives a chapter: "at the record store on Congress Street, late" -> "The
-// record store on Congress Street". Null when nothing is left.
-export function placeTitle(location: string | null | undefined): string | null {
+// A scene location that names no place: "same scene", "same place", "k", or under three
+// characters once a leading at / in / on is dropped. The place before it still holds.
+const FILLER_PLACE = /^(?:the\s+)?same(?:\s+(?:scene|place|spot))?$|^(?:k|ok|okay|here|there|unchanged)$/i;
+
+export function isFillerPlace(location: string | null | undefined): boolean {
+  const s = dropLead(oneLine(location)).replace(/[\s.,;:!?'"\-]+$/, "").trim();
+  return s.length < 3 || FILLER_PLACE.test(s);
+}
+
+// The place a scene location names, as words inside a sentence: one leading at / in / on
+// dropped, cut at the first , ; ( or " -- ", at a word before 40 characters, trailing
+// punctuation off: "at the record store on Congress Street, late" -> "the record store on
+// Congress Street". Null when nothing is left or the location is filler ("same scene").
+export function placeWords(location: string | null | undefined): string | null {
   let s = oneLine(location);
-  if (!s) return null;
+  if (!s || isFillerPlace(s)) return null;
   s = dropLead(s);
   const cuts = [",", ";", "(", " -- "].map((m) => s.indexOf(m)).filter((i) => i >= 0);
   if (cuts.length) s = s.slice(0, Math.min(...cuts));
@@ -73,6 +84,13 @@ export function placeTitle(location: string | null | undefined): string | null {
     s = sp > 0 ? head.slice(0, sp) : s.slice(0, PLACE_TITLE_MAX);
   }
   s = s.replace(/[\s.,;:!?'"\-]+$/, "").trim();
+  return s || null;
+}
+
+// The words a place gives a chapter: "at the record store on Congress Street, late" -> "The
+// record store on Congress Street". Null when nothing is left.
+export function placeTitle(location: string | null | undefined): string | null {
+  const s = placeWords(location);
   if (!s) return null;
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
@@ -194,10 +212,14 @@ export function cleanTitle(raw: unknown): string | null {
   return s;
 }
 
-// The last line of a chapter as the list shows it: one line, cut at the last space before
-// 90 characters with "..." appended when longer; null when there is no text.
+// The last line of a chapter as the list shows it: her *actions* taken out (the words she
+// said, the way quoteText reads a kept line), one line, cut at the last space before 90
+// characters with "..." appended when longer. A line that is only an action shows the
+// action's words without the asterisks; null when there is no text.
 export function previewText(content: string | null | undefined): string | null {
-  return cutLine(content, PREVIEW_MAX);
+  if (typeof content !== "string") return null;
+  const said = cutLine(content.replace(/\*[^*\n]*\*/g, " ").replace(/\*/g, " "), PREVIEW_MAX);
+  return said ?? cutLine(content.replace(/\*/g, " "), PREVIEW_MAX);
 }
 
 // ------------------------------------------------------------------ D1

@@ -2462,10 +2462,15 @@ function proposalCard(p) {
 
   // Experience pass 7.2: words first. The kind as a kicker, the text, the payload as labelled
   // lines ("Place: the record store"), the raw payload only under Advanced.
+  // The stored payload is an envelope ({ payload, user_message_id, weight, raw, ... }); the
+  // words come from the payload inside it, never its ids, weight or raw text.
   const payload = parseJson(p.payload_json, null);
+  const inner = payload && typeof payload === "object" && !Array.isArray(payload)
+    && payload.payload && typeof payload.payload === "object" && !Array.isArray(payload.payload) ? payload.payload : payload;
   const payloadLines = [];
-  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-    for (const [k, v] of Object.entries(payload)) {
+  if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+    for (const [k, v] of Object.entries(inner)) {
+      if (HIDDEN_PAYLOAD_KEYS.has(k) || /(^id$|_id$|Id$)/.test(k)) continue;
       if (v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length)) continue;
       payloadLines.push(h("div", { class: "small", text: payloadLabel(k) + ": " + truncate(payloadText(v), 160) }));
     }
@@ -2483,10 +2488,13 @@ function proposalCard(p) {
     payload !== null && p.payload_json ? h("details", { class: "advanced" },
       h("summary", { text: "Advanced" }),
       h("pre", { class: "rule", text: JSON.stringify(payload, null, 2) })) : null,
-    p.decision_note ? h("div", { class: "chips" }, chip(String(p.decision_note).slice(0, 80), "danger wrap")) : null,
+    p.decision_note ? h("div", { class: "decision-note", text: String(p.decision_note).slice(0, 120) }) : null,
     h("div", { class: "row" }, approve, edit, reject, slot),
     editBox);
 }
+
+// The envelope's machinery: never a labelled line (the whole payload stays under Advanced).
+const HIDDEN_PAYLOAD_KEYS = new Set(["user_message_id", "assistant_message_id", "weight", "raw", "payload"]);
 
 function payloadLabel(key) {
   if (PAYLOAD_LABEL[key]) return PAYLOAD_LABEL[key];

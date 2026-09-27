@@ -8,6 +8,7 @@
 import { ApiHttpError } from "./errors";
 import { sceneAt } from "./album";
 import type { SceneVersionLike } from "./album";
+import { placeWords } from "./chapters";
 
 export interface RollItem {
   id: string;
@@ -180,7 +181,8 @@ export async function listRoll(db: D1Database, opts: { limit?: number; before?: 
       url: media(row.id),
       poster: source ? media(source) : null,
       at,
-      place: messageId ? sceneAt(versions, at).location : null,
+      // The place in words (its first clause, never the stage directions after it).
+      place: messageId ? placeWords(sceneAt(versions, at).location) : null,
       us: Number(row.with_him ?? 0) === 1,
       conversationId: (stamp && stamp.conversation_id) || row.conversation_id || null,
       messageId,

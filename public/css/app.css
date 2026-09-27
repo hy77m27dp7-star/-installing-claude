@@ -83,7 +83,7 @@
   --dur-2: 280ms;
   --dur-3: 700ms;
   --tabbar-h: 58px;
-  --backdrop-filter: blur(28px) brightness(0.42) saturate(1.15);
+  --backdrop-filter: blur(28px) brightness(0.55) saturate(1.15);
   --lock-veil: linear-gradient(180deg, rgba(4, 7, 14, 0.18) 0%, rgba(4, 7, 14, 0.18) 55%, rgba(4, 7, 14, 0.40) 72%, rgba(4, 7, 14, 0.74) 100%);
   --lock-shade: rgba(4, 7, 14, 0.62);
   --polaroid: #0e1628;
@@ -111,15 +111,17 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* The veil over her photograph (2.4): the top stop is 0.55 because the chapter head, the day
-   separators and the run times are drawn straight on it without glass (2.5). */
+/* The veil over her photograph (2.4): the top stop is 0.55 because the chapter head and its
+   date are drawn straight on it without glass (2.5); the middle stop is 0.5 so her face
+   comes through behind the thread (the day separators and run times sit on small glass
+   pills, and her action lines read at 5.06 on the middle stop over a white pixel). */
 body::after {
   content: "";
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  background: radial-gradient(120% 70% at 50% 0%, rgba(13, 23, 48, 0.55), rgba(4, 7, 14, 0.6) 60%, rgba(3, 6, 12, 0.75));
+  background: radial-gradient(120% 70% at 50% 0%, rgba(13, 23, 48, 0.55), rgba(4, 7, 14, 0.5) 60%, rgba(3, 6, 12, 0.75));
 }
 
 /* Her photograph behind the page: blurred, dark, set by script, faded in on load. */
@@ -433,7 +435,7 @@ body.studio { background-image: radial-gradient(120% 60% at 50% -10%, #0c1529 0%
   min-width: 0;
 }
 
-.stack { display: grid; gap: 14px; min-width: 0; }
+.stack { display: grid; gap: 14px; min-width: 0; align-content: start; }
 .stack.tight { gap: 8px; }
 
 .row {
@@ -456,8 +458,8 @@ body.studio { background-image: radial-gradient(120% 60% at 50% -10%, #0c1529 0%
 
 .section { display: grid; gap: 12px; margin-bottom: 28px; }
 
-.cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.cols-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.cols-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
 .grid-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px 16px; align-items: end; }
 
 /* ------------------------------------------------------------ controls */
@@ -480,9 +482,10 @@ body.studio { background-image: radial-gradient(120% 60% at 50% -10%, #0c1529 0%
 
 .btn:hover { background: rgba(150, 190, 255, 0.13); }
 .btn:disabled { opacity: 0.45; cursor: default; }
-/* The primary action is a near-white pill: the accent stays where section 2.1 puts it. */
-.btn.primary { background: var(--her-name); border-color: transparent; color: var(--ink); font-weight: 600; }
-.btn.primary:hover { background: #ffffff; }
+/* The primary action: a glass pill in --text with a thin ring of the one accent, never the
+   brightest thing on the card. */
+.btn.primary { background: var(--accent-dim); border-color: transparent; color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--accent-ring); }
+.btn.primary:hover { background: rgba(34, 211, 238, 0.22); }
 .btn.danger { background: rgba(251, 111, 139, 0.10); color: var(--danger); }
 .btn.danger:hover { background: rgba(251, 111, 139, 0.16); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--text-2); }
@@ -664,8 +667,8 @@ input[type="file"]::file-selector-button {
 
 .switch input:checked + .track { background: var(--accent-solid); }
 .switch input:checked + .track::after { transform: translateX(16px); background: var(--ink); }
-.switch.warm input:checked + .track { background: var(--amber); }
-.switch.warm input:checked ~ .switch-label { color: var(--amber); }
+.switch.warm input:checked + .track { background: var(--accent); }
+.switch.warm input:checked ~ .switch-label { color: var(--text); }
 .switch input:focus-visible + .track { outline: 2px solid var(--accent-solid); outline-offset: 2px; }
 
 /* Segmented control */
@@ -744,7 +747,8 @@ input[type="file"]::file-selector-button {
 
 .chip.danger { border-color: rgba(251, 111, 139, 0.55); color: var(--danger); }
 .chip.ok { border-color: rgba(61, 214, 163, 0.55); color: var(--ok); }
-.chip.amber { border-color: rgba(242, 178, 60, 0.55); color: var(--amber); }
+/* No second accent: the old amber chips read as quiet text. */
+.chip.amber { border-color: var(--line-2); color: var(--text-2); }
 .chip.accent { border-color: rgba(34, 211, 238, 0.55); color: var(--accent-solid); }
 .chip.flag { border-color: transparent; background: rgba(141, 153, 178, 0.1); color: var(--text-2); font-size: 10.5px; }
 /* A full sentence (a server error on the Model page) wraps instead of being cut. */
@@ -1053,10 +1057,14 @@ main.chat {
 .empty-her { display: grid; justify-items: center; padding: 36px 0 12px; }
 .empty-her .avatar { --avatar-size: 96px; width: 96px; height: 96px; box-shadow: var(--avatar-ring), var(--glow-soft), var(--glow); }
 
-/* The days between runs: "Today", "Friday", small and centred. */
+/* The days between runs: "Today", "Friday", small and centred on a glass pill. */
 .day-sep {
   align-self: center;
-  padding: 10px 0 2px;
+  margin-top: 10px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: var(--glass);
+  box-shadow: inset 0 1px 0 var(--glass-edge);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.14em;
@@ -1125,8 +1133,26 @@ main.chat {
 .msg.hers .bubble[tabindex] { cursor: default; }
 .msg.hers .bubble[tabindex]:focus-visible { outline-offset: 3px; }
 
-.msg.op.hers .bubble { background: rgba(242, 178, 60, 0.08); box-shadow: inset 0 0 0 1px rgba(242, 178, 60, 0.45); }
-.msg.op.his .bubble { background: #1b1810; box-shadow: inset 0 0 0 1px rgba(242, 178, 60, 0.35); }
+.msg.op.hers .bubble { background: rgba(34, 211, 238, 0.06); box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.35); }
+.msg.op.his .bubble { background: var(--panel-2); box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.28); }
+
+/* Her *actions*: a stage line, not a bubble (no ground, the display serif in italics); an
+   action inside a line is italic. --text-2 on the veil's middle stop over a white pixel is
+   5.06 (2.5), and the shadow lifts it off a bright photograph. */
+.bubble.action {
+  padding: 2px 6px;
+  background: none;
+  box-shadow: none;
+  font-family: var(--display);
+  font-style: italic;
+  font-weight: 340;
+  font-size: 15.5px;
+  line-height: 1.4;
+  color: var(--text-2);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.55);
+}
+.msg.his .bubble.action { text-align: right; }
+.bubble .act { font-style: italic; color: var(--text-2); }
 
 .bubble.enter { animation: rise var(--dur-1) var(--ease) both; }
 
@@ -1146,7 +1172,7 @@ main.chat {
   font-variant-numeric: tabular-nums;
 }
 
-.meta .time { color: var(--text-2); }
+.meta .time { padding: 1px 8px; border-radius: 999px; background: var(--glass); color: var(--text-2); }
 
 .meta .why {
   min-height: 24px;
@@ -1281,7 +1307,7 @@ main.chat {
 }
 
 .song-card .note svg { width: 18px; height: 18px; }
-.song-card .song-text { display: grid; gap: 1px; min-width: 0; }
+.song-card .song-text { display: grid; gap: 1px; min-width: 0; flex: 1 1 auto; }
 .song-card .song-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .song-card .song-artist { color: var(--text-2); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .song-card .song-link { flex: none; font-size: 13px; font-weight: 500; }
@@ -1365,8 +1391,8 @@ body.her-typing .her-who .avatar { animation: breathe 2.4s ease-in-out infinite;
 }
 
 .composer-box:focus-within { box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.55), 0 0 0 3px var(--accent-ring), var(--shadow-1); }
-.composer.operator .composer-box { box-shadow: inset 0 0 0 1px rgba(242, 178, 60, 0.7), var(--shadow-1); }
-.composer.operator .composer-box:focus-within { box-shadow: inset 0 0 0 1px var(--amber), 0 0 0 3px rgba(242, 178, 60, 0.18); }
+.composer.operator .composer-box { box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.55), var(--shadow-1); }
+.composer.operator .composer-box:focus-within { box-shadow: inset 0 0 0 1px var(--accent-solid), 0 0 0 3px var(--accent-ring); }
 
 .composer-box textarea {
   flex: 1 1 120px;
@@ -1688,6 +1714,7 @@ blockquote.evidence {
 }
 
 .proposal-text { overflow-wrap: anywhere; }
+.decision-note { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 
 .kv {
   display: grid;
@@ -1979,7 +2006,7 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .call-actions .icon-btn { width: 56px; height: 56px; border: 0; background: rgba(150, 190, 255, 0.10); color: var(--text); }
 /* A darker ground than --danger for the white glyph (5.0:1; the accent pink is 2.7:1). */
 .call-actions .icon-btn.end { background: #c8395a; color: #fff; border-color: transparent; }
-.call-actions .icon-btn[aria-pressed="true"] { color: var(--amber); background: rgba(242, 178, 60, 0.12); }
+.call-actions .icon-btn[aria-pressed="true"] { color: var(--accent-solid); background: var(--accent-dim); }
 .icon-btn.calling { color: var(--ok); animation: ring-pulse 1.2s ease-in-out infinite; }
 
 .call-card {
@@ -2242,7 +2269,7 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* The two-of-you picture: one small accent chip. */
 .chip.us { border-color: rgba(34, 211, 238, 0.55); color: var(--accent-solid); background: var(--accent-dim); font-weight: 600; letter-spacing: 0.04em; }
-.chip.candidate { border-color: rgba(242, 178, 60, 0.55); color: var(--amber); }
+.chip.candidate { border-color: var(--line-2); color: var(--text-2); }
 .chip.place { color: var(--text-2); }
 .chip.back { border-color: rgba(34, 211, 238, 0.55); color: var(--accent-solid); font-size: 10.5px; }
 .chip.sealed { color: var(--muted); border-style: dashed; }
@@ -2551,7 +2578,10 @@ main.page.phone { display: grid; gap: var(--s-4); align-content: start; }
 .place-row .place-title { font-weight: 600; overflow-wrap: anywhere; }
 .place-row .place-detail { color: var(--text-2); font-size: var(--fs-1); overflow-wrap: anywhere; }
 .place-row .place-coords { color: var(--text-2); font-size: var(--fs-0); font-variant-numeric: tabular-nums; }
-.place-row .place-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 6px; }
+.place-row .place-actions { grid-column: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.place-row .place-coord { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); }
+.place-row .place-coord input { width: 9.5em; }
+.place-row .place-thumb.empty svg { width: 20px; height: 20px; opacity: 0.6; }
 .place-row .place-actions .chips { width: 100%; }
 .place-add { display: grid; gap: 8px; }
 
@@ -2596,7 +2626,7 @@ main.page.album { display: grid; gap: var(--s-4); align-content: start; }
 .polaroid .pactions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .polaroid .pactions a, .polaroid .pactions .btn { font-size: var(--fs-0); }
 .polaroid .pactions .btn.small { min-height: 32px; padding: 0 8px; }
-.polaroid.candidate { border-color: rgba(242, 178, 60, 0.45); }
+.polaroid.candidate { border-color: var(--line-2); }
 .polaroid.us { border-color: rgba(34, 211, 238, 0.4); }
 .polaroid .corner { position: absolute; top: 10px; left: 10px; z-index: 1; }
 
@@ -2628,16 +2658,17 @@ main.page.memory { display: grid; gap: var(--s-4); align-content: start; }
   min-width: 0;
   padding: 10px 12px;
   border-radius: var(--radius-s);
-  border: 1px solid rgba(34, 211, 238, var(--phase-line, 0.3));
-  background: rgba(34, 211, 238, var(--phase-a, 0.1));
+  border: 0;
+  background: rgba(150, 190, 255, 0.05);
+  box-shadow: inset 2px 0 0 rgba(34, 211, 238, var(--phase-line, 0.3));
   color: var(--text);
   text-decoration: none;
   font-size: var(--fs-1);
   line-height: 1.4;
-  transition: border-color 0.15s;
+  transition: background 0.15s;
 }
 
-.tile:hover { text-decoration: none; border-color: var(--accent-solid); }
+.tile:hover { text-decoration: none; background: rgba(150, 190, 255, 0.09); }
 .tile.low { flex: 1 1 140px; max-width: 100%; font-size: var(--fs-0); }
 .tile.mid { flex: 2 1 220px; font-size: var(--fs-1); }
 .tile.high { flex: 3 1 320px; font-size: var(--fs-2); }
@@ -2646,27 +2677,9 @@ main.page.memory { display: grid; gap: var(--s-4); align-content: start; }
 .tile .text { overflow-wrap: anywhere; }
 .tile .tile-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--fs-0); color: var(--text-2); font-variant-numeric: tabular-nums; }
 
-/* An untold fact: a closed envelope, the subject only. */
-.tile.envelope {
-  position: relative;
-  flex: 1 1 150px;
-  padding-top: 26px;
-  overflow: hidden;
-  border-style: dashed;
-  background: var(--panel-2);
-  color: var(--text-2);
-}
-
-.tile.envelope::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 20px;
-  background: linear-gradient(to bottom right, transparent 49.5%, rgba(34, 211, 238, 0.18) 50%) left / 50% 100% no-repeat, linear-gradient(to bottom left, transparent 49.5%, rgba(34, 211, 238, 0.18) 50%) right / 50% 100% no-repeat;
-  pointer-events: none;
-}
+/* The legend is one quiet line of words; an untold subject is a plain row. */
+.memory-legend .legend-words { font-size: var(--fs-1); color: var(--text-2); }
+.mem-row.sealed-row { grid-template-columns: minmax(0, 1fr); color: var(--text-2); }
 
 .mem-list { display: grid; gap: 2px; }
 .mem-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 8px 0; box-shadow: inset 0 1px 0 var(--glass-edge); font-size: var(--fs-1); }
@@ -2831,7 +2844,7 @@ main.phone-stage {
   position: relative;
   width: 400px;
   max-width: 100%;
-  height: min(860px, calc(100dvh - 112px));
+  height: min(860px, calc(100dvh - 128px));
   border-radius: 48px;
   overflow: hidden;
   background: var(--night);
@@ -2879,6 +2892,15 @@ main.phone-stage {
   object-position: 50% 30%;
   background: var(--deep);
   animation: settle 1.2s var(--ease) both;
+}
+
+/* Her face below the clock, not behind it: the photograph starts a little down the screen
+   and fades in from the night above, under the date, the clock and the weather. */
+.lock .lock-wallpaper {
+  top: 12%;
+  height: 88%;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 20%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 20%);
 }
 
 @keyframes settle {
@@ -2972,6 +2994,8 @@ main.phone-stage {
 }
 
 .lock-stack::-webkit-scrollbar { display: none; }
+/* The notifications gather at the bottom, above her pictures, and leave her face clear. */
+.lock-stack > :first-child { margin-top: auto; }
 
 .notif {
   display: grid;
@@ -3104,6 +3128,12 @@ main.phone-stage {
 }
 
 .app-icon svg { width: 28px; height: 28px; }
+/* Each of her apps its own blue, one family (Messages carries the one accent). */
+.app[data-app="maps"] .app-icon { background: linear-gradient(160deg, rgba(38, 104, 150, 0.85), rgba(16, 48, 80, 0.85)); }
+.app[data-app="notes"] .app-icon { background: linear-gradient(160deg, rgba(58, 80, 150, 0.85), rgba(24, 36, 84, 0.85)); }
+.app[data-app="photos"] .app-icon { background: linear-gradient(160deg, rgba(30, 118, 140, 0.85), rgba(14, 52, 80, 0.85)); }
+.app[data-app="music"] .app-icon { background: linear-gradient(160deg, rgba(40, 72, 140, 0.85), rgba(20, 38, 86, 0.85)); }
+.app[data-app="messages"] .app-icon { background: var(--accent); color: var(--ink); }
 .app:active .app-icon { transform: scale(0.94); }
 .app-name { font-size: 12px; font-weight: 500; color: var(--her-name); text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6); }
 
@@ -3243,6 +3273,8 @@ main.page.album { display: block; max-width: 1180px; }
 }
 
 .roll-tile img, .roll-tile video { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; object-fit: cover; }
+/* The wide month hero keeps her face in the frame, not her mouth and chest. */
+.month-hero img, .month-hero video { object-position: 50% 22%; }
 .roll-tile:focus-visible { outline-offset: -3px; }
 .roll-tile.clip { background: #000; }
 .roll-tile.clip video { object-fit: cover; }
@@ -3476,17 +3508,20 @@ details.advanced > :not(summary) { margin-left: 14px; margin-right: 14px; }
 .setting-hint { font-size: 12px; font-weight: 400; color: var(--text-2); opacity: 0.85; }
 .setting-block > h3 + .setting, .setting-block > .row.between + .setting, details.advanced > summary + .setting { box-shadow: none; }
 
+/* Docked under the form column (never a pill floating over a field): the width of the
+   form, the Save at its right end, the fields scroll under its glass. */
 .save-bar {
   position: sticky;
-  bottom: 16px;
+  bottom: 0;
   z-index: 6;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
   gap: 10px;
-  justify-self: end;
-  padding: 8px 8px 8px 16px;
-  border-radius: 999px;
+  justify-self: stretch;
+  padding: 10px 12px 10px 16px;
+  border-radius: var(--radius-l) var(--radius-l) 0 0;
   background: var(--glass-strong);
   backdrop-filter: blur(var(--glass-blur)) saturate(140%);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
@@ -3637,7 +3672,7 @@ details.advanced > :not(summary) { margin-left: 14px; margin-right: 14px; }
   .phone-shell::after { content: none; }
 
   .kept-text { font-size: 19px; }
-  .save-bar { bottom: calc(var(--tabbar-h) + var(--safe-b) + 8px); }
+  .save-bar { bottom: calc(var(--tabbar-h) + var(--safe-b)); }
   .lb-prev, .lb-next { top: auto; bottom: calc(16px + var(--safe-b)); margin-top: 0; }
 }
 

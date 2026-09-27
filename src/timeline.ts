@@ -17,6 +17,7 @@
 // run of a beat) joins the scroll at its due instant with the outcome words; never his part
 // in it. The timeline stays on the real clock (his display, not her memory: v5.1 deferred).
 import { outcomeWords } from "./arcs";
+import { isFillerPlace, placeWords } from "./chapters";
 import type { BeatOutcome } from "./arcs";
 import { listAssets, listHistory } from "./db";
 import { listMedia } from "./media";
@@ -328,17 +329,35 @@ function sceneFields(json: string | null): { status: string | null; location: st
   return { status: status ? status.toLowerCase() : null, location };
 }
 
+// The place a location names for the story line (placeWords: the stage directions after the
+// first comma cut, a filler location like "same scene" or "k" names none), normalised.
+function placeKey(location: string | null): string {
+  const words = placeWords(location);
+  return words ? placeTitleNorm(words) : "";
+}
+
 // The scene in words only when it moved: the status changed, or together at a place that
-// differs by placeTitleNorm. Every save and every auto-kept proposal writes a version.
+// differs by placeTitleNorm of its place words (a filler location never moves the scene).
+// Every save and every auto-kept proposal writes a version.
 export function sceneStory(json: string, prevJson: string | null): string | null {
   const cur = sceneFields(json);
   const prev = sceneFields(prevJson);
   const moved = cur.status !== prev.status
-    || (cur.status === "together" && placeTitleNorm(cur.location ?? "") !== placeTitleNorm(prev.location ?? ""));
+    || (cur.status === "together" && !isFillerPlace(cur.location) && placeKey(cur.location) !== placeKey(prev.location));
   if (!moved) return null;
-  if (cur.status === "together") return cur.location ? "Together at " + cur.location.replace(/^at\s+/i, "") : "Together";
+  if (cur.status === "together") {
+    const words = placeWords(cur.location);
+    return words ? "Together at " + words : "Together";
+  }
   if (cur.status === "apart") return "Apart";
   return null;
+}
+
+// A together version whose location is filler, after a together version: the same place,
+// so the version before it stays the one the next is compared with.
+function carriesPlace(json: string, prevJson: string | null): boolean {
+  const cur = sceneFields(json);
+  return cur.status === "together" && isFillerPlace(cur.location) && sceneFields(prevJson).status === "together";
 }
 
 // The story words of each version, keyed by row id: each version compared with the previous
@@ -351,6 +370,7 @@ function stateStories(versions: StateVersionRow[], edge: Map<string, string | nu
     let prev: string | null = edge.get(entity) ?? null;
     for (const v of own) {
       out.set(v.id, entity === "relationship" ? relationshipStory(v.state_json, prev) : sceneStory(v.state_json, prev));
+      if (entity === "scene" && carriesPlace(v.state_json, prev)) continue;
       prev = v.state_json;
     }
   }

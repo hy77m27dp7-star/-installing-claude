@@ -7,7 +7,7 @@
 // Experience pass (DESIGN_EXPERIENCE 7.4): a fifth tab, Places (#placesAdmin and the add form
 // moved here from the v4 phone page), the places with no pin first under "Not on the map";
 // empty lists as a quiet label; the decide row under a candidate on glass.
-import { api, apiForm, h, chip, clear, flash, bytesLabel, fmtTime, ago } from "./api.js";
+import { api, apiForm, h, chip, clear, flash, bytesLabel, fmtTime, ago, svgIcon } from "./api.js";
 import { callFaceKindOf, FACE_KINDS } from "./callface.js";
 // nav.js builds the nav on load and, in v4, exports the avatar focus table and mountAvatar;
 // a namespace import so a nav.js without them still loads this page.
@@ -800,7 +800,7 @@ function errorText(e) {
 
 // The thumbnail column of a .place-row: the picture (a link to it full size) or the empty box.
 function placeThumb(p) {
-  if (!p.picture) return h("span", { class: "place-thumb empty", "aria-hidden": "true" });
+  if (!p.picture) return h("span", { class: "place-thumb empty", "aria-hidden": "true" }, svgIcon("image"));
   const src = "/media/place/" + encode(p.id);
   return h("a", { href: src, target: "_blank", rel: "noopener", "aria-label": "Open the picture of " + p.title },
     h("img", { class: "place-thumb", src: src + "?v=" + encode(p.picture_made_at || ""), alt: p.title, loading: "lazy", width: "56", height: "56" }));
@@ -838,7 +838,8 @@ function placeCard(p) {
         p.picture && p.picture_season ? chip(p.picture_season) : null,
         p.last_used_at ? chip("used " + ago(p.last_used_at)) : null)),
     h("div", { class: "place-actions" },
-      latIn, lonIn,
+      h("label", { class: "place-coord" }, h("span", { text: "Lat" }), latIn),
+      h("label", { class: "place-coord" }, h("span", { text: "Lon" }), lonIn),
       h("button", { type: "button", class: "btn small", text: "Save pin", onclick: () => act("saving", async () => {
         const lat = latIn.value.trim();
         const lon = lonIn.value.trim();

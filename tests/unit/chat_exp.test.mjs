@@ -88,7 +88,50 @@ test("the place line: together at the place (a leading at or in dropped), togeth
   assert.equal(placeLineText({ status: "together", location: null }), "together");
   assert.equal(placeLineText({ status: "apart" }), "texting");
   assert.equal(placeLineText(null), "");
+  assert.equal(placeLineText({ status: "together", location: "the record store on Congress Street, at the used bins by the listening station" }), "together at the record store on Congress Street", "cut at the first comma");
+  assert.equal(placeLineText({ status: "together", location: "the pier; cold" }), "together at the pier");
+  assert.equal(placeLineText({ status: "together", location: "the ferry -- going out" }), "together at the ferry");
   assert.match(fnSrc("renderScene"), /els\.placeLine\.classList\.toggle\("hidden", !text\)/);
+});
+
+test("run times: time only, no leading zero, never the date (the day separators carry it)", () => {
+  const clockTime = new Function(fnSrc("clockTime") + "\nreturn clockTime;")();
+  assert.equal(clockTime("2026-09-24T20:46:00"), "8:46 PM");
+  assert.equal(clockTime("2026-09-24T09:05:00"), "9:05 AM");
+  assert.equal(clockTime("garbage"), "");
+  assert.ok(!/fmtTime\(/.test(fnSrc("metaRow")), "metaRow never uses the dated fmtTime");
+});
+
+test("her *actions*: a whole-action bubble is a stage line without asterisks; an inline action is an em, built from text nodes", () => {
+  const made = [];
+  const doc = { createTextNode: (t) => ({ text: t }) };
+  const fake = (tag, props, ...children) => { const el = fakeH(tag, props, ...children); made.push(el); return el; };
+  const src = js.slice(js.indexOf("const ACTION_WHOLE"), js.indexOf("function renderMessage("));
+  const { bubbleEl } = new Function("h", "document", src + "\nreturn { bubbleEl };")(fake, doc);
+  const whole = bubbleEl("*laughs into your shirt, doesn't move*");
+  assert.equal(whole.props.class, "bubble action");
+  assert.equal(whole.props.text, "laughs into your shirt, doesn't move");
+  const mixed = bubbleEl("*looks up at you finally* ...mine too. dont make it a thing");
+  assert.equal(mixed.props.class, "bubble");
+  assert.deepEqual(mixed.children.map((c) => (c.tag ? [c.tag, c.props.class, c.props.text] : c.text)), [["em", "act", "looks up at you finally"], " ...mine too. dont make it a thing"]);
+  const plain = bubbleEl("i'm keeping that one");
+  assert.deepEqual(plain.children.map((c) => c.text), ["i'm keeping that one"]);
+  assert.ok(!/innerHTML/.test(src));
+});
+
+test("the plain thread: his version only with the workings; the song card's one way to play; an old failed picture leaves the thread", () => {
+  assert.match(js, /const version = state\.operator \? hisVersion\(m\) : null;/);
+  assert.match(fnSrc("refreshHisVersion"), /if \(!state\.operator\) return;/);
+  const song = fnSrc("songCard");
+  assert.match(song, /!uri \|\| state\.operator \? h\("a", \{ class: "song-link"/);
+  assert.match(song, /if \(state\.operator\) \{\s*card\.append\(play, remote, remoteNote, embed\);/);
+  assert.match(fnSrc("renderPhoto"), /staleFailure\(m, errorCode\) \? null : failedPicture/);
+  const stale = new Function("state", "FAILED_KEEP_MS", fnSrc("staleFailure") + "\nreturn staleFailure;");
+  const off = stale({ operator: false }, 12 * 3600 * 1000);
+  assert.equal(off({ created_at: "2026-09-25T12:00:00Z" }, null), true, "a day-old failure is gone");
+  assert.equal(off({ created_at: new Date().toISOString() }, null), false, "a fresh one stays");
+  assert.equal(off({ created_at: "2026-09-25T12:00:00Z" }, "provider_failed"), false, "one this page just saw stays");
+  assert.equal(stale({ operator: true }, 12 * 3600 * 1000)({ created_at: "2026-09-25T12:00:00Z" }, null), false, "the workings keep it");
 });
 
 test("the backdrop: the place picture or GET /api/wallpaper with its focus through the CSSOM; --place-url is no longer written", () => {
@@ -109,7 +152,7 @@ test("the phone slide-in and the hold-to-record handling are gone", () => {
 test("metaRow: why, note, keep and the flags only under state.operator (built and counted)", () => {
   const build = (operator) => {
     const state = { operator, chipsFor: new Map() };
-    const metaRow = new Function("h", "state", "fmtTime", "openWhy", "toggleNoteSheet", "markButton", "chip", "flagCodes",
+    const metaRow = new Function("h", "state", "clockTime", "openWhy", "toggleNoteSheet", "markButton", "chip", "flagCodes",
       fnSrc("metaRow") + "\nreturn metaRow;")(fakeH, state, () => "9:04 PM", () => {}, () => {}, () => fakeH("button", { class: "mark", text: "keep" }), (t) => fakeH("span", { class: "chip", text: t }), () => ["written_joke"]);
     return metaRow({ id: "m1", role: "assistant", channel: "story", created_at: "2026-09-26T01:04:00Z", flags_json: "[]" });
   };

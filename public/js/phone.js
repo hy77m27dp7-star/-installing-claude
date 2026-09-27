@@ -154,11 +154,12 @@ function photos() {
   return drawableRoll(S.roll, PHOTOS_MAX);
 }
 
-// An app with nothing in it is not on her home screen (Maps always is: the city is never
-// empty; Messages always is). Unknown yet counts as empty, so an icon never flashes away.
+// An app with nothing in it is not on her home screen (Maps only once a place of hers is
+// pinned: the city outline alone is an empty card; Messages always is). Unknown yet counts
+// as empty, so an icon never flashes away.
 function hasApp(name) {
   switch (name) {
-    case "maps": return true;
+    case "maps": return pinnedPlaces(S.phone && S.phone.places).length > 0;
     case "notes": return wants().length > 0;
     case "photos": return photos().length > 0;
     case "music": return Boolean(listening()) || sentSongs().length > 0 || Boolean(playlistIdOf(S.spotify));
@@ -167,7 +168,7 @@ function hasApp(name) {
 }
 
 function updateIcons() {
-  for (const name of ["notes", "photos", "music"]) {
+  for (const name of ["maps", "notes", "photos", "music"]) {
     for (const a of document.querySelectorAll('.app[data-app="' + name + '"]')) show(a, hasApp(name));
   }
 }

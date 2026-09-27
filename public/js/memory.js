@@ -3,12 +3,12 @@
 // each with "not true"), his ears (#memoryArtists, each with Remove) and the guess chip on
 // an inferred fact; those two buttons are the only writes here. The shell and the ids are the design lane's
 // (public/memory.html), and so are the classes app.css draws, used here by their names:
-//   .memory-legend                   the four phase chips (chip.phase-<phase>)
+//   .memory-legend                   one quiet line of counts ("6 vivid, 2 fading")
 //   .memory-field                    the field of facts about him (and the sealed ones)
 //   a.tile.low|mid|high              a fact tile, sized by weight
 //   .tile.phase-<phase>              shaded by phase (vivid, firm, fading, faded)
 //   .tile .subject / .text / .tile-foot (the "back" chip rides in the foot)
-//   .tile.envelope                   an untold fact, closed: the subject and a "sealed" chip
+//   .mem-row (in #memorySealed)       an untold subject as a plain row: "music (4)"
 //   .mem-list / .mem-row             the fading and returned lists (.text, .age)
 //   .mem-timeline / .mem-node        the history line and its nodes (.title, .when)
 //   .kept-row                        kept automatically today (.kicker kind words, .text, .when)
@@ -93,15 +93,17 @@ function scoreLabel(f) {
 
 // ------------------------------------------------------------ legend
 
+// One quiet line of words, the phases that hold something only: "6 vivid, 2 fading".
 function renderLegend(m) {
   const box = els.legend;
   if (!box) return;
   box.classList.add("memory-legend");
   clear(box);
   const counts = m.counts || {};
-  for (const p of PHASES) box.append(chip(p + " " + (Number(counts[p]) || 0), "phase-" + p));
-  if (Number(counts.returned) > 0) box.append(chip("back " + counts.returned, "back"));
-  if (m.settings && m.settings.memoryDecayEnabled === false) box.append(chip("decay off", "amber"));
+  const parts = PHASES.filter((p) => Number(counts[p]) > 0).map((p) => Number(counts[p]) + " " + p);
+  if (Number(counts.returned) > 0) parts.push(counts.returned + " came back");
+  if (m.settings && m.settings.memoryDecayEnabled === false) parts.push("decay off");
+  if (parts.length) box.append(h("span", { class: "legend-words", text: parts.join(", ") }));
 }
 
 // ------------------------------------------------------------ the field
@@ -178,19 +180,24 @@ function renderHistory(history) {
 
 // ------------------------------------------------------------ sealed
 
-// A closed envelope per untold fact (.tile.envelope; the flap is the stylesheet's): the
-// subject only. Nothing opens it.
-function envelope(s) {
-  return h("div", { class: "tile envelope", "data-id": String(s.id || "") },
-    h("span", { class: "subject", text: String(s.subject || "(untitled)") }),
-    h("span", { class: "tile-foot" }, chip("sealed", "sealed")));
+// One plain row per untold subject: the subject only, a count when she holds several
+// ("music x4" from the server reads "music (4)"). Nothing opens it.
+function sealedWords(subject) {
+  const s = String(subject || "untitled").trim();
+  const m = / x(\d+)$/.exec(s);
+  return m ? s.slice(0, m.index) + " (" + m[1] + ")" : s;
+}
+
+function sealedRow(s) {
+  return h("div", { class: "mem-row sealed-row", "data-id": String(s.id || "") },
+    h("span", { class: "text", text: sealedWords(s.subject) }));
 }
 
 function renderSealed(sealed) {
   const box = els.sealed;
   if (!box) return;
-  box.classList.add("memory-field");
-  fill(box, sealed, envelope, "Nothing untold");
+  box.classList.add("mem-list");
+  fill(box, sealed, sealedRow, "Nothing untold");
 }
 
 // ------------------------------------------------------------ kept today
@@ -302,10 +309,10 @@ function renderArtists(k) {
   clear(box);
   const known = k && Array.isArray(k.known) ? k.known : [];
   const disliked = k && Array.isArray(k.disliked) ? k.disliked : [];
-  for (const [label, rows, kind] of [["known", known, "accent"], ["not for me", disliked, "amber"]]) {
+  for (const [label, rows] of [["known", known], ["not for me", disliked]]) {
     const list = h("div", { class: "artist-list" });
     fill(list, rows, artistRow, "No artists");
-    box.append(h("div", { class: "stack tight" }, h("div", { class: "chips" }, chip(label + " " + rows.length, kind)), list));
+    box.append(h("div", { class: "stack tight" }, h("div", { class: "kicker", text: label + (rows.length ? " (" + rows.length + ")" : "") }), list));
   }
 }
 

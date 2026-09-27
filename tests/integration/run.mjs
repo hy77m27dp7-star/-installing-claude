@@ -4939,7 +4939,7 @@ async function scenariosExp(report) {
     const owner = r.json.items.find((i) => i.id === "photo:" + ids.owner);
     assert.ok(owner, "the owner picture is on the log");
     assert.equal(owner.story, null);
-    assert.ok(r.json.items.some((i) => i.type === "scene" && i.story === "Together at the bench by the water, late"), "the scene in words");
+    assert.ok(r.json.items.some((i) => i.type === "scene" && i.story === "Together at the bench by the water"), "the scene in words (the place, not the stage direction after the comma)");
   });
 
   await report.check("exp: the page /us, the scripts us.js, lockwords.js and months.js answer 200; the display font answers 200 as font/woff2", async () => {

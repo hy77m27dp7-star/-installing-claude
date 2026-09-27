@@ -228,7 +228,7 @@ const NEW_TOKENS = {
   "--glow": "0 0 28px rgba(34, 211, 238, 0.28)", "--glow-soft": "0 0 64px rgba(34, 211, 238, 0.10)",
   "--radius-l": "22px", "--radius-xl": "32px", "--fs-5": "28px", "--fs-6": "40px", "--fs-clock": "clamp(84px, 24vw, 128px)",
   "--dur-1": "160ms", "--dur-2": "280ms", "--dur-3": "700ms", "--tabbar-h": "58px",
-  "--backdrop-filter": "blur(28px) brightness(0.42) saturate(1.15)",
+  "--backdrop-filter": "blur(28px) brightness(0.55) saturate(1.15)",
   "--lock-veil": "linear-gradient(180deg, rgba(4, 7, 14, 0.18) 0%, rgba(4, 7, 14, 0.18) 55%, rgba(4, 7, 14, 0.40) 72%, rgba(4, 7, 14, 0.74) 100%)",
   "--lock-shade": "rgba(4, 7, 14, 0.62)", "--polaroid": "#0e1628", "--her-name": "#f4f7fc",
   "--bubble-hers": "linear-gradient(160deg, #16304c 0%, #123341 100%)",
@@ -317,11 +317,18 @@ test("--muted is never used by a rule of a Her page (it measures 3.80 over the v
 test("the contrast table of 2.5, recomputed from the tokens; --text-2 on the lock shade fails and is never used inside .lock-top", () => {
   const c = (name) => hexRgb(token(name));
   const white = [255, 255, 255];
-  const bright = over([0, 0, 0, 0], [Math.round(255 * 0.42), Math.round(255 * 0.42), Math.round(255 * 0.42)]);
+  // The brightest backdrop pixel: white through the backdrop filter's brightness.
+  const brightness = Number(/brightness\(([\d.]+)\)/.exec(token("--backdrop-filter"))[1]);
+  const px = Math.round(255 * brightness);
+  const bright = over([0, 0, 0, 0], [px, px, px]);
   const veilRule = RULES.find((r) => r.selectors.includes("body::after"));
-  const veilTop = rgbaOf(/radial-gradient\([^,]+,\s*(rgba\([^)]+\))/.exec(veilRule.body)[1]);
+  const stops = Array.from(veilRule.body.matchAll(/rgba\([^)]+\)/g)).map((m) => rgbaOf(m[0]));
+  const veilTop = stops[0];
   const onVeil = over(veilTop, bright);
-  assert.deepEqual(onVeil, [55, 61, 75], "the veil's top over the brightest backdrop pixel");
+  assert.deepEqual(onVeil, [70, 76, 89], "the veil's top over the brightest backdrop pixel (brightness 0.55)");
+  // Her action lines have no bubble: they sit on the veil's middle stop.
+  const onVeilMid = over(stops[1], bright);
+  assert.deepEqual(stops[1], [4, 7, 14, 0.5], "the veil's middle stop");
   const glass = over(rgbaOf(token("--glass")), onVeil);
   const strongWhite = over(rgbaOf(token("--glass-strong")), white);
   const shadeWhite = over(rgbaOf(token("--lock-shade")), white);
@@ -341,6 +348,7 @@ test("the contrast table of 2.5, recomputed from the tokens; --text-2 on the loc
     ["--ink on #14b8a6", c("--ink"), hexRgb("#14b8a6"), 3],
     ["--text on the veil", c("--text"), onVeil, 4.5],
     ["--text-2 on the veil", c("--text-2"), onVeil, 4.5],
+    ["--text-2 on the veil's middle (her action lines)", c("--text-2"), onVeilMid, 4.5],
     ["--text-2 on --glass over the veil", c("--text-2"), glass, 4.5],
     ["--text on --glass-strong over white", c("--text"), strongWhite, 4.5],
     ["--text-2 on --glass-strong over white", c("--text-2"), strongWhite, 4.5],
@@ -356,7 +364,8 @@ test("the contrast table of 2.5, recomputed from the tokens; --text-2 on the loc
     const r = ratio(fg, bg);
     assert.ok(r >= floor, label + ": " + r.toFixed(2) + " < " + floor);
   }
-  assert.ok(Math.abs(ratio(c("--text"), onVeil) - 9.0) < 0.05, "9.00 as the table says");
+  assert.ok(Math.abs(ratio(c("--text"), onVeil) - 7.12) < 0.05, "7.12 as the table says");
+  assert.ok(Math.abs(ratio(c("--text-2"), onVeilMid) - 5.06) < 0.05, "5.06 as the table says");
   assert.ok(Math.abs(ratio(c("--her-name"), shadeWhite) - 5.41) < 0.05, "5.41 as the table says");
   const fails = ratio(c("--text-2"), shadeWhite);
   assert.ok(fails < 4.5, "--text-2 on the lock shade must stay below AA: " + fails.toFixed(2));

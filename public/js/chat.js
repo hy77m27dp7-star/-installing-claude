@@ -731,8 +731,30 @@ function updateStartButton() {
   els.letHerStart.classList.toggle("hidden", !show);
 }
 
+// Her *actions*: a bubble that is only an action reads as a stage line (the .action bubble,
+// no ground, italic, the asterisks gone); an action inside a line is set in italics. Built
+// from text nodes, never markup; the stored text never changes.
+const ACTION_WHOLE = /^\*([^*\n]+)\*$/;
+const ACTION_INLINE = /\*([^*\n]+)\*/g;
+
+function fillWithActions(el, text) {
+  const s = String(text || "");
+  let last = 0;
+  ACTION_INLINE.lastIndex = 0;
+  let m;
+  while ((m = ACTION_INLINE.exec(s))) {
+    if (m.index > last) el.append(document.createTextNode(s.slice(last, m.index)));
+    el.append(h("em", { class: "act", text: m[1].trim() }));
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) el.append(document.createTextNode(s.slice(last)));
+  return el;
+}
+
 function bubbleEl(text) {
-  return h("div", { class: "bubble", text });
+  const whole = ACTION_WHOLE.exec(String(text || "").trim());
+  if (whole) return h("div", { class: "bubble action", text: whole[1].trim() });
+  return fillWithActions(h("div", { class: "bubble" }), text);
 }
 
 function renderMessage(m, errorCode, error) {
@@ -744,10 +766,16 @@ function renderMessage(m, errorCode, error) {
   if (!his) el.append(avatarSpacer());
   const bubbles = h("div", { class: "bubbles" });
   if (his) {
-    const b = h("div", { class: "bubble" });
-    if (m.audio_key) b.append(h("span", { class: "mic-chip", "aria-label": "Voice", role: "img" }, svgIcon("mic")));
-    b.append(document.createTextNode(m.content || ""));
-    bubbles.append(b);
+    const whole = !m.audio_key && !op ? ACTION_WHOLE.exec(String(m.content || "").trim()) : null;
+    if (whole) {
+      bubbles.append(h("div", { class: "bubble action", text: whole[1].trim() }));
+    } else {
+      const b = h("div", { class: "bubble" });
+      if (m.audio_key) b.append(h("span", { class: "mic-chip", "aria-label": "Voice", role: "img" }, svgIcon("mic")));
+      if (op) b.append(document.createTextNode(m.content || ""));
+      else fillWithActions(b, m.content || "");
+      bubbles.append(b);
+    }
   } else {
     const parts = op ? [m.content || ""] : splitBubbles(m.content);
     // exp 3.4 item 5: each bubble of a line of hers with an id opens the reaction bar.
@@ -781,7 +809,8 @@ function renderMessage(m, errorCode, error) {
     if (song) extras.append(song);
     const media = mediaCard(m);
     if (media) extras.append(media);
-    const version = hisVersion(m);
+    // His rewrite of her line is the workings (Studio material), never the plain thread.
+    const version = state.operator ? hisVersion(m) : null;
     if (version) extras.append(version);
   }
   if (extras.childElementCount) el.append(extras);
@@ -789,10 +818,18 @@ function renderMessage(m, errorCode, error) {
   return el;
 }
 
+// A run's time as a phone shows it: "9:04 PM", no leading zero and no date (the day
+// separators carry the day).
+function clockTime(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
 // exp 3.4 item 6: the default thread is only the conversation (and the kept hearts). The
 // inline why, note, keep and drop and the flags show only while the workings are on.
 function metaRow(m) {
-  const row = h("div", { class: "meta" }, h("span", { class: "time", text: fmtTime(m.created_at) }));
+  const row = h("div", { class: "meta" }, h("span", { class: "time", text: clockTime(m.created_at) }));
   if (state.operator && m.role === "assistant" && m.channel !== "operator" && m.id) {
     row.append(h("button", { type: "button", class: "why", text: "why", onclick: () => openWhy(m) }));
     row.append(h("button", { type: "button", class: "note-btn", text: "note", onclick: () => toggleNoteSheet(m) }));
@@ -867,12 +904,14 @@ function songCard(m) {
     slot.append(retry);
   }
   if (m.id && status === "pending") refreshSongLater(m.id);
+  // One way to play on the card: the play circle when the song has a uri. The Spotify link
+  // and "my Spotify" are the workings; a song without a uri keeps the link as its only way.
   const card = h("div", { class: "song-card", "data-uri": uri },
-    h("span", { class: "note", "aria-hidden": "true" }, svgIcon("note")),
+    uri ? null : h("span", { class: "note", "aria-hidden": "true" }, svgIcon("note")),
     h("span", { class: "song-text" },
       h("span", { class: "song-title", text: title }),
       artist ? h("span", { class: "song-artist", text: artist }) : null),
-    h("a", { class: "song-link", href, target: "_blank", rel: "noopener noreferrer", text: "Open in Spotify" }),
+    !uri || state.operator ? h("a", { class: "song-link", href, target: "_blank", rel: "noopener noreferrer", text: "Open in Spotify" }) : null,
     slot);
   // A1: the play control, shown whenever the song has a uri (the device is made on the first
   // press). player.js renders the embed into this card's .song-embed slot when the SDK cannot
@@ -896,7 +935,12 @@ function songCard(m) {
       remoteNote.append(chip("starting"));
       window.dispatchEvent(new CustomEvent("avelie:play-remote", { detail: { uri } }));
     });
-    card.append(play, remote, remoteNote, embed);
+    if (state.operator) {
+      card.append(play, remote, remoteNote, embed);
+    } else {
+      card.prepend(play);
+      card.append(embed);
+    }
     paintPlayButton(play);
   }
   if (m.id && artist) card.append(songFeedback(m.id, artist));
@@ -1234,6 +1278,7 @@ function hisVersion(m) {
 }
 
 function refreshHisVersion(m) {
+  if (!state.operator) return;
   const el = findMessageEl(m.id);
   if (!el) return;
   let extras = el.querySelector(".extras");
@@ -1754,8 +1799,17 @@ function renderPhoto(m, errorCode, error) {
     if (state.operator && !isApproved(m.image_id)) wrap.append(photoActions(m, m.image_id, wrap));
     return wrap;
   }
-  if (status === "failed") return failedPicture(m, errorCode, error, false);
+  if (status === "failed") return staleFailure(m, errorCode) ? null : failedPicture(m, errorCode, error, false);
   return null;
+}
+
+// A picture that failed long ago leaves her thread: it shows for FAILED_KEEP_MS after her
+// line (or when this page just saw it fail), and always with the workings on.
+const FAILED_KEEP_MS = 12 * 60 * 60 * 1000;
+function staleFailure(m, errorCode) {
+  if (state.operator || errorCode) return false;
+  const at = Date.parse(m && m.created_at);
+  return Number.isFinite(at) && Date.now() - at > FAILED_KEEP_MS;
 }
 
 function isApproved(imageId) {
@@ -2035,7 +2089,7 @@ function renderClip(m, errorCode, error) {
     if (state.operator && !isApproved(id)) wrap.append(clipActions(m, id, wrap));
     return wrap;
   }
-  return failedPicture(m, errorCode, error, true);
+  return staleFailure(m, errorCode) ? null : failedPicture(m, errorCode, error, true);
 }
 
 function clipActions(m, id, wrap) {
@@ -2485,9 +2539,12 @@ function renderScene() {
   }
 }
 
-// "the record store" from "at the record store": one leading "at " or "in " dropped.
+// "the record store" from "at the record store, at the used bins": one leading "at " or
+// "in " dropped, then cut at the first ",", ";" or " -- " (the rest is stage direction).
 function placeWords(location) {
-  return String(location || "").replace(/\s+/g, " ").trim().replace(/^(at|in)\s+/i, "");
+  const s = String(location || "").replace(/\s+/g, " ").trim().replace(/^(at|in)\s+/i, "");
+  const cuts = [",", ";", " -- "].map((c) => s.indexOf(c)).filter((i) => i >= 0);
+  return (cuts.length ? s.slice(0, Math.min(...cuts)) : s).trim();
 }
 
 // exp 3.4 item 3: the one line under her name: where the two of you are.

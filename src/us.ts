@@ -6,7 +6,7 @@
 // or their subjects (Studio > Memory lists them). No weights, no phases, no numbers but the
 // count of visits. Read-only; every sub-read that throws on an older shape answers empty.
 import type { SceneVersionLike } from "./album";
-import { conversationData, visitedVersions } from "./chapters";
+import { conversationData, isFillerPlace, placeTitle, visitedVersions } from "./chapters";
 import { loadStoryClock } from "./clock";
 import { getCurrentState, listConversations, listHistory } from "./db";
 import { listPlaces, placeTitleNorm } from "./places";
@@ -39,10 +39,6 @@ function oneLine(s: unknown): string {
   return typeof s === "string" ? s.replace(/\s+/g, " ").trim() : "";
 }
 
-function dropAtIn(s: string): string {
-  return s.replace(/^(?:at|in)\s+/i, "");
-}
-
 function sceneOf(v: SceneVersionLike): { together: boolean; location: string | null } {
   try {
     const parsed: unknown = JSON.parse(v.state_json);
@@ -57,21 +53,25 @@ function sceneOf(v: SceneVersionLike): { together: boolean; location: string | n
 }
 
 // The places they have been together: a visit starts at a VISITED together version with a
-// location whose normal form differs from the previous visited version's together place (or
-// the previous visited version was not together). Oldest first by the first visit.
+// location whose place (placeTitle: "the record store on Congress Street, at the used bins"
+// is "The record store on Congress Street") differs from the previous visited version's
+// together place (or the previous visited version was not together). A filler location
+// ("same scene", "k") names no place: the visit before it carries on. Oldest first by the
+// first visit.
 export function togetherPlaces(versions: SceneVersionLike[], storyTimes: readonly string[]): Array<{ title: string; norm: string; first: string; times: number }> {
   const visited = visitedVersions(versions, storyTimes);
   const byNorm = new Map<string, { title: string; norm: string; first: string; times: number }>();
   let prev: string | null = null;
   for (const v of visited) {
     const s = sceneOf(v);
-    if (!s.together || !s.location) {
+    if (!s.together) {
       prev = null;
       continue;
     }
-    const title = dropAtIn(s.location);
-    const norm = placeTitleNorm(title);
-    if (!norm) {
+    if (!s.location || isFillerPlace(s.location)) continue;
+    const title = placeTitle(s.location);
+    const norm = title ? placeTitleNorm(title) : "";
+    if (!title || !norm) {
       prev = null;
       continue;
     }
@@ -97,13 +97,15 @@ export function quoteText(content: string | null | undefined): string | null {
   return (sp > 0 ? head.slice(0, sp) : head).replace(/[\s,;:]+$/, "") + "...";
 }
 
-// Her names for each other: split on commas, semicolons, " / " and newlines, trimmed, the
-// empty ones and "none" or "none established" dropped, repeats (any case) kept once.
+// Her names for each other: every "(...)" aside taken out first ("Starbrite (his, for her;
+// she says the ruling is pending)" is "Starbrite"), then split on commas, semicolons, " / "
+// and newlines, trimmed, the empty ones and "none" or "none established" dropped, repeats
+// (any case) kept once.
 export function splitNicknames(s: string | null | undefined): string[] {
   if (typeof s !== "string") return [];
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const raw of s.split(/[,;\n]|\s\/\s/)) {
+  for (const raw of s.replace(/\([^)]*\)?/g, " ").split(/[,;\n]|\s\/\s/)) {
     const n = oneLine(raw);
     if (!n || /^none(?:\s+(?:established|yet))?$/i.test(n)) continue;
     const k = n.toLowerCase();
@@ -190,8 +192,14 @@ export async function usView(db: D1Database, settings: Settings, now: Date): Pro
 
   const storyTimes: string[] = [];
   for (const [id, list] of data.times) if (listed.has(id)) storyTimes.push(...list);
+  // A place row is found by its own title or by the place its title names ("Rosie's, on
+  // Exchange Street" is also "rosie's"), the same cut the visits are keyed by.
   const byNorm = new Map<string, PlaceRow>();
-  for (const p of places) if (p && typeof p.title_norm === "string" && !byNorm.has(p.title_norm)) byNorm.set(p.title_norm, p);
+  for (const p of places) {
+    if (!p || typeof p.title_norm !== "string") continue;
+    const cut = placeTitle(typeof p.title === "string" ? p.title : "");
+    for (const key of [p.title_norm, cut ? placeTitleNorm(cut) : ""]) if (key && !byNorm.has(key)) byNorm.set(key, p);
+  }
   const placeList = togetherPlaces(data.versions, storyTimes).map((p) => {
     const row = byNorm.get(p.norm) ?? null;
     return {

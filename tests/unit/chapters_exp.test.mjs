@@ -34,6 +34,15 @@ test("placeTitle: one leading at/in/on dropped, cut at , ; ( or --, at a word be
   assert.equal(ch.placeTitle(null), null);
   assert.equal(ch.placeTitle(undefined), null);
   assert.equal(ch.placeTitle("at"), null, "the dropped word alone: nothing left");
+  assert.equal(ch.placeTitle("same scene"), null, "a filler location names no place");
+  assert.equal(ch.placeTitle("k"), null);
+});
+
+test("isFillerPlace and placeWords: same scene, same place, k and anything under three characters name no place; placeWords keeps the case", () => {
+  for (const f of ["same scene", "Same place", "the same place", "same", "k", "K.", "ok", "at k", "xy", "", null]) assert.equal(ch.isFillerPlace(f), true, String(f));
+  for (const r of ["the pier", "Rosie's", "the record store on Congress Street, at the bins"]) assert.equal(ch.isFillerPlace(r), false, r);
+  assert.equal(ch.placeWords("at the record store on Congress Street, at the used bins by the listening station"), "the record store on Congress Street");
+  assert.equal(ch.placeWords("same scene"), null);
 });
 
 test("dayTitle: the weekday in her timezone and the part of the day by her local hour", () => {
@@ -124,6 +133,8 @@ test("previewText: one line, cut at the last space before 90 with ... appended; 
   assert.ok(p.length <= 93, "90 characters and the three dots: " + p.length);
   assert.ok(!p.slice(0, -3).endsWith(" "));
   assert.equal(p.slice(0, -3), "word ".repeat(18).trim());
+  assert.equal(ch.previewText("*laughs into your shirt, doesn't move* ...yeah. we kind of are"), "...yeah. we kind of are", "her actions are not the preview");
+  assert.equal(ch.previewText("*keeps looking at it a second too long*"), "keeps looking at it a second too long", "only an action: its words, no asterisks");
 });
 
 function tables() {

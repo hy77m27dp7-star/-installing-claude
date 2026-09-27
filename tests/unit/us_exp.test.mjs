@@ -31,8 +31,8 @@ const TIMES = [
 test("togetherPlaces: a visit starts where the together place changes among VISITED versions; an edit of the same place is the same visit; an unvisited scene is no visit; oldest first", () => {
   const places = us.togetherPlaces(VERSIONS, TIMES);
   assert.deepEqual(places, [
-    { title: "the bench by the water", norm: "the bench by the water", first: "2026-09-24T20:00:00.000Z", times: 2 },
-    { title: "the record store on Congress Street", norm: "the record store on congress street", first: "2026-09-25T18:00:05.000Z", times: 1 },
+    { title: "The bench by the water", norm: "the bench by the water", first: "2026-09-24T20:00:00.000Z", times: 2 },
+    { title: "The record store on Congress Street", norm: "the record store on congress street", first: "2026-09-25T18:00:05.000Z", times: 1 },
   ]);
   assert.ok(!places.some((p) => /roof/.test(p.title)), "the roof was never a visit");
   assert.deepEqual(us.togetherPlaces(VERSIONS, []), [], "no words, no visits");
@@ -43,7 +43,21 @@ test("togetherPlaces: a visit starts where the together place changes among VISI
     V(2, "2026-09-24T21:00:00.000Z", sceneState({ status: "together", location: "the diner" })),
     V(3, "2026-09-24T22:00:00.000Z", sceneState({ status: "together", location: "the pier" })),
   ];
-  assert.deepEqual(us.togetherPlaces(hop, ["2026-09-24T20:30:00.000Z", "2026-09-24T21:30:00.000Z", "2026-09-24T22:30:00.000Z"]).map((p) => [p.title, p.times]), [["the pier", 2], ["the diner", 1]]);
+  assert.deepEqual(us.togetherPlaces(hop, ["2026-09-24T20:30:00.000Z", "2026-09-24T21:30:00.000Z", "2026-09-24T22:30:00.000Z"]).map((p) => [p.title, p.times]), [["The pier", 2], ["The diner", 1]]);
+});
+
+test("togetherPlaces: the place is the location's first clause (stage directions cut); a filler location (same scene, k) carries the visit before it and is never a place", () => {
+  const live = [
+    V(1, "2026-09-26T14:36:00.000Z", sceneState({ status: "together", location: "the record store on Congress Street, at the used bins by the listening station, the big headphones on the hook" })),
+    V(2, "2026-09-26T15:00:00.000Z", sceneState({ status: "together", location: "same scene" })),
+    V(3, "2026-09-26T15:10:00.000Z", sceneState({ status: "together", location: "the record store on Congress Street, at the used bins by the listening station" })),
+    V(4, "2026-09-26T15:27:00.000Z", sceneState({ status: "apart", location: null })),
+    V(5, "2026-09-26T15:27:30.000Z", sceneState({ status: "together", location: "k" })),
+    V(6, "2026-09-26T15:30:00.000Z", sceneState({ status: "together", location: "at the record store on Congress Street" })),
+  ];
+  const times = ["2026-09-26T14:40:00.000Z", "2026-09-26T15:05:00.000Z", "2026-09-26T15:12:00.000Z", "2026-09-26T15:27:10.000Z", "2026-09-26T15:28:00.000Z", "2026-09-26T15:31:00.000Z"];
+  assert.deepEqual(us.togetherPlaces(live, times).map((p) => [p.title, p.times]), [["The record store on Congress Street", 2]],
+    "one place, not three stage directions; the same scene is the same visit; after apart the record store is a second visit; k is nothing");
 });
 
 test("quoteText: every *action* removed, one line, cut at the last space before 240 with ...; empty -> null", () => {
@@ -62,6 +76,8 @@ test("splitNicknames: commas, semicolons, ' / ' and newlines; trimmed; empty and
   assert.deepEqual(us.splitNicknames("Starbrite"), ["Starbrite"]);
   assert.deepEqual(us.splitNicknames("Starbrite; starbrite, Star / Trouble\nkid ,, "), ["Starbrite", "Star", "Trouble", "kid"]);
   assert.deepEqual(us.splitNicknames("AC/DC"), ["AC/DC"], "a slash with no spaces is part of a name");
+  assert.deepEqual(us.splitNicknames("Starbrite (his, for her; she says the ruling is pending, which is a yes)"), ["Starbrite"], "an aside in brackets is not a name");
+  assert.deepEqual(us.splitNicknames("Starbrite (his / for her), Trouble (hers for him"), ["Starbrite", "Trouble"], "an unclosed aside runs to the end");
   assert.deepEqual(us.splitNicknames("none established"), []);
   assert.deepEqual(us.splitNicknames("none"), []);
   assert.deepEqual(us.splitNicknames(""), []);
@@ -127,8 +143,8 @@ test("usView: exactly the seven keys; drift and deleted chapters left out, oldes
     { id: "h_none", title: "an undated thing", at: null },
   ]);
   assert.deepEqual(view.places, [
-    { title: "the bench by the water", first: "2026-09-24T20:00:00.000Z", times: 2, placeId: "pl_bench", picture: true },
-    { title: "the record store on Congress Street", first: "2026-09-25T18:00:05.000Z", times: 1, placeId: "pl_store", picture: false },
+    { title: "The bench by the water", first: "2026-09-24T20:00:00.000Z", times: 2, placeId: "pl_bench", picture: true },
+    { title: "The record store on Congress Street", first: "2026-09-25T18:00:05.000Z", times: 1, placeId: "pl_store", picture: false },
   ]);
   assert.deepEqual(view.kept, [
     { id: "b1", text: "that was sweet by the way", at: TIMES[2], conversationId: "cB" },
